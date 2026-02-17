@@ -149,28 +149,44 @@ with tabs[0]:
     **訓練流程**:
     1. **單幣種訓練**: 訓練特定幣種的BB模型
     2. **批量訓練**: 一鍵訓練多個幣種的模型
+    3. **全部訓練**: 訓練所有38個幣種的模型
     
     訓練後的模型會保存到 `models/saved/{SYMBOL}_bb_*.pkl`
+    
+    **推薦K棒數量** (15分鐘):
+    - 快速測試: 5000根 (約52天)
+    - 標準訓練: 10000根 (約104天)
+    - 完整訓練: 15000根 (約156天)
+    - 超大資料: 20000根 (約208天)
     """)
     
-    train_mode = st.radio("訓練模式", ["單幣種訓練", "批量訓練"], horizontal=True)
+    train_mode = st.radio("訓練模式", ["單幣種訓練", "批量訓練", "全部訓練(38幣)"], horizontal=True)
     
     if train_mode == "單幣種訓練":
         col1, col2 = st.columns(2)
         with col1:
             symbols = symbol_selector("train_single", multi=False)
             symbol = symbols[0]
-            days = st.number_input("訓練天數", min_value=30, max_value=365, value=60, key="train_days")
+            n_candles = st.number_input(
+                "訓練K棒數量",
+                min_value=1000,
+                max_value=50000,
+                value=10000,
+                step=1000,
+                key="train_candles",
+                help="15分鐘: 10000根約104天"
+            )
         
         with col2:
             bb_period = st.number_input("BB週期", min_value=10, max_value=30, value=20)
             bb_std = st.number_input("BB標準差", min_value=1.0, max_value=3.0, value=2.0, step=0.5)
         
+        st.caption(f"預估訓練時間: 約1-3分鐘 | 數據量: {n_candles}根K棒")
+        
         if st.button("開始訓練", key="train_btn", type="primary"):
             with st.spinner(f"正在訓練 {symbol}..."):
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=days)
-                df = loader.load_historical_data(symbol, '15m', start_date, end_date)
+                df = loader.load_klines(symbol, '15m')
+                df = df.tail(n_candles)
                 
                 extractor = BBBounceFeatureExtractor(bb_period=bb_period, bb_std=bb_std)
                 df_processed = extractor.process(df, create_labels=True)
@@ -181,12 +197,24 @@ with tabs[0]:
                 
                 st.success(f"{symbol} BB模型訓練完成!")
                 st.info(f"模型保存至: `models/saved/{symbol}_bb_*.pkl`")
+                st.write(f"實際使用數據: {len(df_processed)}根K棒")
     
-    else:
+    elif train_mode == "批量訓練":
         st.subheader("批量訓練多幣種模型")
         
         symbols = symbol_selector("train_batch", multi=True)
-        batch_days = st.number_input("訓練天數", min_value=30, max_value=365, value=60, key="batch_days")
+        batch_candles = st.number_input(
+            "訓練K棒數量",
+            min_value=1000,
+            max_value=50000,
+            value=10000,
+            step=1000,
+            key="batch_candles",
+            help="15分鐘: 10000根約104天"
+        )
+        
+        if symbols:
+            st.caption(f"預估總時間: 約{len(symbols) * 2}-{len(symbols) * 4}分鐘 | 每幣{batch_candles}根K棒")
         
         if st.button("一鍵訓練所有幣種", key="batch_train_btn", type="primary"):
             if not symbols:
@@ -201,9 +229,8 @@ with tabs[0]:
                     progress_bar.progress((idx + 1) / len(symbols))
                     
                     try:
-                        end_date = datetime.now()
-                        start_date = end_date - timedelta(days=batch_days)
-                        df = loader.load_historical_data(symbol, '15m', start_date, end_date)
+                        df = loader.load_klines(symbol, '15m')
+                        df = df.tail(batch_candles)
                         
                         extractor = BBBounceFeatureExtractor(bb_period=20, bb_std=2.0)
                         df_processed = extractor.process(df, create_labels=True)
@@ -222,6 +249,71 @@ with tabs[0]:
                 st.success("批量訓練完成!")
                 results_df = pd.DataFrame(results)
                 st.dataframe(results_df, use_container_width=True)
+    
+    else:  # 全部訓練
+        st.subheader("全部訓練 - 38個幣種")
+        
+        all_symbols = HuggingFaceKlineLoader.get_supported_symbols()
+        
+        st.info(f"將訓練所有38個幣種: {', '.join(all_symbols[:5])}...")
+        
+        all_candles = st.number_input(
+            "訓練K棒數量",
+            min_value=1000,
+            max_value=50000,
+            value=10000,
+            step=1000,
+            key="all_candles",
+            help="15分鐘: 10000根約104天"
+        )
+        
+        st.warning(f"預估總時間: 約76-152分鐘 (1.3-2.5小時) | 總計{len(all_symbols)}個幣種")
+        
+        if st.button("開始訓練所有38個幣種", key="all_train_btn", type="primary"):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            results = []
+            
+            start_time = datetime.now()
+            
+            for idx, symbol in enumerate(all_symbols):
+                elapsed = (datetime.now() - start_time).total_seconds() / 60
+                avg_time = elapsed / max(idx, 1)
+                remaining = avg_time * (len(all_symbols) - idx)
+                
+                status_text.text(
+                    f"正在訓練 {symbol} ({idx+1}/{len(all_symbols)}) | "
+                    f"已耗時: {elapsed:.1f}分 | 預估剩餘: {remaining:.1f}分"
+                )
+                progress_bar.progress((idx + 1) / len(all_symbols))
+                
+                try:
+                    df = loader.load_klines(symbol, '15m')
+                    df = df.tail(all_candles)
+                    
+                    extractor = BBBounceFeatureExtractor(bb_period=20, bb_std=2.0)
+                    df_processed = extractor.process(df, create_labels=True)
+                    
+                    trainer = BBBounceModelTrainer(model_dir='models/saved')
+                    trainer.train_both_models(df_processed)
+                    trainer.save_models(prefix=symbol)
+                    
+                    results.append({'幣種': symbol, '狀態': '成功', '數據量': len(df)})
+                except Exception as e:
+                    results.append({'幣種': symbol, '狀態': f'失敗: {str(e)[:30]}', '數據量': 0})
+            
+            progress_bar.empty()
+            status_text.empty()
+            
+            total_time = (datetime.now() - start_time).total_seconds() / 60
+            
+            st.success(f"全部訓練完成! 總耗時: {total_time:.1f}分鐘")
+            
+            results_df = pd.DataFrame(results)
+            success_count = (results_df['狀態'] == '成功').sum()
+            st.metric("成功訓練", f"{success_count}/{len(all_symbols)}")
+            
+            st.dataframe(results_df, use_container_width=True)
 
 with tabs[1]:
     st.header("多幣種BB反彈策略回測")
