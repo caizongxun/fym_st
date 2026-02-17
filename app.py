@@ -82,7 +82,6 @@ with tabs[0]:
             loader = init_data_loader()
             engineer = init_feature_engineer()
             
-            # Load data from HuggingFace
             df_1h = loader.load_from_huggingface(selected_symbol, '1h')
             df_15m = loader.load_from_huggingface(selected_symbol, '15m')
             
@@ -90,22 +89,18 @@ with tabs[0]:
                 st.error("Failed to load data. Check your configuration.")
                 st.stop()
             
-            # Use only last N candles for training
             df_1h = df_1h.tail(train_size + oos_size + 200).copy()
             df_15m = df_15m.tail((train_size + oos_size) * 4 + 200).copy()
             
             st.success(f"Loaded {len(df_1h)} x 1h candles and {len(df_15m)} x 15m candles")
             
-            # Compute features
             df_1h = engineer.compute_features(df_1h, '1h_')
             df_15m = engineer.compute_features(df_15m, '15m_')
             
-            # Merge timeframes
             df_merged = engineer.merge_timeframes(df_15m, df_1h)
             
             st.success("Feature engineering complete")
         
-        # Train Trend Model
         if train_trend_model:
             st.subheader("Training Trend Detection Model")
             with st.spinner("Training trend model..."):
@@ -130,7 +125,6 @@ with tabs[0]:
                     col_a.metric("OOS Classification Accuracy", f"{metrics['oos_classification_accuracy']:.2%}")
                     col_b.metric("OOS Regression RMSE", f"{metrics['oos_regression_rmse']:.2f}")
         
-        # Train Volatility Model
         if train_volatility_model:
             st.subheader("Training Volatility Prediction Model")
             with st.spinner("Training volatility model..."):
@@ -155,7 +149,6 @@ with tabs[0]:
                     col_a.metric("OOS Regime Accuracy", f"{metrics['oos_regime_accuracy']:.2%}")
                     col_b.metric("OOS Trend Init RMSE", f"{metrics['oos_trend_init_rmse']:.2f}")
         
-        # Train Reversal Model
         if train_reversal_model:
             st.subheader("Training Reversal Detection Model")
             with st.spinner("Training reversal model..."):
@@ -266,7 +259,6 @@ with tabs[1]:
             loader = init_data_loader()
             engineer = init_feature_engineer()
             
-            # Check if models exist
             missing_models = []
             for sym in selected_symbols_bt:
                 for model_type in ['trend_classifier', 'volatility_regime', 'reversal_direction']:
@@ -283,7 +275,6 @@ with tabs[1]:
             for symbol in selected_symbols_bt:
                 st.write(f"Processing {symbol}...")
                 
-                # Load Binance data for backtesting
                 df_1h = loader.load_from_binance(symbol, '1h', days=backtest_days)
                 df_15m = loader.load_from_binance(symbol, '15m', days=backtest_days)
                 
@@ -291,16 +282,13 @@ with tabs[1]:
                     st.warning(f"Could not load data for {symbol}, skipping")
                     continue
                 
-                # Get completed candles only
                 df_1h = loader.get_completed_candles(df_1h)
                 df_15m = loader.get_completed_candles(df_15m)
                 
-                # Compute features
                 df_1h = engineer.compute_features(df_1h, '1h_')
                 df_15m = engineer.compute_features(df_15m, '15m_')
                 df_merged = engineer.merge_timeframes(df_15m, df_1h)
                 
-                # Load models and predict
                 trend_trainer = TrendModelTrainer(model_dir=Config.MODEL_DIR)
                 trend_trainer.load_models(symbol)
                 
@@ -310,12 +298,10 @@ with tabs[1]:
                 rev_trainer = ReversalModelTrainer(model_dir=Config.MODEL_DIR)
                 rev_trainer.load_models(symbol)
                 
-                # Make predictions
                 df_with_trend = trend_trainer.predict(df_merged)
                 df_with_vol = vol_trainer.predict(df_with_trend)
                 df_with_rev = rev_trainer.predict(df_with_vol)
                 
-                # Generate signals
                 signal_gen = SignalGenerator(
                     min_reversal_prob=Config.MIN_REVERSAL_PROB,
                     min_trend_strength=Config.MIN_TREND_SCORE,
@@ -356,18 +342,15 @@ with tabs[1]:
         col_g.metric("Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}")
         col_h.metric("Avg Duration", f"{metrics['avg_duration_min']:.0f} min")
         
-        # Equity curve
         st.subheader("Equity Curve")
         fig_equity = engine.plot_equity_curve()
         st.plotly_chart(fig_equity, use_container_width=True)
         
-        # Trade history
         st.subheader("Trade History")
         trades_df = engine.get_trades_dataframe()
         if not trades_df.empty:
             st.dataframe(trades_df.sort_values('entry_time', ascending=False), use_container_width=True)
             
-            # Download button
             csv = trades_df.to_csv(index=False)
             st.download_button(
                 "Download Trade History",
@@ -378,7 +361,6 @@ with tabs[1]:
         else:
             st.info("No trades executed")
         
-        # Trades per symbol
         if 'trades_per_symbol' in metrics and metrics['trades_per_symbol']:
             st.subheader("Trades by Symbol")
             symbol_trades = pd.DataFrame(
@@ -386,6 +368,194 @@ with tabs[1]:
                 columns=['Symbol', 'Trade Count']
             )
             st.bar_chart(symbol_trades.set_index('Symbol'))
+
+# TAB 3: Live Signals
+with tabs[2]:
+    st.header("Live Signal Monitor")
+    
+    monitor_symbol = st.selectbox(
+        "Select Symbol to Monitor",
+        Config.SUPPORTED_SYMBOLS,
+        key="monitor_symbol"
+    )
+    
+    if st.button("Get Latest Signal"):
+        with st.spinner("Fetching live data..."):
+            loader = init_data_loader()
+            engineer = init_feature_engineer()
+            
+            df_1h = loader.load_from_binance(monitor_symbol, '1h', days=7)
+            df_15m = loader.load_from_binance(monitor_symbol, '15m', days=7)
+            
+            if df_1h.empty or df_15m.empty:
+                st.error("Failed to fetch live data")
+                st.stop()
+            
+            df_1h = loader.get_completed_candles(df_1h)
+            df_15m = loader.get_completed_candles(df_15m)
+            
+            df_1h = engineer.compute_features(df_1h, '1h_')
+            df_15m = engineer.compute_features(df_15m, '15m_')
+            df_merged = engineer.merge_timeframes(df_15m, df_1h)
+            
+            try:
+                trend_trainer = TrendModelTrainer(model_dir=Config.MODEL_DIR)
+                trend_trainer.load_models(monitor_symbol)
+                
+                vol_trainer = VolatilityModelTrainer(model_dir=Config.MODEL_DIR)
+                vol_trainer.load_models(monitor_symbol)
+                
+                rev_trainer = ReversalModelTrainer(model_dir=Config.MODEL_DIR)
+                rev_trainer.load_models(monitor_symbol)
+            except:
+                st.error(f"Models not found for {monitor_symbol}. Please train them first.")
+                st.stop()
+            
+            df_with_trend = trend_trainer.predict(df_merged)
+            df_with_vol = vol_trainer.predict(df_with_trend)
+            df_with_rev = rev_trainer.predict(df_with_vol)
+            
+            signal_gen = SignalGenerator()
+            df_signals = signal_gen.generate_signals(df_with_rev)
+            df_signals = signal_gen.add_signal_metadata(df_signals)
+            
+            latest = df_signals.iloc[-1]
+            
+            st.subheader(f"Latest Signal for {monitor_symbol}")
+            st.write(f"Time: {latest['open_time']}")
+            st.write(f"Price: {latest['close']:.2f} USDT")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Signal", latest['signal_name'])
+                st.metric("Signal Strength", f"{latest['signal_strength']:.1f}")
+            
+            with col2:
+                st.metric("Trend", latest['trend_name'])
+                st.metric("Trend Strength", f"{latest['trend_strength_pred']:.1f}")
+            
+            with col3:
+                st.metric("Volatility Regime", latest['volatility_regime_name'])
+                st.metric("Reversal Prob", f"{latest['reversal_prob_pred']:.1f}%")
+            
+            st.write(f"Support Level: {latest['support_pred']:.2f}")
+            st.write(f"Resistance Level: {latest['resistance_pred']:.2f}")
+
+# TAB 4: Documentation
+with tabs[3]:
+    st.header("System Documentation")
+    
+    st.markdown("""
+    ## System Overview
+    
+    FYM_ST is a multi-timeframe AI trading system designed for high-frequency cryptocurrency trading.
+    
+    ### Three-Model Architecture
+    
+    #### 1. Trend Detection Model (1h)
+    - Analyzes 1-hour timeframe data
+    - Classifies market into 5 regimes: Strong Bearish, Weak Bearish, Ranging, Weak Bullish, Strong Bullish
+    - Provides trend strength score (0-100)
+    - Filters out counter-trend signals
+    
+    #### 2. Volatility Prediction Model (15m)
+    - Forecasts volatility regime changes (Low/Medium/High)
+    - Predicts trend initiation probability
+    - Enables dynamic stop-loss adjustment based on market conditions
+    
+    #### 3. Reversal Detection Model (15m)
+    - Identifies potential reversal points with probability scores
+    - Predicts support and resistance levels
+    - Generates directional bias (Bullish/Bearish/None)
+    
+    ### Trading Logic
+    
+    **Entry Conditions (Long)**
+    - 1h trend must be bullish (Weak Bull or Strong Bull)
+    - Trend strength > 60
+    - Trend initiation probability > 70%
+    - Reversal model detects bullish reversal with probability > 75%
+    - Current price near predicted support level
+    - Volume confirmation (> 1.3x average)
+    
+    **Entry Conditions (Short)**
+    - Same as above but inverted (bearish trend, bearish reversal, near resistance)
+    
+    **Exit Strategy**
+    - Take Profit: Price reaches TP level (default: 3x ATR from entry)
+    - Stop Loss: Price hits SL level (default: 2x ATR from entry)
+    - ATR-based stops adapt to market volatility
+    
+    ### Signal Stability
+    
+    All signals use only **completed candles** to prevent repainting:
+    - The latest incomplete candle is excluded from analysis
+    - Predictions are made on fully-formed historical bars
+    - This ensures signals remain stable and actionable
+    
+    ### Data Sources
+    
+    - **Training**: HuggingFace dataset (38 crypto pairs, 15m/1h/1d timeframes)
+    - **Backtesting/Live**: Binance API (real-time market data)
+    
+    ### Risk Management
+    
+    - Configurable position sizing (% of capital)
+    - Leverage control (1-50x)
+    - Maximum concurrent positions limit
+    - Portfolio-level capital allocation
+    - Binance contract fee structure (Maker: 0.02%, Taker: 0.06%)
+    
+    ### Model Training
+    
+    1. Select a symbol from the supported list
+    2. Configure training size and OOS validation size (default: 1500 candles)
+    3. Choose which models to train
+    4. Click "Start Training" and monitor metrics
+    5. Models are automatically saved for later use
+    
+    ### Backtesting
+    
+    1. Configure capital, leverage, and risk parameters
+    2. Select symbols to test (supports multi-symbol portfolios)
+    3. Set backtest period (days)
+    4. Run backtest and analyze results
+    5. Download detailed trade history
+    
+    ### Performance Metrics
+    
+    - **Win Rate**: Percentage of profitable trades
+    - **Profit Factor**: Gross profit / Gross loss
+    - **Sharpe Ratio**: Risk-adjusted return
+    - **Max Drawdown**: Largest peak-to-trough decline
+    - **Average Duration**: Mean trade holding time
+    
+    ### Best Practices
+    
+    1. Always train models on recent data before live trading
+    2. Use OOS validation to assess generalization
+    3. Start with conservative leverage (3-10x)
+    4. Test on multiple symbols for diversification
+    5. Monitor drawdown and adjust position sizing accordingly
+    6. Re-train models periodically as market regimes change
+    
+    ### Troubleshooting
+    
+    **Missing models error**: Train models for your selected symbols first
+    
+    **Data loading failure**: Check Binance API credentials in `.env` file
+    
+    **Poor backtest results**: Try adjusting signal thresholds in `config.py`
+    
+    ### Advanced Configuration
+    
+    Edit `config.py` to customize:
+    - Signal generation thresholds
+    - Model hyperparameters
+    - Feature engineering settings
+    - Default trading parameters
+    """)
 
 st.sidebar.title("System Info")
 st.sidebar.info(
