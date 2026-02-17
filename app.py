@@ -71,7 +71,7 @@ with tabs[0]:
                 if not oos_df_trend.empty:
                     st.metric("樣本外回歸RMSE", f"{oos_metrics['oos_regression_rmse']:.2f}")
         
-        st.subheader("訓練 15分鐘反轉偵測模型")
+        st.subheader("訓練 15分鐘反轉偵測模型 (二元分類)")
         with st.spinner("訓練反轉模型中..."):
             reversal_trainer = ReversalModelTrainer()
             train_df_rev, oos_df_rev = reversal_trainer.prepare_data(df_15m, oos_size=oos_size)
@@ -87,9 +87,10 @@ with tabs[0]:
             
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("方向準確率", f"{metrics['direction_accuracy']*100:.2f}%")
+                # Changed from direction_accuracy to signal_accuracy
+                st.metric("反轉信號準確率", f"{metrics['signal_accuracy']*100:.2f}%")
                 if not oos_df_rev.empty:
-                    st.metric("樣本外方向準確率", f"{oos_metrics['oos_direction_accuracy']*100:.2f}%")
+                    st.metric("樣本外反轉信號準確率", f"{oos_metrics['oos_signal_accuracy']*100:.2f}%")
             
             with col2:
                 st.metric("概率RMSE", f"{metrics['probability_rmse']:.2f}")
@@ -107,10 +108,11 @@ with tabs[1]:
     st.header("回測 - 15分鐘反轉 + ATR 策略")
     
     st.info("""
-    策略邏輯:
+    策略邏輯 (二元反轉):
     - 15分鐘趨勢偵測 (短線交易更快反應)
-    - 空頭/盤整 + 多頭反轉 → 做多
-    - 多頭/盤整 + 空頭反轉 → 做空
+    - 多頭趨勢 + 反轉信號 → 做空
+    - 空頭趨勢 + 反轉信號 → 做多
+    - 盤整趨勢 + 反轉信號 → 看短期動量決定方向
     - ATR止盈止損 (優先級: 止盈/止損 > 反轉信號)
     """)
     
@@ -195,16 +197,16 @@ with tabs[1]:
             df_signals = signal_gen.add_signal_metadata(df_signals)
             
             signal_count = (df_signals['signal'] != 0).sum()
-            st.write(f"產生 {signal_count} 個反轉信號")
+            st.write(f"產生 {signal_count} 個交易信號")
             
             if signal_count == 0:
                 st.warning("未產生信號,檢查條件...")
                 st.write("趨勢方向分布:")
                 st.write(df_signals['trend_direction'].value_counts())
-                st.write("\n反轉方向分布:")
-                st.write(df_signals['reversal_direction_pred'].value_counts())
+                st.write("\n反轉信號分布:")
+                st.write(df_signals['reversal_signal'].value_counts())
                 st.write("\n樣本數據 (最後20筆):")
-                st.dataframe(df_signals[['open_time', 'close', 'trend_direction', 'reversal_direction_pred', 'signal']].tail(20))
+                st.dataframe(df_signals[['open_time', 'close', 'trend_direction', 'reversal_signal', 'signal']].tail(20))
         
         with st.spinner("執行回測中..."):
             engine = BacktestEngine(
@@ -314,8 +316,8 @@ with tabs[2]:
                 st.metric("ATR", f"{latest.get('15m_atr', 0):.2f}")
             
             with col2:
-                reversal_name = latest.get('reversal_name', '無')
-                st.metric("反轉信號", reversal_name)
+                reversal_status = "有反轉" if latest.get('reversal_signal', 0) == 1 else "無反轉"
+                st.metric("反轉信號", reversal_status)
                 st.metric("反轉概率", f"{latest['reversal_prob_pred']:.1f}%")
             
             with col3:
