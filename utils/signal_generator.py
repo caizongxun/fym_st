@@ -4,9 +4,7 @@ from typing import Dict, List
 
 class SignalGenerator:
     """
-    Pure Reversal Trading Strategy
-    - Relaxed trend detection to capture more reversal opportunities
-    - Every reversal signal triggers entry/flip
+    Pure Reversal Trading Strategy - RELAXED for more signals
     """
     
     def __init__(self):
@@ -14,29 +12,19 @@ class SignalGenerator:
     
     def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Generate reversal signals with RELAXED trend requirements
+        Generate reversal signals with VERY RELAXED conditions
         
-        Strategy:
-        - Downtrend OR Neutral + Bullish reversal -> LONG
-        - Uptrend OR Neutral + Bearish reversal -> SHORT
-        
-        This allows catching reversals even in sideways markets
+        Strategy (更寬鬆):
+        - 任何反轉信號都接受 (忽略趨勢限制)
+        - Bullish reversal -> LONG
+        - Bearish reversal -> SHORT
         """
         df = df.copy()
         df['signal'] = 0
         
-        # RELAXED LOGIC - Include neutral trend
-        # Long: (Downtrend OR Neutral) + Bullish reversal
-        long_conditions = (
-            (df['trend_direction'] <= 0) &  # -1 or 0
-            (df['reversal_direction_pred'] == 1)
-        )
-        
-        # Short: (Uptrend OR Neutral) + Bearish reversal
-        short_conditions = (
-            (df['trend_direction'] >= 0) &  # 1 or 0
-            (df['reversal_direction_pred'] == -1)
-        )
+        # VERY RELAXED: Accept all reversal signals regardless of trend
+        long_conditions = (df['reversal_direction_pred'] == 1)
+        short_conditions = (df['reversal_direction_pred'] == -1)
         
         df.loc[long_conditions, 'signal'] = 1
         df.loc[short_conditions, 'signal'] = -1

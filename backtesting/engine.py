@@ -195,6 +195,7 @@ class BacktestEngine:
             'position_value': pos['position_value'],
             '手續費': pos['entry_fee'] + exit_fee,
             'pnl': pnl,
+            '損益(USDT)': pnl,  # NEW: Display PnL in USDT
             'pnl_pct': (pnl / pos['margin']) * 100,
             '損益率': f"{(pnl / pos['margin']) * 100:.2f}%",
             'exit_reason': exit_reason,

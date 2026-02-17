@@ -109,11 +109,9 @@ with tabs[1]:
     st.info("""
     策略邏輯:
     - 15分鐘趨勢偵測 (短線交易更快反應)
-    - 空頭 + 多頭反轉 → 做多
-    - 多頭 + 空頭反轉 → 做空
+    - 空頭/盤整 + 多頭反轉 → 做多
+    - 多頭/盤整 + 空頭反轉 → 做空
     - ATR止盈止損 (優先級: 止盈/止損 > 反轉信號)
-    - 獲利時: 觸發止盈 或 反轉信號 → 反手
-    - 虧損時: 觸發止損 → 反手
     """)
     
     col1, col2 = st.columns(2)
@@ -138,7 +136,7 @@ with tabs[1]:
     with col6:
         sl_atr_mult = st.number_input("止損 ATR 倍數", min_value=0.5, max_value=3.0, value=1.5, step=0.5)
     
-    # NEW: Position sizing controls
+    # Position sizing controls
     st.subheader("倉位管理設定")
     col7, col8 = st.columns(2)
     
@@ -251,10 +249,10 @@ with tabs[1]:
                 st.subheader("交易明細")
                 trades_df = engine.get_trades_dataframe()
                 
-                # Display detailed Chinese columns
+                # Display detailed Chinese columns with PnL in USDT
                 display_cols = [
                     'symbol', '方向', '進場時間', '離場時間',
-                    '進場價格', '離場價格', 'position_value', '手續費', '損益率',
+                    '進場價格', '離場價格', 'position_value', '損益(USDT)', '損益率',
                     '離場原因', '持倉時長(分)', '進場趨勢', '離場趨勢'
                 ]
                 
