@@ -7,14 +7,15 @@ from plotly.subplots import make_subplots
 
 class BacktestEngine:
     """
-    Multi-symbol backtesting engine with portfolio allocation
+    Flip-flop reversal backtesting engine
+    Automatically reverses position on each signal
     """
     
     def __init__(self, 
                  initial_capital: float = 10.0,
                  leverage: float = 10.0,
-                 tp_atr_mult: float = 3.0,
-                 sl_atr_mult: float = 2.0,
+                 tp_atr_mult: float = None,  # Disabled for reversal strategy
+                 sl_atr_mult: float = None,  # Disabled for reversal strategy
                  position_size_pct: float = 0.95,
                  max_positions: int = 1,
                  maker_fee: float = 0.0002,
@@ -22,8 +23,8 @@ class BacktestEngine:
         
         self.initial_capital = initial_capital
         self.leverage = leverage
-        self.tp_atr_mult = tp_atr_mult
-        self.sl_atr_mult = sl_atr_mult
+        self.tp_atr_mult = tp_atr_mult  # Not used in flip-flop
+        self.sl_atr_mult = sl_atr_mult  # Not used in flip-flop
         self.position_size_pct = position_size_pct
         self.max_positions = max_positions
         self.maker_fee = maker_fee
@@ -33,39 +34,35 @@ class BacktestEngine:
         self.peak_equity = initial_capital
         self.trades = []
         self.equity_curve = []
-        self.open_positions = {}
+        self.open_positions = {}  # symbol -> position dict
         
     def calculate_position_size(self) -> float:
         """
         Calculate position size based on available capital
-        Returns position size in quote currency (USDT)
         """
         available_capital = self.equity - sum([p['margin'] for p in self.open_positions.values()])
         position_value = available_capital * self.position_size_pct
         return position_value * self.leverage
     
-    def open_position(self, symbol: str, direction: str, entry_price: float, 
-                     atr: float, timestamp: datetime, signal_data: dict) -> bool:
+    def open_or_flip_position(self, symbol: str, direction: str, entry_price: float, 
+                             timestamp: datetime, signal_data: dict) -> bool:
         """
-        Open a new position
-        
-        Args:
-            symbol: Trading pair
-            direction: 'LONG' or 'SHORT'
-            entry_price: Entry price
-            atr: Current ATR value
-            timestamp: Entry time
-            signal_data: Additional signal information
+        Open a new position or flip existing position
         
         Returns:
-            True if position opened successfully
+            True if action taken
         """
-        if len(self.open_positions) >= self.max_positions:
-            return False
-        
+        # If position exists, close it first (will be opposite direction)
         if symbol in self.open_positions:
-            return False
+            old_pos = self.open_positions[symbol]
+            # Only flip if direction is different
+            if old_pos['direction'] != direction:
+                self.close_position(symbol, entry_price, timestamp, 'FLIP')
+            else:
+                # Same direction signal, ignore
+                return False
         
+        # Open new position
         position_value = self.calculate_position_size()
         if position_value <= 0:
             return False
@@ -73,13 +70,6 @@ class BacktestEngine:
         quantity = position_value / entry_price
         margin = position_value / self.leverage
         entry_fee = position_value * self.taker_fee
-        
-        if direction == 'LONG':
-            tp_price = entry_price + (atr * self.tp_atr_mult)
-            sl_price = entry_price - (atr * self.sl_atr_mult)
-        else:
-            tp_price = entry_price - (atr * self.tp_atr_mult)
-            sl_price = entry_price + (atr * self.sl_atr_mult)
         
         self.open_positions[symbol] = {
             'direction': direction,
@@ -89,9 +79,6 @@ class BacktestEngine:
             'margin': margin,
             'entry_fee': entry_fee,
             'entry_time': timestamp,
-            'tp_price': tp_price,
-            'sl_price': sl_price,
-            'atr': atr,
             'signal_data': signal_data
         }
         
@@ -103,9 +90,6 @@ class BacktestEngine:
                       exit_reason: str) -> Optional[Dict]:
         """
         Close an existing position
-        
-        Returns:
-            Trade record dictionary
         """
         if symbol not in self.open_positions:
             return None
@@ -145,50 +129,18 @@ class BacktestEngine:
         
         return trade_record
     
-    def check_exits(self, symbol: str, current_high: float, current_low: float, 
-                   current_close: float, timestamp: datetime) -> bool:
-        """
-        Check if any position should be closed (TP/SL hit)
-        
-        Returns:
-            True if position was closed
-        """
-        if symbol not in self.open_positions:
-            return False
-        
-        pos = self.open_positions[symbol]
-        
-        if pos['direction'] == 'LONG':
-            if current_high >= pos['tp_price']:
-                self.close_position(symbol, pos['tp_price'], timestamp, 'TP')
-                return True
-            elif current_low <= pos['sl_price']:
-                self.close_position(symbol, pos['sl_price'], timestamp, 'SL')
-                return True
-        else:
-            if current_low <= pos['tp_price']:
-                self.close_position(symbol, pos['tp_price'], timestamp, 'TP')
-                return True
-            elif current_high >= pos['sl_price']:
-                self.close_position(symbol, pos['sl_price'], timestamp, 'SL')
-                return True
-        
-        return False
-    
     def run_backtest(self, signals_dict: Dict[str, pd.DataFrame]) -> Dict:
         """
-        Run backtest on multiple symbols
+        Run flip-flop backtest on multiple symbols
         
         Args:
             signals_dict: Dictionary mapping symbol to DataFrame with signals
-                         Required columns: open_time, close, high, low, 15m_atr,
-                                         signal (1=long, -1=short, 0=none),
-                                         reversal_prob_pred
+                         Required columns: open_time, close, signal (1=long, -1=short, 0=hold)
         
         Returns:
-            Dictionary with backtest results and metrics
+            Dictionary with backtest results
         """
-        # Combine all dataframes with symbol identifier
+        # Combine all dataframes
         all_data = []
         for symbol, df in signals_dict.items():
             df_copy = df.copy()
@@ -202,22 +154,16 @@ class BacktestEngine:
             timestamp = row['open_time']
             symbol = row['symbol']
             
-            # Check exits for existing positions
-            if symbol in self.open_positions:
-                self.check_exits(symbol, row['high'], row['low'], row['close'], timestamp)
-            
-            # Check for new entry signals
+            # Check for new signals
             if 'signal' in row and row['signal'] != 0:
                 direction = 'LONG' if row['signal'] == 1 else 'SHORT'
-                atr = row.get('15m_atr', row['close'] * 0.02)
                 
                 signal_data = {
                     'reversal_prob': row.get('reversal_prob_pred', 0),
-                    'trend_strength': row.get('trend_strength_pred', 0),
-                    'volatility_regime': row.get('volatility_regime_name', 'Unknown')
+                    'trend_direction': row.get('trend_direction', 0)
                 }
                 
-                self.open_position(symbol, direction, row['close'], atr, timestamp, signal_data)
+                self.open_or_flip_position(symbol, direction, row['close'], timestamp, signal_data)
             
             # Record equity at each step
             unrealized_pnl = 0
@@ -278,7 +224,7 @@ class BacktestEngine:
         max_drawdown = abs(drawdown.min())
         
         returns = equity_series.pct_change().dropna()
-        sharpe_ratio = (returns.mean() / returns.std() * np.sqrt(252)) if returns.std() > 0 else 0
+        sharpe_ratio = (returns.mean() / returns.std() * np.sqrt(252 * 96)) if returns.std() > 0 else 0  # 96 = 15m candles per day
         
         metrics = {
             'total_trades': len(self.trades),
@@ -316,7 +262,7 @@ class BacktestEngine:
                            shared_xaxes=True,
                            vertical_spacing=0.05,
                            row_heights=[0.7, 0.3],
-                           subplot_titles=('Equity Curve', 'Drawdown %'))
+                           subplot_titles=('Equity Curve (Flip-Flop Reversal Strategy)', 'Drawdown %'))
         
         fig.add_trace(
             go.Scatter(x=equity_df['timestamp'], y=equity_df['equity'],
@@ -346,7 +292,7 @@ class BacktestEngine:
     
     def get_trades_dataframe(self) -> pd.DataFrame:
         """
-        Return trades as a DataFrame
+        Return trades as DataFrame
         """
         if not self.trades:
             return pd.DataFrame()
