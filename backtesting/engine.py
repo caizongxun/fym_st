@@ -42,7 +42,7 @@ class BacktestEngine:
         self.trades = []
         self.equity_curve = []
         self.open_positions = {}
-        self.pending_signals = {}  # NEW: Store signals for next candle entry
+        self.pending_signals = {}
         
     def calculate_position_size(self) -> float:
         if self.position_mode == 'fixed':
@@ -73,7 +73,9 @@ class BacktestEngine:
         
         position_value = self.calculate_position_size()
         required_margin = position_value / self.leverage
-        if required_margin > self.equity * 0.95:
+        
+        # FIX: 改為 > equity (不是 > equity * 0.95)
+        if required_margin > self.equity:
             if self.debug:
                 print(f"[SKIP] Insufficient margin: required={required_margin:.2f}, equity={self.equity:.2f}")
             return False
@@ -115,27 +117,19 @@ class BacktestEngine:
         return True
     
     def check_tp_sl_intrabar(self, symbol: str, high: float, low: float, close: float, timestamp: datetime) -> Optional[Tuple[str, float]]:
-        """
-        Check TP/SL using high/low (more realistic)
-        Returns: (exit_reason, exit_price) or None
-        """
         if symbol not in self.open_positions:
             return None
         
         pos = self.open_positions[symbol]
         
         if pos['direction'] == 'LONG':
-            # Check SL first (conservative)
             if low <= pos['sl_price']:
                 return ('SL', pos['sl_price'])
-            # Then check TP
             elif high >= pos['tp_price']:
                 return ('TP', pos['tp_price'])
-        else:  # SHORT
-            # Check SL first
+        else:
             if high >= pos['sl_price']:
                 return ('SL', pos['sl_price'])
-            # Then check TP
             elif low <= pos['tp_price']:
                 return ('TP', pos['tp_price'])
         
@@ -235,7 +229,6 @@ class BacktestEngine:
             print(f"Signals detected: {(combined_df['signal'] != 0).sum()}")
             print(f"First signal at index: {combined_df[combined_df['signal'] != 0].index[0] if (combined_df['signal'] != 0).sum() > 0 else 'None'}")
         
-        # Add next candle's open price
         for symbol in signals_dict.keys():
             symbol_mask = combined_df['symbol'] == symbol
             combined_df.loc[symbol_mask, 'next_open'] = combined_df.loc[symbol_mask, 'open'].shift(-1)
@@ -258,7 +251,6 @@ class BacktestEngine:
             reversal_prob = row.get('reversal_prob_pred', 0)
             trend_filter = row.get('trend_filter', 'unknown')
             
-            # STEP 1: Check if we have pending signal from previous candle
             if symbol in self.pending_signals:
                 pending = self.pending_signals[symbol]
                 direction = pending['direction']
@@ -269,7 +261,6 @@ class BacktestEngine:
                 signal_reversal = pending['reversal_prob']
                 signal_filter = pending['trend_filter']
                 
-                # Enter at current candle's OPEN price
                 result = self.open_or_flip_position(symbol, direction, current_open, timestamp, 
                                           signal_data, signal_atr, signal_trend, 
                                           signal_strength, signal_reversal, signal_filter)
@@ -278,7 +269,6 @@ class BacktestEngine:
                 
                 del self.pending_signals[symbol]
             
-            # STEP 2: Check TP/SL for existing positions using high/low
             if symbol in self.open_positions:
                 tp_sl_result = self.check_tp_sl_intrabar(symbol, current_high, current_low, current_close, timestamp)
                 
@@ -286,12 +276,10 @@ class BacktestEngine:
                     exit_reason, exit_price = tp_sl_result
                     self.close_position(symbol, exit_price, timestamp, exit_reason, 
                                        trend_direction, trend_strength, reversal_prob, trend_filter)
-                    # If stopped out, don't process new signal this candle
                     if symbol in self.pending_signals:
                         del self.pending_signals[symbol]
                     continue
             
-            # STEP 3: Detect new signal at candle close
             if 'signal' in row and row['signal'] != 0 and not pd.isna(next_open):
                 signal_count += 1
                 direction = 'LONG' if row['signal'] == 1 else 'SHORT'
@@ -303,7 +291,6 @@ class BacktestEngine:
                 if symbol in self.open_positions:
                     pos = self.open_positions[symbol]
                     if pos['direction'] != direction:
-                        # Close at current close, prepare to reverse at next open
                         self.close_position(symbol, current_close, timestamp, 'REVERSAL_FLIP', 
                                            trend_direction, trend_strength, reversal_prob, trend_filter)
                         self.pending_signals[symbol] = {
@@ -318,7 +305,6 @@ class BacktestEngine:
                         if self.debug:
                             print(f"  -> Pending reversal to {direction}")
                 else:
-                    # No position, prepare new entry at next open
                     self.pending_signals[symbol] = {
                         'direction': direction,
                         'atr': atr,
@@ -331,7 +317,6 @@ class BacktestEngine:
                     if self.debug and signal_count <= 3:
                         print(f"  -> Pending entry {direction}")
             
-            # Record equity
             self.equity_curve.append({
                 'timestamp': timestamp,
                 'equity': self.equity,
@@ -344,7 +329,6 @@ class BacktestEngine:
             print(f"Total entries executed: {entry_count}")
             print(f"Total trades completed: {len(self.trades)}")
         
-        # Close remaining positions
         for symbol in list(self.open_positions.keys()):
             last_row = combined_df[combined_df['symbol'] == symbol].iloc[-1]
             last_price = last_row['close']
