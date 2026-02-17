@@ -129,23 +129,23 @@ class HuggingFaceKlineLoader:
         獲取分類後的幣種組
         """
         groups = {
-            '💰 主流幣': [
+            '主流幣': [
                 'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT'
             ],
-            '🌐 Layer1 公鏈': [
+            'Layer1公鏈': [
                 'AVAXUSDT', 'DOTUSDT', 'ATOMUSDT', 'NEARUSDT', 'ALGOUSDT'
             ],
-            '⚡ Layer2 擴展': [
+            'Layer2擴展': [
                 'ARBUSDT', 'OPUSDT', 'MATICUSDT', 'IMXUSDT'
             ],
-            '🤝 DeFi 生態': [
+            'DeFi生態': [
                 'UNIUSDT', 'LINKUSDT', 'AAVEUSDT', 'CRVUSDT', 'COMPUSDT', 
                 'MKRUSDT', 'SNXUSDT', 'BALUSDT', 'GRTUSDT'
             ],
-            '🎮 NFT/元宇宙': [
+            'NFT/元宇宙': [
                 'SANDUSDT', 'MANAUSDT', 'ENJUSDT', 'GALAUSDT', 'ENSUSDT', 'SPELLUSDT'
             ],
-            '🔧 傳統幣/其他': [
+            '傳統幣/其他': [
                 'LTCUSDT', 'BCHUSDT', 'ETCUSDT', 'FILUSDT', 'BATUSDT', 'KAVAUSDT', 'ZRXUSDT'
             ]
         }
@@ -156,30 +156,17 @@ class HuggingFaceKlineLoader:
         """
         獲取前n個市值最大的幣種(按市值排序)
         """
-        # 按市值排序的Top幣種
         top_symbols = [
-            'BTCUSDT',   # #1 比特幣
-            'ETHUSDT',   # #2 以太坠
-            'BNBUSDT',   # #4 幣安幣
-            'SOLUSDT',   # #5 Solana
-            'XRPUSDT',   # #6 瑞波幣
-            'ADAUSDT',   # #9 艾達幣
-            'AVAXUSDT',  # #10 雪崩
-            'DOGEUSDT',  # #11 狗狗幣
-            'DOTUSDT',   # #12 波卡
-            'MATICUSDT', # #13 Polygon
-            'LINKUSDT',  # #15 Chainlink
-            'UNIUSDT',   # #18 Uniswap
-            'ATOMUSDT',  # #20 Cosmos
-            'LTCUSDT',   # #21 萊特幣
-            'NEARUSDT',  # #22 Near
+            'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT',
+            'ADAUSDT', 'AVAXUSDT', 'DOGEUSDT', 'DOTUSDT', 'MATICUSDT',
+            'LINKUSDT', 'UNIUSDT', 'ATOMUSDT', 'LTCUSDT', 'NEARUSDT'
         ]
         return top_symbols[:min(n, len(top_symbols))]
     
     @classmethod
     def get_all_symbols_by_category(cls):
         """
-        獲取所有38個幣種的分類列表(帶emoji)
+        獲取所有38個幣種的分類列表
         """
         groups = cls.get_symbol_groups()
         result = []
@@ -190,27 +177,26 @@ class HuggingFaceKlineLoader:
 
 
 if __name__ == '__main__':
-    # 測試
     loader = HuggingFaceKlineLoader()
     
     print("=" * 70)
     print("HuggingFace 加密貨幣資料集")
     print("=" * 70)
     
-    print(f"\n📊 支持的交易對: {len(loader.SUPPORTED_SYMBOLS)} 個")
-    print(f"⏱️  時間週期: {', '.join(loader.TIMEFRAMES)}")
+    print(f"\n支持的交易對: {len(loader.SUPPORTED_SYMBOLS)} 個")
+    print(f"時間週期: {', '.join(loader.TIMEFRAMES)}")
     
     print("\n" + loader.get_all_symbols_by_category())
     
     print("\n" + "=" * 70)
-    print("🔥 熱門Top 10")
+    print("熱門Top 10")
     print("=" * 70)
     top10 = loader.get_top_symbols(10)
     for i, symbol in enumerate(top10, 1):
         print(f"  {i:2d}. {symbol}")
     
     print("\n" + "=" * 70)
-    print("📋 分類統計")
+    print("分類統計")
     print("=" * 70)
     for category, symbols in loader.get_symbol_groups().items():
         print(f"{category}: {len(symbols)} 個")
