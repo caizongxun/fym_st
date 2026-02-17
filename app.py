@@ -29,6 +29,18 @@ st.sidebar.info("""
 - 均值回歸特性強的幣種
 """)
 
+# 共用函數: 計算ATR
+def calculate_atr(df_signals):
+    """Calculate ATR using True Range method"""
+    high_low = df_signals['high'] - df_signals['low']
+    high_close = abs(df_signals['high'] - df_signals['close'].shift(1))
+    low_close = abs(df_signals['low'] - df_signals['close'].shift(1))
+    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    atr = true_range.rolling(window=14).mean()
+    # FIX: 使用bfill()代替fillna(method='bfill')
+    atr = atr.bfill().fillna(df_signals['close'] * 0.02)
+    return atr
+
 tabs = st.tabs(["BB模型訓練", "單次回測", "參數優化", "Walk-Forward測試"])
 
 # ============ TAB 1: 模型訓練 ============
@@ -99,13 +111,8 @@ with tabs[1]:
                 df_signals['open_time'] = df_signals.index
             df_signals['open_time'] = pd.to_datetime(df_signals['open_time'])
             
-            # 計算ATR
-            high_low = df_signals['high'] - df_signals['low']
-            high_close = abs(df_signals['high'] - df_signals['close'].shift(1))
-            low_close = abs(df_signals['low'] - df_signals['close'].shift(1))
-            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-            df_signals['15m_atr'] = true_range.rolling(window=14).mean()
-            df_signals['15m_atr'] = df_signals['15m_atr'].fillna(method='bfill').fillna(df_signals['close'] * 0.02)
+            # 使用共用函數計算ATR
+            df_signals['15m_atr'] = calculate_atr(df_signals)
             
             engine = BacktestEngine(
                 initial_capital=initial_capital,
@@ -172,14 +179,11 @@ with tabs[2]:
             train_end = end_date - timedelta(days=opt_test_days)
             train_start = train_end - timedelta(days=opt_train_days)
             
-            # 訓練期數據
             df_train = loader.load_historical_data(opt_symbol, '15m', train_start, train_end)
-            # 驗證期數據
             df_test = loader.load_historical_data(opt_symbol, '15m', train_end, end_date)
             
             results = []
             
-            # 參數網格
             bb_thresholds = [0.50, 0.55, 0.60, 0.65, 0.70]
             adx_thresholds = [25, 30, 35]
             tp_mults = [1.5, 2.0, 2.5]
@@ -198,24 +202,18 @@ with tabs[2]:
                             status_text.text(f"測試組合 {idx}/{total_combinations}...")
                             progress_bar.progress(idx / total_combinations)
                             
-                            # 訓練期回測
                             signal_gen = BBBounceSignalGenerator(
                                 bb_model_dir='models/saved',
                                 bb_bounce_threshold=bb_th,
                                 adx_strong_trend_threshold=adx_th
                             )
                             
+                            # 訓練期
                             df_train_signals = signal_gen.generate_signals(df_train.copy())
                             if 'open_time' not in df_train_signals.columns:
                                 df_train_signals['open_time'] = df_train_signals.index
                             df_train_signals['open_time'] = pd.to_datetime(df_train_signals['open_time'])
-                            
-                            high_low = df_train_signals['high'] - df_train_signals['low']
-                            high_close = abs(df_train_signals['high'] - df_train_signals['close'].shift(1))
-                            low_close = abs(df_train_signals['low'] - df_train_signals['close'].shift(1))
-                            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-                            df_train_signals['15m_atr'] = true_range.rolling(window=14).mean()
-                            df_train_signals['15m_atr'] = df_train_signals['15m_atr'].fillna(method='bfill').fillna(df_train_signals['close'] * 0.02)
+                            df_train_signals['15m_atr'] = calculate_atr(df_train_signals)
                             
                             engine_train = BacktestEngine(
                                 initial_capital=100.0,
@@ -228,18 +226,12 @@ with tabs[2]:
                             )
                             train_metrics = engine_train.run_backtest({opt_symbol: df_train_signals})
                             
-                            # 驗證期回測
+                            # 驗證期
                             df_test_signals = signal_gen.generate_signals(df_test.copy())
                             if 'open_time' not in df_test_signals.columns:
                                 df_test_signals['open_time'] = df_test_signals.index
                             df_test_signals['open_time'] = pd.to_datetime(df_test_signals['open_time'])
-                            
-                            high_low = df_test_signals['high'] - df_test_signals['low']
-                            high_close = abs(df_test_signals['high'] - df_test_signals['close'].shift(1))
-                            low_close = abs(df_test_signals['low'] - df_test_signals['close'].shift(1))
-                            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-                            df_test_signals['15m_atr'] = true_range.rolling(window=14).mean()
-                            df_test_signals['15m_atr'] = df_test_signals['15m_atr'].fillna(method='bfill').fillna(df_test_signals['close'] * 0.02)
+                            df_test_signals['15m_atr'] = calculate_atr(df_test_signals)
                             
                             engine_test = BacktestEngine(
                                 initial_capital=100.0,
@@ -272,20 +264,17 @@ with tabs[2]:
             
             results_df = pd.DataFrame(results)
             
-            # 過濾: 訓練和驗證都要有足夠交易
             results_df = results_df[
                 (results_df['訓練_交易數'] >= 10) & 
                 (results_df['驗證_交易數'] >= 5)
             ]
             
-            # 排序: 驗證期獲利因子
             results_df = results_df.sort_values('驗證_獲利因子', ascending=False)
             
             st.success("優化完成!")
             st.subheader("Top 10 參數組合 (按驗證期獲利因子排序)")
             st.dataframe(results_df.head(10).round(2))
             
-            # 建議
             if len(results_df) > 0:
                 best = results_df.iloc[0]
                 st.info(f"""
@@ -331,8 +320,7 @@ with tabs[3]:
             
             df_full = loader.load_historical_data(wf_symbol, '15m', start_date, end_date)
             
-            # 分割窗口
-            window_size = wf_window_days * 96  # 15分鐘K線數
+            window_size = wf_window_days * 96
             n_windows = len(df_full) // window_size
             
             st.write(f"總共 {n_windows} 個窗口")
@@ -348,7 +336,6 @@ with tabs[3]:
                 df_train_window = df_full.iloc[train_start_idx:train_end_idx]
                 df_test_window = df_full.iloc[train_end_idx:test_end_idx]
                 
-                # 使用固定參數(可擴展為動態優化)
                 signal_gen = BBBounceSignalGenerator(
                     bb_model_dir='models/saved',
                     bb_bounce_threshold=0.60,
@@ -359,13 +346,7 @@ with tabs[3]:
                 if 'open_time' not in df_test_signals.columns:
                     df_test_signals['open_time'] = df_test_signals.index
                 df_test_signals['open_time'] = pd.to_datetime(df_test_signals['open_time'])
-                
-                high_low = df_test_signals['high'] - df_test_signals['low']
-                high_close = abs(df_test_signals['high'] - df_test_signals['close'].shift(1))
-                low_close = abs(df_test_signals['low'] - df_test_signals['close'].shift(1))
-                true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-                df_test_signals['15m_atr'] = true_range.rolling(window=14).mean()
-                df_test_signals['15m_atr'] = df_test_signals['15m_atr'].fillna(method='bfill').fillna(df_test_signals['close'] * 0.02)
+                df_test_signals['15m_atr'] = calculate_atr(df_test_signals)
                 
                 engine = BacktestEngine(
                     initial_capital=100.0,
