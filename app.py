@@ -201,8 +201,16 @@ if strategy == 'BB反彈策略 (v6)':
                     st.stop()
             
             with st.spinner("執行回測..."):
-                # 計算ATR用於止盈止損
-                df_signals['15m_atr'] = df_signals['close'].rolling(window=14).std() * 1.4
+                # 計算ATR (使用True Range方法)
+                high_low = df_signals['high'] - df_signals['low']
+                high_close = abs(df_signals['high'] - df_signals['close'].shift(1))
+                low_close = abs(df_signals['low'] - df_signals['close'].shift(1))
+                
+                true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+                df_signals['15m_atr'] = true_range.rolling(window=14).mean()
+                
+                # 填ATR空值
+                df_signals['15m_atr'] = df_signals['15m_atr'].fillna(method='bfill').fillna(df_signals['close'] * 0.02)
                 
                 engine = BacktestEngine(
                     initial_capital=initial_capital,
@@ -239,7 +247,10 @@ if strategy == 'BB反彈策略 (v6)':
                     st.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
                     st.metric("最大回撤", f"{metrics['max_drawdown_pct']:.2f}%")
                 
-                st.metric("平均持倉時長", f"{metrics['avg_duration_min']:.0f}分鐘")
+                # 有fallback
+                avg_duration = metrics.get('avg_duration_min', 0)
+                if avg_duration > 0:
+                    st.metric("平均持倉時長", f"{avg_duration:.0f}分鐘")
                 
                 # 顯示權益曲線
                 st.plotly_chart(engine.plot_equity_curve(), use_container_width=True)
@@ -476,7 +487,7 @@ else:  # 原有反轉策略
                 with col2:
                     st.metric("概率RMSE", f"{metrics['probability_rmse']:.2f}")
                     if not oos_df_rev.empty:
-                        st.metric("樣本外概率RMSE", f"{oos_metrics['oos_probability_rmse']:.2f}")
+                        st.metric("樣本外概率RMSE", f"{oos_metrics['oss_probability_rmse']:.2f}")
                 
                 with col3:
                     st.metric("支撐MAE", f"{metrics['support_mae']:.2f}")
