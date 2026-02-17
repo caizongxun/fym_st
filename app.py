@@ -130,7 +130,7 @@ if strategy == 'BB反彈策略 (v6)':
         - 趨勢不是強多頭 (ADX<30)
         - RSI > 60 (超買)
         
-        做多條件 (全部滿足):
+        做多條件 (全部溻足):
         - 觸碰BB下軌
         - BB模型預測反彈機率 > 60%
         - 趨勢不是強空頭 (ADX<30)
@@ -149,10 +149,11 @@ if strategy == 'BB反彈策略 (v6)':
         
         col3, col4 = st.columns(2)
         with col3:
-            tp_pct = st.number_input("止盈 (%)", min_value=0.1, max_value=5.0, value=0.6, step=0.1, key="bb_tp")
+            # 改為ATR倍數
+            tp_atr_mult = st.number_input("止盈 ATR倍數", min_value=0.5, max_value=5.0, value=2.0, step=0.5, key="bb_tp")
         
         with col4:
-            sl_pct = st.number_input("止損 (%)", min_value=0.1, max_value=5.0, value=0.6, step=0.1, key="bb_sl")
+            sl_atr_mult = st.number_input("止損 ATR倍數", min_value=0.5, max_value=3.0, value=1.5, step=0.5, key="bb_sl")
         
         col5, col6 = st.columns(2)
         with col5:
@@ -179,7 +180,6 @@ if strategy == 'BB反彈策略 (v6)':
                     )
                     
                     df_signals = signal_gen.generate_signals(df)
-                    signal_gen.print_signal_summary(df_signals)
                     
                     total_signals = (df_signals['signal'] != 0).sum()
                     long_signals = (df_signals['signal'] == 1).sum()
@@ -202,22 +202,21 @@ if strategy == 'BB反彈策略 (v6)':
                     st.stop()
             
             with st.spinner("執行回測..."):
+                # 使用正確的BacktestEngine參數
                 engine = BacktestEngine(
                     initial_capital=initial_capital,
-                    fee_rate=0.001,
-                    slippage=0.0005
-                )
-                
-                results = engine.run(
-                    df_signals,
+                    leverage=10.0,  # 固定10倍槓桿
+                    tp_atr_mult=tp_atr_mult,
+                    sl_atr_mult=sl_atr_mult,
                     position_size_pct=position_size_pct,
-                    tp_pct=tp_pct,
-                    sl_pct=sl_pct,
-                    use_trailing_stop=False
+                    position_mode='fixed',
+                    maker_fee=0.0002,
+                    taker_fee=0.0006
                 )
                 
-                metrics = results['metrics']
-                trades = results['trades']
+                # 使用run_backtest方法
+                signals_dict = {bt_symbol: df_signals}
+                metrics = engine.run_backtest(signals_dict)
                 
                 st.subheader("績效指標")
                 
@@ -229,7 +228,7 @@ if strategy == 'BB反彈策略 (v6)':
                 
                 with col2:
                     st.metric("最終權益", f"${metrics['final_equity']:.2f}")
-                    st.metric("總回報", f"{metrics['total_return']:.2f}%")
+                    st.metric("總回報", f"{metrics['total_return_pct']:.2f}%")
                 
                 with col3:
                     st.metric("獲利因子", f"{metrics['profit_factor']:.2f}")
@@ -238,14 +237,19 @@ if strategy == 'BB反彈策略 (v6)':
                 
                 with col4:
                     st.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
-                    st.metric("最大回撤", f"{metrics['max_drawdown']:.2f}%")
+                    st.metric("最大回撤", f"{metrics['max_drawdown_pct']:.2f}%")
                 
-                st.metric("平均持倉時長", f"{metrics['avg_duration']:.0f}分鐘")
+                st.metric("平均持倉時長", f"{metrics['avg_duration_min']:.0f}分鐘")
+                
+                # 顯示權益曲線
+                st.plotly_chart(engine.plot_equity_curve(), use_container_width=True)
                 
                 # 離場原因分析
-                if len(trades) > 0:
+                if metrics['total_trades'] > 0:
+                    trades_df = engine.get_trades_dataframe()
+                    
                     st.subheader("離場原因分布")
-                    exit_reasons = trades['exit_reason'].value_counts()
+                    exit_reasons = trades_df['離場原因'].value_counts()
                     
                     col1, col2 = st.columns(2)
                     with col1:
@@ -254,20 +258,21 @@ if strategy == 'BB反彈策略 (v6)':
                     with col2:
                         st.write("各原因績效:")
                         for reason in exit_reasons.index:
-                            subset = trades[trades['exit_reason'] == reason]
+                            subset = trades_df[trades_df['離場原因'] == reason]
                             win_rate = (subset['pnl'] > 0).sum() / len(subset) * 100
                             avg_pnl = subset['pnl'].mean()
                             st.write(f"{reason}: 勝率{win_rate:.1f}% | 平均{avg_pnl:.2f}U")
                     
                     st.subheader("交易明細")
-                    st.dataframe(trades[[
-                        'entry_time', 'exit_time', 'direction', 
-                        'entry_price', 'exit_price', 'pnl', 'pnl_pct',
-                        'exit_reason', 'duration_minutes'
-                    ]].round(4))
+                    display_cols = [
+                        '進場時間', '離場時間', '方向', 
+                        '進場價格', '離場價格', '損益(USDT)', '損益率',
+                        '離場原因', '持倉時長(分)'
+                    ]
+                    st.dataframe(trades_df[display_cols])
                     
                     # 下載按鈕
-                    csv = trades.to_csv(index=False, encoding='utf-8-sig')
+                    csv = trades_df.to_csv(index=False, encoding='utf-8-sig')
                     st.download_button(
                         label="下載交易記錄",
                         data=csv,
@@ -284,7 +289,7 @@ if strategy == 'BB反彈策略 (v6)':
                     建議:
                     - 提高bb_threshold至70%
                     - 增加ADX過濾強度(35)
-                    - 調整風險回報比為1:2
+                    - 調整風險回報比為1:2 (止盈ATR倍數>2.5)
                     - 只在ranging/weak_trend狀態交易
                     """)
                 elif metrics['profit_factor'] > 1.5:
