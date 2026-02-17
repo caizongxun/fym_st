@@ -5,6 +5,7 @@ from typing import Dict, List
 class SignalGenerator:
     """
     Generate trading signals by combining predictions from all three models
+    Updated for simplified 3-class trend system: Bull (1), Range (0), Bear (-1)
     """
     
     def __init__(self,
@@ -25,7 +26,7 @@ class SignalGenerator:
         Args:
             df: DataFrame with all predictions from three models
                 Required columns:
-                - trend_pred: 0-4 (Strong Bear to Strong Bull)
+                - trend_pred: -1 (Bear), 0 (Range), 1 (Bull)
                 - trend_strength_pred: 0-100
                 - volatility_regime_pred: 0-2 (Low, Medium, High)
                 - trend_init_prob_pred: 0-100
@@ -34,7 +35,6 @@ class SignalGenerator:
                 - support_pred: price level
                 - resistance_pred: price level
                 - close: current close price
-                - volume, volume_sma (if available)
         
         Returns:
             DataFrame with added 'signal' column (1=long, -1=short, 0=none)
@@ -42,10 +42,10 @@ class SignalGenerator:
         df = df.copy()
         df['signal'] = 0
         
-        # Long signal conditions
+        # Long signal conditions (SIMPLIFIED)
         long_conditions = (
-            # Trend filter: Must be in bullish trend
-            (df['trend_pred'] >= 3) &
+            # Trend filter: Must be in bullish trend (not ranging)
+            (df['trend_pred'] == 1) &
             (df['trend_strength_pred'] >= self.min_trend_strength) &
             
             # Volatility: Trend initiation or high volatility
@@ -55,14 +55,14 @@ class SignalGenerator:
             (df['reversal_direction_pred'] == 1) &
             (df['reversal_prob_pred'] >= self.min_reversal_prob) &
             
-            # Price near support
+            # Price near support (within 0.3%)
             (df['close'] <= df['support_pred'] * 1.003)
         )
         
-        # Short signal conditions
+        # Short signal conditions (SIMPLIFIED)
         short_conditions = (
-            # Trend filter: Must be in bearish trend
-            (df['trend_pred'] <= 1) &
+            # Trend filter: Must be in bearish trend (not ranging)
+            (df['trend_pred'] == -1) &
             (df['trend_strength_pred'] >= self.min_trend_strength) &
             
             # Volatility
@@ -72,7 +72,7 @@ class SignalGenerator:
             (df['reversal_direction_pred'] == -1) &
             (df['reversal_prob_pred'] >= self.min_reversal_prob) &
             
-            # Price near resistance
+            # Price near resistance (within 0.3%)
             (df['close'] >= df['resistance_pred'] * 0.997)
         )
         
