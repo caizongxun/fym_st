@@ -130,7 +130,7 @@ if strategy == 'BB反彈策略 (v6)':
         - 趨勢不是強多頭 (ADX<30)
         - RSI > 60 (超買)
         
-        做多條件 (全部溻足):
+        做多條件 (全部滿足):
         - 觸碰BB下軌
         - BB模型預測反彈機率 > 60%
         - 趨勢不是強空頭 (ADX<30)
@@ -149,7 +149,6 @@ if strategy == 'BB反彈策略 (v6)':
         
         col3, col4 = st.columns(2)
         with col3:
-            # 改為ATR倍數
             tp_atr_mult = st.number_input("止盈 ATR倍數", min_value=0.5, max_value=5.0, value=2.0, step=0.5, key="bb_tp")
         
         with col4:
@@ -202,10 +201,12 @@ if strategy == 'BB反彈策略 (v6)':
                     st.stop()
             
             with st.spinner("執行回測..."):
-                # 使用正確的BacktestEngine參數
+                # 計算ATR用於止盈止損
+                df_signals['15m_atr'] = df_signals['close'].rolling(window=14).std() * 1.4
+                
                 engine = BacktestEngine(
                     initial_capital=initial_capital,
-                    leverage=10.0,  # 固定10倍槓桿
+                    leverage=10.0,
                     tp_atr_mult=tp_atr_mult,
                     sl_atr_mult=sl_atr_mult,
                     position_size_pct=position_size_pct,
@@ -214,7 +215,6 @@ if strategy == 'BB反彈策略 (v6)':
                     taker_fee=0.0006
                 )
                 
-                # 使用run_backtest方法
                 signals_dict = {bt_symbol: df_signals}
                 metrics = engine.run_backtest(signals_dict)
                 
