@@ -138,6 +138,36 @@ with tabs[1]:
     with col6:
         sl_atr_mult = st.number_input("止損 ATR 倍數", min_value=0.5, max_value=3.0, value=1.5, step=0.5)
     
+    # NEW: Position sizing controls
+    st.subheader("倉位管理設定")
+    col7, col8 = st.columns(2)
+    
+    with col7:
+        position_mode = st.selectbox(
+            "倉位模式",
+            options=['fixed', 'compound'],
+            format_func=lambda x: '固定倉位 (使用初始資金比例)' if x == 'fixed' else '複利模式 (使用當前權益比例)',
+            index=0
+        )
+    
+    with col8:
+        position_size_pct = st.slider(
+            "倉位大小 (%)",
+            min_value=5,
+            max_value=50,
+            value=10,
+            step=5,
+            help="每筆交易使用的資金比例"
+        ) / 100
+    
+    # Display example
+    if position_mode == 'fixed':
+        example_text = f"範例: 初始資金 {initial_capital}U,每筆開單 {initial_capital * position_size_pct:.1f}U (固定)"
+    else:
+        example_text = f"範例: 初始 {initial_capital}U 開 {initial_capital * position_size_pct:.1f}U,賺到 120U 則開 {120 * position_size_pct:.1f}U"
+    
+    st.caption(example_text)
+    
     if st.button("執行回測"):
         with st.spinner("載入數據和模型..."):
             loader = BinanceDataLoader()
@@ -183,7 +213,9 @@ with tabs[1]:
                 initial_capital=initial_capital,
                 leverage=leverage,
                 tp_atr_mult=tp_atr_mult,
-                sl_atr_mult=sl_atr_mult
+                sl_atr_mult=sl_atr_mult,
+                position_size_pct=position_size_pct,
+                position_mode=position_mode
             )
             
             signals_dict = {bt_symbol: df_signals}
@@ -222,7 +254,7 @@ with tabs[1]:
                 # Display detailed Chinese columns
                 display_cols = [
                     'symbol', '方向', '進場時間', '離場時間',
-                    '進場價格', '離場價格', '手續費', '損益率',
+                    '進場價格', '離場價格', 'position_value', '手續費', '損益率',
                     '離場原因', '持倉時長(分)', '進場趨勢', '離場趨勢'
                 ]
                 

@@ -10,7 +10,8 @@ TAIPEI_TZ = timezone(timedelta(hours=8))
 
 class BacktestEngine:
     """
-    ATR-based flip-flop reversal backtesting with FIXED position sizing
+    ATR-based flip-flop reversal backtesting
+    Supports both FIXED and COMPOUND position sizing modes
     """
     
     def __init__(self, 
@@ -18,16 +19,23 @@ class BacktestEngine:
                  leverage: float = 10.0,
                  tp_atr_mult: float = 2.0,
                  sl_atr_mult: float = 1.5,
-                 position_size_pct: float = 0.1,  # FIXED: Use 10% of INITIAL capital
+                 position_size_pct: float = 0.1,
+                 position_mode: str = 'fixed',  # 'fixed' or 'compound'
                  max_positions: int = 1,
                  maker_fee: float = 0.0002,
                  taker_fee: float = 0.0006):
-        
+        """
+        Args:
+            position_mode: 
+                - 'fixed': 固定使用初始資金的比例 (例: 100U * 20% = 20U)
+                - 'compound': 複利模式,使用當前權益的比例 (例: 120U * 20% = 24U)
+        """
         self.initial_capital = initial_capital
         self.leverage = leverage
         self.tp_atr_mult = tp_atr_mult
         self.sl_atr_mult = sl_atr_mult
         self.position_size_pct = position_size_pct
+        self.position_mode = position_mode
         self.max_positions = max_positions
         self.maker_fee = maker_fee
         self.taker_fee = taker_fee
@@ -39,8 +47,19 @@ class BacktestEngine:
         self.open_positions = {}
         
     def calculate_position_size(self) -> float:
-        """FIXED position sizing: Always use percentage of INITIAL capital (no compound)"""
-        base_capital = self.initial_capital * self.position_size_pct
+        """
+        Calculate position size based on selected mode
+        
+        FIXED mode: Always use percentage of INITIAL capital (no compound)
+        COMPOUND mode: Use percentage of CURRENT equity (with compound)
+        """
+        if self.position_mode == 'fixed':
+            # 固定模式: 永遠使用初始資金的比例
+            base_capital = self.initial_capital * self.position_size_pct
+        else:
+            # 複利模式: 使用當前權益的比例
+            base_capital = self.equity * self.position_size_pct
+        
         position_value = base_capital * self.leverage
         return position_value
     
@@ -59,12 +78,12 @@ class BacktestEngine:
             else:
                 return False
         
-        # Fixed position sizing based on INITIAL capital
+        # Calculate position size based on mode
         position_value = self.calculate_position_size()
         
         # Safety check: don't open if required margin exceeds equity
         required_margin = position_value / self.leverage
-        if required_margin > self.equity:
+        if required_margin > self.equity * 0.95:  # Max 95% of equity as margin
             return False
         
         quantity = position_value / entry_price
@@ -316,11 +335,13 @@ class BacktestEngine:
         
         equity_df = pd.DataFrame(self.equity_curve)
         
+        mode_text = '固定倉位' if self.position_mode == 'fixed' else '複利模式'
+        
         fig = make_subplots(rows=2, cols=1, 
                            shared_xaxes=True,
                            vertical_spacing=0.05,
                            row_heights=[0.7, 0.3],
-                           subplot_titles=('權益曲線 (ATR + 反轉策略)', '回撤 %'))
+                           subplot_titles=(f'權益曲線 ({mode_text})', '回撤 %'))
         
         fig.add_trace(
             go.Scatter(x=equity_df['timestamp'], y=equity_df['equity'],
