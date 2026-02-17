@@ -11,7 +11,7 @@ from training.labeling import LabelGenerator
 
 class VolatilityModelTrainer:
     """
-    Train the 15m Volatility Prediction Model
+    Train the 15m Volatility Prediction Model (OPTIMIZED)
     Predicts: Volatility regime and trend initiation probability
     """
     
@@ -24,9 +24,6 @@ class VolatilityModelTrainer:
         self.feature_cols = None
     
     def prepare_data(self, df_15m: pd.DataFrame, oos_size: int = 1500) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """
-        Prepare training data with labels
-        """
         labeler = LabelGenerator()
         df_labeled = labeler.label_volatility(df_15m, horizon=5)
         
@@ -39,6 +36,7 @@ class VolatilityModelTrainer:
     def train(self, train_df: pd.DataFrame) -> Dict[str, float]:
         """
         Train volatility regime classifier and trend initiation regressor
+        OPTIMIZED: Reduced complexity to prevent overfitting
         """
         exclude_cols = ['volatility_regime', 'trend_initiation_prob', 'vol_change',
                        'open_time', 'close_time', 'open', 'high', 'low', 'close', 'volume', 'ignore']
@@ -55,20 +53,30 @@ class VolatilityModelTrainer:
             X, y_trend_init, test_size=0.2, random_state=42
         )
         
-        print("Training volatility regime classifier...")
+        print("Training volatility regime classifier (OPTIMIZED)...")
+        # Reduced complexity: fewer trees, shallower depth, higher regularization
         self.regime_classifier = GradientBoostingClassifier(
-            n_estimators=150,
-            learning_rate=0.05,
-            max_depth=4,
+            n_estimators=100,      # Reduced from 150
+            learning_rate=0.08,    # Increased for faster, more stable learning
+            max_depth=3,           # Reduced from 4
+            min_samples_split=30,  # Increased regularization
+            min_samples_leaf=15,   # Increased regularization
+            subsample=0.7,         # Use only 70% of samples per tree
+            max_features='sqrt',   # Use sqrt(n_features) for each split
             random_state=42
         )
         self.regime_classifier.fit(X_train, y_regime_train)
         
-        print("Training trend initiation regressor...")
+        print("Training trend initiation regressor (OPTIMIZED)...")
+        # Reduced complexity for regressor
         self.trend_init_regressor = GradientBoostingRegressor(
-            n_estimators=150,
-            learning_rate=0.05,
-            max_depth=4,
+            n_estimators=100,      # Reduced from 150
+            learning_rate=0.08,    # Increased
+            max_depth=3,           # Reduced from 4
+            min_samples_split=30,  # Increased regularization
+            min_samples_leaf=15,   # Increased regularization
+            subsample=0.7,
+            max_features='sqrt',
             random_state=42
         )
         self.trend_init_regressor.fit(X_train, y_trend_train)
@@ -86,7 +94,6 @@ class VolatilityModelTrainer:
         print(f"Trend Initiation RMSE: {metrics['trend_init_rmse']:.4f}")
         print("\nRegime Classification Report:")
         
-        # Fix: Explicitly provide labels to handle missing classes in validation set
         try:
             print(classification_report(
                 y_regime_val, 
@@ -101,9 +108,6 @@ class VolatilityModelTrainer:
         return metrics
     
     def evaluate_oos(self, oos_df: pd.DataFrame) -> Dict[str, float]:
-        """
-        Evaluate on out-of-sample data
-        """
         if oos_df.empty:
             return {}
         
@@ -122,6 +126,10 @@ class VolatilityModelTrainer:
         print(f"\nOOS Validation Metrics:")
         print(f"Regime Accuracy: {metrics['oos_regime_accuracy']:.4f}")
         print(f"Trend Initiation RMSE: {metrics['oos_trend_init_rmse']:.4f}")
+        
+        # Calculate gap between train and OOS
+        train_oos_gap = abs(metrics['oos_regime_accuracy'] - self.regime_classifier.score(oos_df[self.feature_cols].fillna(0), y_regime_oos))
+        print(f"Train-OOS accuracy gap: {train_oos_gap:.4f}")
         
         return metrics
     
