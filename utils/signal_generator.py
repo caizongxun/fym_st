@@ -4,146 +4,137 @@ from typing import Dict, List
 
 class SignalGenerator:
     """
-    v4: Relaxed Filters - More Trades with Better Quality
+    v5: PURE TECHNICAL BREAKOUT - NO AI PREDICTION
     
-    v3 problem: Too strict (1 trade only)
-    v4 solution: Loosen conditions while keeping trend-following principle
+    Problem with v1-v4: Reversal prediction model has NO predictive power
+    - Higher reversal prob → LOWER win rate (opposite!)
+    - 50-55% prob: 44% win rate
+    - >60% prob: 35% win rate
+    
+    New Approach: Classic Technical Analysis
+    - EMA crossovers for trend confirmation
+    - RSI for overbought/oversold
+    - Volume confirmation
+    - Support/resistance breakouts
+    - Moving average confluence
+    
+    NO AI predictions, just pure price action
     """
     
-    def __init__(self, 
-                 min_reversal_prob: float = 45.0,     # Lowered from 60
-                 ranging_momentum_threshold: float = 0.3):  # Lowered from 0.5
-        self.min_reversal_prob = min_reversal_prob
-        self.ranging_momentum_threshold = ranging_momentum_threshold
+    def __init__(self):
+        self.ema_fast = 9
+        self.ema_slow = 21
+        self.rsi_period = 14
+        self.rsi_oversold = 35
+        self.rsi_overbought = 65
     
     def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Generate trading signals - WITH trend, but more permissive
+        Generate signals using ONLY technical indicators
+        No ML models, no predictions
         """
         df = df.copy()
         df['signal'] = 0
         
-        # Get trend info
-        is_trending = df['is_trending']  # 0=ranging, 1=trending
-        trend_direction = df['trend_direction']  # 1=up, -1=down, 0=ranging
-        trend_strength = df.get('trend_strength_pred', 50)
+        # Calculate technical indicators
+        df = self._calculate_indicators(df)
         
-        # Get reversal info
-        reversal_signal = df['reversal_signal']  # 0=no, 1=yes
-        reversal_prob = df.get('reversal_prob_pred', 0)
+        # === LONG SIGNALS ===
+        # Condition 1: Price breaks above EMA_fast after being below
+        bullish_cross = (df['close'] > df['ema_fast']) & (df['close'].shift(1) <= df['ema_fast'].shift(1))
         
-        # Calculate momentum
-        df['momentum_3'] = df['close'].pct_change(3) * 100
-        df['momentum_5'] = df['close'].pct_change(5) * 100
+        # Condition 2: EMA_fast trending up
+        ema_fast_rising = df['ema_fast'] > df['ema_fast'].shift(2)
         
-        # Price vs EMA
-        if '15m_ema_20' in df.columns:
-            df['price_vs_ema20'] = (df['close'] - df['15m_ema_20']) / df['15m_ema_20'] * 100
-        else:
-            df['price_vs_ema20'] = 0
+        # Condition 3: RSI oversold or neutral (not overbought)
+        rsi_ok_long = df['rsi'] < self.rsi_overbought
         
-        # === STRATEGY 1: RANGING MARKET ===
-        # More permissive - any reversal signal
-        ranging = (is_trending == 0)
+        # Condition 4: Above longer-term EMA (trend filter)
+        above_ema_slow = df['close'] > df['ema_slow']
         
-        ranging_long = (
-            ranging & 
-            (reversal_signal == 1) &
-            (reversal_prob >= self.min_reversal_prob) &
-            (df['momentum_3'] < 0)  # Any downward momentum
+        # Condition 5: Volume confirmation (above average)
+        volume_confirm = df['volume'] > df['volume_ma']
+        
+        # LONG entry
+        long_signal = (
+            bullish_cross &
+            ema_fast_rising &
+            rsi_ok_long &
+            above_ema_slow &
+            volume_confirm
         )
         
-        ranging_short = (
-            ranging & 
-            (reversal_signal == 1) &
-            (reversal_prob >= self.min_reversal_prob) &
-            (df['momentum_3'] > 0)  # Any upward momentum
+        # === SHORT SIGNALS ===
+        # Condition 1: Price breaks below EMA_fast after being above
+        bearish_cross = (df['close'] < df['ema_fast']) & (df['close'].shift(1) >= df['ema_fast'].shift(1))
+        
+        # Condition 2: EMA_fast trending down
+        ema_fast_falling = df['ema_fast'] < df['ema_fast'].shift(2)
+        
+        # Condition 3: RSI overbought or neutral (not oversold)
+        rsi_ok_short = df['rsi'] > self.rsi_oversold
+        
+        # Condition 4: Below longer-term EMA (trend filter)
+        below_ema_slow = df['close'] < df['ema_slow']
+        
+        # Condition 5: Volume confirmation
+        volume_confirm_short = df['volume'] > df['volume_ma']
+        
+        # SHORT entry
+        short_signal = (
+            bearish_cross &
+            ema_fast_falling &
+            rsi_ok_short &
+            below_ema_slow &
+            volume_confirm_short
         )
         
-        # === STRATEGY 2: TREND FOLLOWING ===
-        trending = (is_trending == 1)
+        # === ADDITIONAL FILTER: MOMENTUM ===
+        # Only take signals when there's clear momentum
+        price_change_3 = df['close'].pct_change(3) * 100
+        strong_momentum_up = price_change_3 > 0.3
+        strong_momentum_down = price_change_3 < -0.3
         
-        # UPTREND: Enter on any reversal signal (less strict)
-        uptrend_long = (
-            trending &
-            (trend_direction == 1) &  # Uptrend
-            (reversal_signal == 1) &
-            (reversal_prob >= self.min_reversal_prob) &
-            (
-                # Condition A: Pullback entry (preferred)
-                (df['price_vs_ema20'] < 0) |
-                # Condition B: Momentum continuation
-                (df['momentum_3'] > 0.2)
-            )
-        )
+        # Final signals
+        df.loc[long_signal & strong_momentum_up, 'signal'] = 1
+        df.loc[short_signal & strong_momentum_down, 'signal'] = -1
         
-        # DOWNTREND: Enter on any reversal signal
-        downtrend_short = (
-            trending &
-            (trend_direction == -1) &  # Downtrend
-            (reversal_signal == 1) &
-            (reversal_prob >= self.min_reversal_prob) &
-            (
-                # Condition A: Bounce entry (preferred)
-                (df['price_vs_ema20'] > 0) |
-                # Condition B: Momentum continuation  
-                (df['momentum_3'] < -0.2)
-            )
-        )
+        # Add signal metadata
+        df['signal_strategy'] = 'technical_breakout'
+        df['signal_strength'] = df['rsi']  # Use RSI as signal strength
         
-        # === STRATEGY 3: HIGH CONFIDENCE COUNTER-TREND ===
-        # Only when VERY confident
+        return df
+    
+    def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculate technical indicators
+        """
+        # EMAs
+        df['ema_fast'] = df['close'].ewm(span=self.ema_fast, adjust=False).mean()
+        df['ema_slow'] = df['close'].ewm(span=self.ema_slow, adjust=False).mean()
         
-        counter_uptrend_short = (
-            trending &
-            (trend_direction == 1) &  # Uptrend
-            (reversal_signal == 1) &
-            (reversal_prob >= 70) &  # High confidence
-            (df['momentum_5'] < -0.8) &  # Strong opposite momentum
-            (trend_strength < 50)  # Weakening trend
-        )
+        # RSI
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=self.rsi_period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
         
-        counter_downtrend_long = (
-            trending &
-            (trend_direction == -1) &  # Downtrend
-            (reversal_signal == 1) &
-            (reversal_prob >= 70) &  # High confidence
-            (df['momentum_5'] > 0.8) &  # Strong opposite momentum
-            (trend_strength < 50)  # Weakening trend
-        )
-        
-        # === ASSIGN SIGNALS ===
-        all_long = (
-            ranging_long | 
-            uptrend_long | 
-            counter_downtrend_long
-        )
-        
-        all_short = (
-            ranging_short | 
-            downtrend_short | 
-            counter_uptrend_short
-        )
-        
-        df.loc[all_long, 'signal'] = 1
-        df.loc[all_short, 'signal'] = -1
-        
-        # Store strategy type
-        df['signal_strategy'] = 'none'
-        df.loc[ranging_long | ranging_short, 'signal_strategy'] = 'ranging'
-        df.loc[uptrend_long | downtrend_short, 'signal_strategy'] = 'trend_follow'
-        df.loc[counter_downtrend_long | counter_uptrend_short, 'signal_strategy'] = 'counter_trend'
-        
-        # Cleanup
-        df.drop(['momentum_3', 'momentum_5', 'price_vs_ema20'], axis=1, inplace=True)
+        # Volume MA
+        df['volume_ma'] = df['volume'].rolling(window=20).mean()
         
         return df
     
     def add_signal_metadata(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add human-readable signal names
+        """
         df = df.copy()
         
         signal_map = {1: 'LONG', -1: 'SHORT', 0: 'HOLD'}
         df['signal_name'] = df['signal'].map(signal_map)
-        df['signal_strength'] = df.get('reversal_prob_pred', 0)
+        
+        # Use RSI as confidence (distance from 50)
+        df['signal_strength'] = abs(df.get('rsi', 50) - 50)
         
         return df
