@@ -27,13 +27,6 @@ class TrendModelTrainer:
     def prepare_data(self, df_1h: pd.DataFrame, oos_size: int = 1500) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Prepare training data with labels
-        
-        Args:
-            df_1h: 1h DataFrame with features
-            oos_size: Size of OOS validation set
-        
-        Returns:
-            Tuple of (train_df, oos_df)
         """
         # Generate labels
         labeler = LabelGenerator()
@@ -50,12 +43,6 @@ class TrendModelTrainer:
     def train(self, train_df: pd.DataFrame) -> Dict[str, float]:
         """
         Train both classification and regression models
-        
-        Args:
-            train_df: Training dataset with labels
-        
-        Returns:
-            Dictionary with training metrics
         """
         # Select feature columns (exclude labels and metadata)
         exclude_cols = ['trend_label', 'trend_strength', 'open_time', 'close_time', 
@@ -107,20 +94,24 @@ class TrendModelTrainer:
         print(f"Classification Accuracy: {metrics['classification_accuracy']:.4f}")
         print(f"Regression RMSE: {metrics['regression_rmse']:.4f}")
         print("\nClassification Report:")
-        print(classification_report(y_class_val, y_class_pred, 
-                                   target_names=['Strong Bear', 'Weak Bear', 'Range', 'Weak Bull', 'Strong Bull']))
+        
+        # Fix: Explicitly provide labels to handle missing classes in validation set
+        try:
+            print(classification_report(
+                y_class_val, 
+                y_class_pred, 
+                labels=[0, 1, 2, 3, 4],
+                target_names=['Strong Bear', 'Weak Bear', 'Range', 'Weak Bull', 'Strong Bull'],
+                zero_division=0
+            ))
+        except Exception as e:
+            print(f"Could not generate classification report: {e}")
         
         return metrics
     
     def evaluate_oos(self, oos_df: pd.DataFrame) -> Dict[str, float]:
         """
         Evaluate on out-of-sample data
-        
-        Args:
-            oos_df: OOS dataset
-        
-        Returns:
-            Dictionary with OOS metrics
         """
         if oos_df.empty:
             return {}
@@ -146,9 +137,6 @@ class TrendModelTrainer:
     def save_models(self, symbol: str):
         """
         Save trained models to disk
-        
-        Args:
-            symbol: Trading symbol (e.g., 'BTCUSDT')
         """
         classifier_path = os.path.join(self.model_dir, f'{symbol}_trend_classifier.pkl')
         regressor_path = os.path.join(self.model_dir, f'{symbol}_trend_regressor.pkl')
@@ -163,9 +151,6 @@ class TrendModelTrainer:
     def load_models(self, symbol: str):
         """
         Load trained models from disk
-        
-        Args:
-            symbol: Trading symbol
         """
         classifier_path = os.path.join(self.model_dir, f'{symbol}_trend_classifier.pkl')
         regressor_path = os.path.join(self.model_dir, f'{symbol}_trend_regressor.pkl')
@@ -180,12 +165,6 @@ class TrendModelTrainer:
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Make predictions on new data
-        
-        Args:
-            df: DataFrame with features
-        
-        Returns:
-            DataFrame with predictions added
         """
         df = df.copy()
         X = df[self.feature_cols].fillna(0)

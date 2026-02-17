@@ -85,8 +85,18 @@ class VolatilityModelTrainer:
         print(f"Regime Classification Accuracy: {metrics['regime_accuracy']:.4f}")
         print(f"Trend Initiation RMSE: {metrics['trend_init_rmse']:.4f}")
         print("\nRegime Classification Report:")
-        print(classification_report(y_regime_val, y_regime_pred,
-                                   target_names=['Low Vol', 'Medium Vol', 'High Vol']))
+        
+        # Fix: Explicitly provide labels to handle missing classes in validation set
+        try:
+            print(classification_report(
+                y_regime_val, 
+                y_regime_pred,
+                labels=[0, 1, 2],
+                target_names=['Low Vol', 'Medium Vol', 'High Vol'],
+                zero_division=0
+            ))
+        except Exception as e:
+            print(f"Could not generate classification report: {e}")
         
         return metrics
     

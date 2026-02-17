@@ -115,8 +115,18 @@ class ReversalModelTrainer:
         print(f"Support MAE: {metrics['support_mae']:.4f}")
         print(f"Resistance MAE: {metrics['resistance_mae']:.4f}")
         print("\nDirection Classification Report:")
-        print(classification_report(y_dir_val, y_dir_pred,
-                                   target_names=['Bearish', 'None', 'Bullish']))
+        
+        # Fix: Explicitly provide labels to handle missing classes in validation set
+        try:
+            print(classification_report(
+                y_dir_val, 
+                y_dir_pred,
+                labels=[0, 1, 2],
+                target_names=['Bearish', 'None', 'Bullish'],
+                zero_division=0
+            ))
+        except Exception as e:
+            print(f"Could not generate classification report: {e}")
         
         return metrics
     
