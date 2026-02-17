@@ -5,31 +5,23 @@ from datetime import datetime, timezone, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# Taipei timezone (UTC+8)
 TAIPEI_TZ = timezone(timedelta(hours=8))
 
 class BacktestEngine:
     """
-    ATR-based flip-flop reversal backtesting
-    Supports both FIXED and COMPOUND position sizing modes
+    v1: Increased SL to 2.0 ATR + Enhanced diagnostics
     """
     
     def __init__(self, 
                  initial_capital: float = 100.0,
                  leverage: float = 10.0,
                  tp_atr_mult: float = 2.0,
-                 sl_atr_mult: float = 1.5,
+                 sl_atr_mult: float = 2.0,  # CHANGED: 1.5 → 2.0
                  position_size_pct: float = 0.1,
-                 position_mode: str = 'fixed',  # 'fixed' or 'compound'
+                 position_mode: str = 'fixed',
                  max_positions: int = 1,
                  maker_fee: float = 0.0002,
                  taker_fee: float = 0.0006):
-        """
-        Args:
-            position_mode: 
-                - 'fixed': 固定使用初始資金的比例 (例: 100U * 20% = 20U)
-                - 'compound': 複利模式,使用當前權益的比例 (例: 120U * 20% = 24U)
-        """
         self.initial_capital = initial_capital
         self.leverage = leverage
         self.tp_atr_mult = tp_atr_mult
@@ -47,50 +39,37 @@ class BacktestEngine:
         self.open_positions = {}
         
     def calculate_position_size(self) -> float:
-        """
-        Calculate position size based on selected mode
-        
-        FIXED mode: Always use percentage of INITIAL capital (no compound)
-        COMPOUND mode: Use percentage of CURRENT equity (with compound)
-        """
         if self.position_mode == 'fixed':
-            # 固定模式: 永遠使用初始資金的比例
             base_capital = self.initial_capital * self.position_size_pct
         else:
-            # 複利模式: 使用當前權益的比例
             base_capital = self.equity * self.position_size_pct
-        
         position_value = base_capital * self.leverage
         return position_value
     
     def open_or_flip_position(self, symbol: str, direction: str, entry_price: float, 
                              timestamp: datetime, signal_data: dict, atr: float, 
-                             trend_direction: int) -> bool:
-        # Check if equity is positive
+                             trend_direction: int, trend_strength: float,
+                             reversal_prob: float, trend_filter: str) -> bool:
         if self.equity <= 0:
             return False
             
-        # Close existing opposite position
         if symbol in self.open_positions:
             old_pos = self.open_positions[symbol]
             if old_pos['direction'] != direction:
-                self.close_position(symbol, entry_price, timestamp, 'REVERSAL_FLIP', trend_direction)
+                self.close_position(symbol, entry_price, timestamp, 'REVERSAL_FLIP', 
+                                   trend_direction, trend_strength, reversal_prob, trend_filter)
             else:
                 return False
         
-        # Calculate position size based on mode
         position_value = self.calculate_position_size()
-        
-        # Safety check: don't open if required margin exceeds equity
         required_margin = position_value / self.leverage
-        if required_margin > self.equity * 0.95:  # Max 95% of equity as margin
+        if required_margin > self.equity * 0.95:
             return False
         
         quantity = position_value / entry_price
         margin = position_value / self.leverage
         entry_fee = position_value * self.taker_fee
         
-        # Calculate TP/SL
         if direction == 'LONG':
             tp_price = entry_price + (atr * self.tp_atr_mult)
             sl_price = entry_price - (atr * self.sl_atr_mult)
@@ -110,7 +89,10 @@ class BacktestEngine:
             'sl_price': sl_price,
             'atr': atr,
             'signal_data': signal_data,
-            'entry_trend': trend_direction
+            'entry_trend': trend_direction,
+            'entry_trend_strength': trend_strength,
+            'entry_reversal_prob': reversal_prob,
+            'entry_trend_filter': trend_filter
         }
         
         self.equity -= entry_fee
@@ -136,7 +118,8 @@ class BacktestEngine:
         return None
     
     def close_position(self, symbol: str, exit_price: float, timestamp: datetime, 
-                      exit_reason: str, trend_direction: int) -> Optional[Dict]:
+                      exit_reason: str, trend_direction: int, trend_strength: float,
+                      reversal_prob: float, trend_filter: str) -> Optional[Dict]:
         if symbol not in self.open_positions:
             return None
         
@@ -150,10 +133,8 @@ class BacktestEngine:
         else:
             pnl = (pos['entry_price'] - exit_price) * pos['quantity'] - pos['entry_fee'] - exit_fee
         
-        # FIX: Only add PnL, not margin (margin was never deducted in open_position)
         self.equity += pnl
         
-        # Map exit reason to Chinese
         exit_reason_map = {
             'TP_HIT': '止盈',
             'SL_HIT': '止損',
@@ -161,20 +142,9 @@ class BacktestEngine:
             'END': '回測結束'
         }
         
-        # Map trend to Chinese
-        trend_map = {
-            1: '多頭',
-            -1: '空頭',
-            0: '盤整'
-        }
+        trend_map = {1: '多頭', -1: '空頭', 0: '盤整'}
+        direction_map = {'LONG': '做多', 'SHORT': '做空'}
         
-        # Map direction to Chinese
-        direction_map = {
-            'LONG': '做多',
-            'SHORT': '做空'
-        }
-        
-        # Convert to Taipei time
         entry_time_taipei = pos['entry_time'].astimezone(TAIPEI_TZ) if pos['entry_time'].tzinfo else pos['entry_time'].replace(tzinfo=timezone.utc).astimezone(TAIPEI_TZ)
         exit_time_taipei = timestamp.astimezone(TAIPEI_TZ) if timestamp.tzinfo else timestamp.replace(tzinfo=timezone.utc).astimezone(TAIPEI_TZ)
         
@@ -205,7 +175,13 @@ class BacktestEngine:
             '持倉時長(分)': int((timestamp - pos['entry_time']).total_seconds() / 60),
             'signal_data': pos['signal_data'],
             '進場趨勢': trend_map.get(pos.get('entry_trend', 0), '未知'),
-            '離場趨勢': trend_map.get(trend_direction, '未知')
+            '離場趨勢': trend_map.get(trend_direction, '未知'),
+            '進場趨勢強度': pos.get('entry_trend_strength', 0),
+            '離場趨勢強度': trend_strength,
+            '進場反轉機率': pos.get('entry_reversal_prob', 0),
+            '離場反轉機率': reversal_prob,
+            '進場過濾器': pos.get('entry_trend_filter', 'unknown'),
+            '離場過濾器': trend_filter
         }
         
         self.trades.append(trade_record)
@@ -232,47 +208,55 @@ class BacktestEngine:
             current_price = row['close']
             atr = row.get('15m_atr', row.get('atr', 0))
             trend_direction = int(row.get('trend_direction', 0))
+            trend_strength = row.get('trend_strength_pred', 50)
+            reversal_prob = row.get('reversal_prob_pred', 0)
+            trend_filter = row.get('trend_filter', 'unknown')
             
-            # Check TP/SL first
             if symbol in self.open_positions:
                 tp_sl_result = self.check_tp_sl(symbol, current_price, timestamp)
                 
                 if tp_sl_result == 'TP':
-                    self.close_position(symbol, current_price, timestamp, 'TP_HIT', trend_direction)
+                    self.close_position(symbol, current_price, timestamp, 'TP_HIT', 
+                                       trend_direction, trend_strength, reversal_prob, trend_filter)
                     continue
                 
                 elif tp_sl_result == 'SL':
-                    self.close_position(symbol, current_price, timestamp, 'SL_HIT', trend_direction)
+                    self.close_position(symbol, current_price, timestamp, 'SL_HIT', 
+                                       trend_direction, trend_strength, reversal_prob, trend_filter)
                     continue
             
-            # Check reversal signals
             if 'signal' in row and row['signal'] != 0:
                 direction = 'LONG' if row['signal'] == 1 else 'SHORT'
                 
                 if symbol in self.open_positions:
                     pos = self.open_positions[symbol]
                     if pos['direction'] != direction:
-                        self.close_position(symbol, current_price, timestamp, 'REVERSAL_FLIP', trend_direction)
+                        self.close_position(symbol, current_price, timestamp, 'REVERSAL_FLIP', 
+                                           trend_direction, trend_strength, reversal_prob, trend_filter)
                         self.open_or_flip_position(symbol, direction, current_price, timestamp, 
-                                                   {'reversal_prob': row.get('reversal_prob_pred', 0)}, atr, trend_direction)
+                                                   {'reversal_prob': reversal_prob}, atr, 
+                                                   trend_direction, trend_strength, reversal_prob, trend_filter)
                 else:
-                    signal_data = {'reversal_prob': row.get('reversal_prob_pred', 0)}
-                    self.open_or_flip_position(symbol, direction, current_price, timestamp, signal_data, atr, trend_direction)
+                    signal_data = {'reversal_prob': reversal_prob}
+                    self.open_or_flip_position(symbol, direction, current_price, timestamp, signal_data, atr, 
+                                              trend_direction, trend_strength, reversal_prob, trend_filter)
             
-            # Record equity
             self.equity_curve.append({
                 'timestamp': timestamp,
                 'equity': self.equity,
                 'open_positions': len(self.open_positions)
             })
         
-        # Close remaining positions
         for symbol in list(self.open_positions.keys()):
             last_row = combined_df[combined_df['symbol'] == symbol].iloc[-1]
             last_price = last_row['close']
             last_time = last_row['open_time']
             last_trend = int(last_row.get('trend_direction', 0))
-            self.close_position(symbol, last_price, last_time, 'END', last_trend)
+            last_strength = last_row.get('trend_strength_pred', 50)
+            last_reversal = last_row.get('reversal_prob_pred', 0)
+            last_filter = last_row.get('trend_filter', 'unknown')
+            self.close_position(symbol, last_price, last_time, 'END', last_trend, 
+                               last_strength, last_reversal, last_filter)
         
         return self.calculate_metrics()
     
@@ -307,6 +291,10 @@ class BacktestEngine:
         
         exit_reasons = trades_df['離場原因'].value_counts().to_dict()
         
+        # NEW: Detailed diagnostics
+        stop_loss_trades = trades_df[trades_df['離場原因'] == '止損']
+        fast_stops = stop_loss_trades[stop_loss_trades['持倉時長(分)'] < 60]
+        
         metrics = {
             'total_trades': len(self.trades),
             'winning_trades': len(winning_trades),
@@ -326,6 +314,9 @@ class BacktestEngine:
             'max_drawdown_pct': max_drawdown,
             'sharpe_ratio': sharpe_ratio,
             'exit_reasons': exit_reasons,
+            'stop_loss_count': len(stop_loss_trades),
+            'fast_stop_count': len(fast_stops),
+            'fast_stop_pct': len(fast_stops) / len(stop_loss_trades) * 100 if len(stop_loss_trades) > 0 else 0,
             'trades_per_symbol': trades_df['symbol'].value_counts().to_dict()
         }
         
@@ -336,7 +327,6 @@ class BacktestEngine:
             return go.Figure()
         
         equity_df = pd.DataFrame(self.equity_curve)
-        
         mode_text = '固定倉位' if self.position_mode == 'fixed' else '複利模式'
         
         fig = make_subplots(rows=2, cols=1, 
@@ -374,5 +364,4 @@ class BacktestEngine:
     def get_trades_dataframe(self) -> pd.DataFrame:
         if not self.trades:
             return pd.DataFrame()
-        
         return pd.DataFrame(self.trades)
