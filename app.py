@@ -212,6 +212,17 @@ if strategy == 'BB反彈策略 (v6)':
                 # 填ATR空值
                 df_signals['15m_atr'] = df_signals['15m_atr'].fillna(method='bfill').fillna(df_signals['close'] * 0.02)
                 
+                # DEBUG: 顯示ATR統計
+                st.write("### Debug Info")
+                st.write(f"ATR範圍: {df_signals['15m_atr'].min():.2f} - {df_signals['15m_atr'].max():.2f}")
+                st.write(f"ATR平均: {df_signals['15m_atr'].mean():.2f}")
+                st.write(f"ATR為0的數量: {(df_signals['15m_atr'] == 0).sum()}")
+                
+                # 顯示有信號的幾筆資料
+                signal_rows = df_signals[df_signals['signal'] != 0].head(3)
+                st.write("\n前3筆信號:")
+                st.dataframe(signal_rows[['open_time', 'signal', '15m_atr', 'close']].round(2))
+                
                 engine = BacktestEngine(
                     initial_capital=initial_capital,
                     leverage=10.0,
@@ -253,10 +264,10 @@ if strategy == 'BB反彈策略 (v6)':
                     st.metric("平均持倉時長", f"{avg_duration:.0f}分鐘")
                 
                 # 顯示權益曲線
-                st.plotly_chart(engine.plot_equity_curve(), use_container_width=True)
-                
-                # 離場原因分析
                 if metrics['total_trades'] > 0:
+                    st.plotly_chart(engine.plot_equity_curve(), use_container_width=True)
+                
+                    # 離場原因分析
                     trades_df = engine.get_trades_dataframe()
                     
                     st.subheader("離場原因分布")
@@ -290,6 +301,17 @@ if strategy == 'BB反彈策略 (v6)':
                         file_name=f'bb_backtest_{bt_symbol}_{datetime.now().strftime("%Y%m%d")}.csv',
                         mime='text/csv'
                     )
+                else:
+                    st.warning("""
+                    ### 無交易產生
+                    
+                    可能原因:
+                    1. ATR值過小或為0,導致TP/SL無效
+                    2. 信號時間戳與價格資料不匹配
+                    3. 信號未正確傳遞backtest engine
+                    
+                    請檢查上方Debug Info
+                    """)
                 
                 # 優化建議
                 st.subheader("優化建議")
@@ -487,7 +509,7 @@ else:  # 原有反轉策略
                 with col2:
                     st.metric("概率RMSE", f"{metrics['probability_rmse']:.2f}")
                     if not oos_df_rev.empty:
-                        st.metric("樣本外概率RMSE", f"{oos_metrics['oss_probability_rmse']:.2f}")
+                        st.metric("樣本外概率RMSE", f"{oos_metrics['oos_probability_rmse']:.2f}")
                 
                 with col3:
                     st.metric("支撐MAE", f"{metrics['support_mae']:.2f}")
