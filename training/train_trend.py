@@ -191,13 +191,24 @@ class TrendModelTrainer:
         Make predictions and determine direction using indicators
         """
         df = df.copy()
+        
+        # Use only available features
+        available_features = [col for col in self.feature_cols if col in df.columns]
+        missing_features = [col for col in self.feature_cols if col not in df.columns]
+        
+        if missing_features:
+            print(f"Warning: {len(missing_features)} features missing in prediction data")
+            # Create missing features with zeros
+            for feat in missing_features:
+                df[feat] = 0
+        
         X = df[self.feature_cols].fillna(0)
         
         # Predict if there's a trend
         df['is_trending'] = self.classifier.predict(X)
         df['trend_strength_pred'] = self.regressor.predict(X)
         
-        # Determine direction using multiple indicators
+        # Determine direction using indicators
         df['trend_direction'] = self._calculate_trend_direction(df)
         
         # Combine: trend_pred = direction if trending, else 0
@@ -222,9 +233,14 @@ class TrendModelTrainer:
         else:
             ema_signal = 0
         
-        # Method 2: Price vs EMA200
-        if 'close' in df.columns and '1h_ema_200' in df.columns:
-            price_position = np.where(df['close'] > df['1h_ema_200'], 1, -1)
+        # Method 2: Price vs EMA200 (if available, else use EMA50)
+        if 'close' in df.columns:
+            if '1h_ema_200' in df.columns:
+                price_position = np.where(df['close'] > df['1h_ema_200'], 1, -1)
+            elif '1h_ema_50' in df.columns:
+                price_position = np.where(df['close'] > df['1h_ema_50'], 1, -1)
+            else:
+                price_position = 0
         else:
             price_position = 0
         
