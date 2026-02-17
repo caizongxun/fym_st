@@ -150,7 +150,8 @@ class BacktestEngine:
         else:
             pnl = (pos['entry_price'] - exit_price) * pos['quantity'] - pos['entry_fee'] - exit_fee
         
-        self.equity += pnl + pos['margin']
+        # FIX: Only add PnL, not margin (margin was never deducted in open_position)
+        self.equity += pnl
         
         # Map exit reason to Chinese
         exit_reason_map = {
@@ -195,7 +196,7 @@ class BacktestEngine:
             'position_value': pos['position_value'],
             '手續費': pos['entry_fee'] + exit_fee,
             'pnl': pnl,
-            '損益(USDT)': pnl,  # NEW: Display PnL in USDT
+            '損益(USDT)': pnl,
             'pnl_pct': (pnl / pos['margin']) * 100,
             '損益率': f"{(pnl / pos['margin']) * 100:.2f}%",
             'exit_reason': exit_reason,
