@@ -4,46 +4,45 @@ from typing import Dict, List
 
 class SignalGenerator:
     """
-    Pure Reversal Trading Strategy (ULTRA SIMPLIFIED)
-    - Detect current trend direction using indicators (Bull/Bear/Neutral)
-    - When reversal signal appears -> Flip position
-    - NO filters, NO thresholds, just pure reversal signals
+    Pure Reversal Trading Strategy with ATR Risk Management
+    - Detect trend on SAME timeframe (15m) for faster response
+    - Every reversal signal = potential entry/flip
+    - ATR-based TP/SL has priority
+    - When profitable: TP hit OR reversal signal -> Flip
+    - When losing: SL hit -> Flip
     """
     
     def __init__(self):
-        pass  # No parameters needed
+        pass
     
     def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Generate flip-flop reversal signals with ZERO filters
+        Generate reversal signals on 15m timeframe
         
         Args:
-            df: DataFrame with predictions
+            df: DataFrame with 15m predictions
                 Required columns:
-                - trend_direction: 1 (bull), -1 (bear), 0 (neutral) from indicators
-                - reversal_direction_pred: 1 (bullish reversal), -1 (bearish reversal)
-                - close: current price
+                - trend_direction: 1 (bull), -1 (bear), 0 (neutral)
+                - reversal_direction_pred: 1 (bullish), -1 (bearish)
+                - close, atr: for TP/SL calculation
         
         Returns:
-            DataFrame with 'signal' column:
-            - 1: Go LONG (downtrend + bullish reversal)
-            - -1: Go SHORT (uptrend + bearish reversal)
-            - 0: Hold
+            DataFrame with 'signal' column (1=LONG, -1=SHORT, 0=HOLD)
         """
         df = df.copy()
         df['signal'] = 0
         
-        # ULTRA SIMPLE LOGIC:
-        # Long: Downtrend (-1) + Bullish reversal (1) = Bottom reversal
+        # Pure reversal logic - no filters
+        # Long: Downtrend + Bullish reversal
         long_conditions = (
-            (df['trend_direction'] == -1) &  # In downtrend
-            (df['reversal_direction_pred'] == 1)  # Bullish reversal detected
+            (df['trend_direction'] == -1) &
+            (df['reversal_direction_pred'] == 1)
         )
         
-        # Short: Uptrend (1) + Bearish reversal (-1) = Top reversal
+        # Short: Uptrend + Bearish reversal
         short_conditions = (
-            (df['trend_direction'] == 1) &  # In uptrend
-            (df['reversal_direction_pred'] == -1)  # Bearish reversal detected
+            (df['trend_direction'] == 1) &
+            (df['reversal_direction_pred'] == -1)
         )
         
         df.loc[long_conditions, 'signal'] = 1
@@ -53,14 +52,12 @@ class SignalGenerator:
     
     def add_signal_metadata(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Add human-readable signal information
+        Add signal metadata
         """
         df = df.copy()
         
         signal_map = {1: 'LONG', -1: 'SHORT', 0: 'HOLD'}
         df['signal_name'] = df['signal'].map(signal_map)
-        
-        # Signal strength = reversal probability
         df['signal_strength'] = df.get('reversal_prob_pred', 0)
         
         return df
