@@ -5,7 +5,7 @@ from typing import Dict, List
 class SignalGenerator:
     """
     Generate trading signals by combining predictions from all three models
-    Updated for simplified 3-class trend system: Bull (1), Range (0), Bear (-1)
+    Uses binary trend classification with indicator-based direction
     """
     
     def __init__(self,
@@ -26,53 +26,56 @@ class SignalGenerator:
         Args:
             df: DataFrame with all predictions from three models
                 Required columns:
-                - trend_pred: -1 (Bear), 0 (Range), 1 (Bull)
+                - is_trending: 0 or 1 (binary trend detection)
+                - trend_direction: -1, 0, 1 (indicator-based)
+                - trend_pred: -1, 0, 1 (combined: direction * is_trending)
                 - trend_strength_pred: 0-100
-                - volatility_regime_pred: 0-2 (Low, Medium, High)
+                - volatility_regime_pred: 0-2
                 - trend_init_prob_pred: 0-100
                 - reversal_direction_pred: -1, 0, 1
                 - reversal_prob_pred: 0-100
-                - support_pred: price level
-                - resistance_pred: price level
-                - close: current close price
+                - support_pred, resistance_pred: price levels
+                - close: current price
         
         Returns:
-            DataFrame with added 'signal' column (1=long, -1=short, 0=none)
+            DataFrame with 'signal' column (1=long, -1=short, 0=none)
         """
         df = df.copy()
         df['signal'] = 0
         
-        # Long signal conditions (SIMPLIFIED)
+        # Long signal conditions
         long_conditions = (
-            # Trend filter: Must be in bullish trend (not ranging)
-            (df['trend_pred'] == 1) &
+            # Must be in trending market with bullish direction
+            (df['is_trending'] == 1) &
+            (df['trend_direction'] == 1) &
             (df['trend_strength_pred'] >= self.min_trend_strength) &
             
-            # Volatility: Trend initiation or high volatility
+            # Volatility: High probability of trend continuation
             (df['trend_init_prob_pred'] >= self.min_trend_init_prob) &
             
-            # Reversal: Bullish reversal detected
+            # Reversal: Bullish reversal (pullback entry)
             (df['reversal_direction_pred'] == 1) &
             (df['reversal_prob_pred'] >= self.min_reversal_prob) &
             
-            # Price near support (within 0.3%)
+            # Price near support (pullback to support in uptrend)
             (df['close'] <= df['support_pred'] * 1.003)
         )
         
-        # Short signal conditions (SIMPLIFIED)
+        # Short signal conditions
         short_conditions = (
-            # Trend filter: Must be in bearish trend (not ranging)
-            (df['trend_pred'] == -1) &
+            # Must be in trending market with bearish direction
+            (df['is_trending'] == 1) &
+            (df['trend_direction'] == -1) &
             (df['trend_strength_pred'] >= self.min_trend_strength) &
             
             # Volatility
             (df['trend_init_prob_pred'] >= self.min_trend_init_prob) &
             
-            # Reversal: Bearish reversal detected
+            # Reversal: Bearish reversal (pullback entry)
             (df['reversal_direction_pred'] == -1) &
             (df['reversal_prob_pred'] >= self.min_reversal_prob) &
             
-            # Price near resistance (within 0.3%)
+            # Price near resistance (pullback to resistance in downtrend)
             (df['close'] >= df['resistance_pred'] * 0.997)
         )
         
