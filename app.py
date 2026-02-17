@@ -180,6 +180,18 @@ if strategy == 'BB反彈策略 (v6)':
                     
                     df_signals = signal_gen.generate_signals(df)
                     
+                    # CRITICAL: 確保f_signals有open_time欄位
+                    if 'open_time' not in df_signals.columns:
+                        # 如果index是datetime,將其設為open_time
+                        if isinstance(df_signals.index, pd.DatetimeIndex):
+                            df_signals['open_time'] = df_signals.index
+                        else:
+                            st.error("無法找到open_time欄位,請檢查數據格式")
+                            st.stop()
+                    
+                    # 確保open_time是datetime類型
+                    df_signals['open_time'] = pd.to_datetime(df_signals['open_time'])
+                    
                     total_signals = (df_signals['signal'] != 0).sum()
                     long_signals = (df_signals['signal'] == 1).sum()
                     short_signals = (df_signals['signal'] == -1).sum()
@@ -201,24 +213,23 @@ if strategy == 'BB反彈策略 (v6)':
                     st.stop()
             
             with st.spinner("執行回測..."):
-                # 計算ATR (使用True Range方法)
+                # 計算ATR
                 high_low = df_signals['high'] - df_signals['low']
                 high_close = abs(df_signals['high'] - df_signals['close'].shift(1))
                 low_close = abs(df_signals['low'] - df_signals['close'].shift(1))
                 
                 true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
                 df_signals['15m_atr'] = true_range.rolling(window=14).mean()
-                
-                # 填ATR空值
                 df_signals['15m_atr'] = df_signals['15m_atr'].fillna(method='bfill').fillna(df_signals['close'] * 0.02)
                 
-                # DEBUG: 顯示ATR統計
+                # DEBUG INFO
                 st.write("### Debug Info")
+                st.write(f"DataFrame shape: {df_signals.shape}")
+                st.write(f"Columns: {df_signals.columns.tolist()}")
                 st.write(f"ATR範圍: {df_signals['15m_atr'].min():.2f} - {df_signals['15m_atr'].max():.2f}")
                 st.write(f"ATR平均: {df_signals['15m_atr'].mean():.2f}")
-                st.write(f"ATR為0的數量: {(df_signals['15m_atr'] == 0).sum()}")
                 
-                # 顯示有信號的幾筆資料
+                # 顯示有信號的幾筆
                 signal_rows = df_signals[df_signals['signal'] != 0].head(3)
                 st.write("\n前3筆信號:")
                 st.dataframe(signal_rows[['open_time', 'signal', '15m_atr', 'close']].round(2))
@@ -236,6 +247,8 @@ if strategy == 'BB反彈策略 (v6)':
                 
                 signals_dict = {bt_symbol: df_signals}
                 metrics = engine.run_backtest(signals_dict)
+                
+                st.write(f"\nBacktest完成! 總交易: {metrics['total_trades']}")
                 
                 st.subheader("績效指標")
                 
@@ -258,16 +271,13 @@ if strategy == 'BB反彈策略 (v6)':
                     st.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
                     st.metric("最大回撤", f"{metrics['max_drawdown_pct']:.2f}%")
                 
-                # 有fallback
                 avg_duration = metrics.get('avg_duration_min', 0)
                 if avg_duration > 0:
                     st.metric("平均持倉時長", f"{avg_duration:.0f}分鐘")
                 
-                # 顯示權益曲線
                 if metrics['total_trades'] > 0:
                     st.plotly_chart(engine.plot_equity_curve(), use_container_width=True)
-                
-                    # 離場原因分析
+                    
                     trades_df = engine.get_trades_dataframe()
                     
                     st.subheader("離場原因分布")
@@ -293,7 +303,6 @@ if strategy == 'BB反彈策略 (v6)':
                     ]
                     st.dataframe(trades_df[display_cols])
                     
-                    # 下載按鈕
                     csv = trades_df.to_csv(index=False, encoding='utf-8-sig')
                     st.download_button(
                         label="下載交易記錄",
@@ -305,25 +314,20 @@ if strategy == 'BB反彈策略 (v6)':
                     st.warning("""
                     ### 無交易產生
                     
-                    可能原因:
-                    1. ATR值過小或為0,導致TP/SL無效
-                    2. 信號時間戳與價格資料不匹配
-                    3. 信號未正確傳遞backtest engine
-                    
                     請檢查上方Debug Info
                     """)
                 
-                # 優化建議
                 st.subheader("優化建議")
-                if metrics['profit_factor'] < 1.0:
+                if metrics['total_trades'] == 0:
+                    st.warning("無法提供建議,未產生交易")
+                elif metrics['profit_factor'] < 1.0:
                     st.error("""
                     獲利因子 < 1.0,策略虧損
                     
                     建議:
                     - 提高bb_threshold至70%
                     - 增加ADX過濾強度(35)
-                    - 調整風險回報比為1:2 (止盈ATR倍數>2.5)
-                    - 只在ranging/weak_trend狀態交易
+                    - 調整風險回報比為1:2
                     """)
                 elif metrics['profit_factor'] > 1.5:
                     st.success("""
@@ -332,18 +336,9 @@ if strategy == 'BB反彈策略 (v6)':
                     下一步:
                     - 測試更長時間(60-90天)
                     - 測試其他幣種
-                    - 測試1小時週期
-                    - 準備實盤測試
                     """)
                 else:
-                    st.info("""
-                    獲利因子 1.0-1.5,策略有潛力
-                    
-                    建議:
-                    - 微調閾值參數
-                    - 加入更多過濾條件
-                    - 優化出場策略
-                    """)
+                    st.info("獲利因子 1.0-1.5,策略有潛力")
     
     with tabs[2]:
         st.header("BB即時分析")
@@ -415,7 +410,7 @@ if strategy == 'BB反彈策略 (v6)':
                     recent_signals = df_signals[df_signals['signal'] != 0].tail(10)
                     if not recent_signals.empty:
                         st.dataframe(recent_signals[[
-                            'open_time', 'close', 'signal', 'bb_upper_bounce_prob',
+                            'close', 'signal', 'bb_upper_bounce_prob',
                             'bb_lower_bounce_prob', 'trend_state', 'adx', 'rsi'
                         ]].round(2))
                     else:
@@ -424,99 +419,6 @@ if strategy == 'BB反彈策略 (v6)':
                 except FileNotFoundError:
                     st.error("BB模型未找到,請先訓練模型")
 
-else:  # 原有反轉策略
-    st.sidebar.info("""
-    **反轉策略 v1-v5**
-    
-    15分鐘趨勢 + 反轉偵測 + ATR止盈止損
-    """)
-    
-    tabs = st.tabs(["模型訓練", "回測", "即時分析"])
-    
-    with tabs[0]:
-        st.header("模型訓練 (15分鐘趨勢 + 反轉)")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            symbol = st.text_input("交易對", value="BTCUSDT")
-        
-        with col2:
-            days = st.number_input("訓練天數", min_value=30, max_value=365, value=180)
-        
-        with col3:
-            oos_size = st.number_input("樣本外數量", min_value=500, max_value=3000, value=1500)
-        
-        if st.button("開始訓練"):
-            with st.spinner("載入數據中..."):
-                loader = BinanceDataLoader()
-                
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=days)
-                
-                df_15m = loader.load_historical_data(symbol, '15m', start_date, end_date)
-                
-                feature_engineer = FeatureEngineer()
-                df_15m = feature_engineer.create_features(df_15m, timeframe='15m')
-                
-                st.write(f"15分鐘數據: {len(df_15m)} 筆")
-            
-            st.subheader("訓練 15分鐘趨勢偵測模型")
-            with st.spinner("訓練趨勢模型中..."):
-                trend_trainer = TrendModelTrainer()
-                train_df_trend, oos_df_trend = trend_trainer.prepare_data(df_15m, oos_size=oos_size)
-                
-                st.write(f"訓練樣本: {len(train_df_trend)}, 樣本外: {len(oos_df_trend)}")
-                
-                metrics = trend_trainer.train(train_df_trend)
-                
-                if not oos_df_trend.empty:
-                    oos_metrics = trend_trainer.evaluate_oos(oos_df_trend)
-                
-                trend_trainer.save_models(symbol)
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("分類準確率", f"{metrics['classification_accuracy']*100:.2f}%")
-                    if not oos_df_trend.empty:
-                        st.metric("樣本外分類準確率", f"{oos_metrics['oos_classification_accuracy']*100:.2f}%")
-                
-                with col2:
-                    st.metric("回歸RMSE", f"{metrics['regression_rmse']:.2f}")
-                    if not oos_df_trend.empty:
-                        st.metric("樣本外回歸RMSE", f"{oos_metrics['oos_regression_rmse']:.2f}")
-            
-            st.subheader("訓練 15分鐘反轉偵測模型 (二元分類)")
-            with st.spinner("訓練反轉模型中..."):
-                reversal_trainer = ReversalModelTrainer()
-                train_df_rev, oos_df_rev = reversal_trainer.prepare_data(df_15m, oos_size=oos_size)
-                
-                st.write(f"訓練樣本: {len(train_df_rev)}, 樣本外: {len(oos_df_rev)}")
-                
-                metrics = reversal_trainer.train(train_df_rev)
-                
-                if not oos_df_rev.empty:
-                    oos_metrics = reversal_trainer.evaluate_oos(oos_df_rev)
-                
-                reversal_trainer.save_models(symbol)
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("反轉信號準確率", f"{metrics['signal_accuracy']*100:.2f}%")
-                    if not oos_df_rev.empty:
-                        st.metric("樣本外反轉信號準確率", f"{oos_metrics['oos_signal_accuracy']*100:.2f}%")
-                
-                with col2:
-                    st.metric("概率RMSE", f"{metrics['probability_rmse']:.2f}")
-                    if not oos_df_rev.empty:
-                        st.metric("樣本外概率RMSE", f"{oos_metrics['oos_probability_rmse']:.2f}")
-                
-                with col3:
-                    st.metric("支撐MAE", f"{metrics['support_mae']:.2f}")
-                    if not oos_df_rev.empty:
-                        st.metric("支撐MAE %", f"{oos_metrics['oos_support_mae_pct']:.2f}%")
-            
-            st.success("訓練完成")
-    
-    # 原有回測和即時分析標籤頁...
-    # (保持原有代碼)
+else:
+    st.sidebar.info("原有策略")
+    st.info("請選擇BB反彈策略 (v6)")
