@@ -40,88 +40,199 @@ def calculate_atr(df_signals):
     atr = atr.bfill().fillna(df_signals['close'] * 0.02)
     return atr
 
-tabs = st.tabs(["BB模型訓練", "單次回測", "參數優化", "Walk-Forward測試"])
+tabs = st.tabs(["BB模型訓練", "多幣種回測", "參數優化", "Walk-Forward測試"])
 
 # ============ TAB 1: 模型訓練 ============
 with tabs[0]:
     st.header("BB反彈模型訓練")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        symbol = st.text_input("交易對", value="BTCUSDT", key="bb_train_symbol")
-        days = st.number_input("訓練天數", min_value=30, max_value=180, value=60, key="bb_train_days")
+    st.info("""
+    **訓練流程**:
+    1. 單幣種訓練: 訓練特定幣種的BB模型
+    2. 批量訓練: 一鍵訓練多個幣種的模型
     
-    with col2:
-        bb_period = st.number_input("BB週期", min_value=10, max_value=30, value=20)
-        bb_std = st.number_input("BB標準差", min_value=1.0, max_value=3.0, value=2.0, step=0.5)
+    訓練後的模型會保存到 `models/saved/{SYMBOL}_bb_*.pkl`
+    """)
     
-    if st.button("開始訓練BB模型", key="bb_train_btn"):
-        with st.spinner("訓練中..."):
-            loader = BinanceDataLoader()
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=days)
-            df = loader.load_historical_data(symbol, '15m', start_date, end_date)
+    train_mode = st.radio("訓練模式", ["單幣種訓練", "批量訓練"], horizontal=True)
+    
+    if train_mode == "單幣種訓練":
+        col1, col2 = st.columns(2)
+        with col1:
+            symbol = st.text_input("交易對", value="BTCUSDT", key="bb_train_symbol")
+            days = st.number_input("訓練天數", min_value=30, max_value=180, value=60, key="bb_train_days")
+        
+        with col2:
+            bb_period = st.number_input("BB週期", min_value=10, max_value=30, value=20)
+            bb_std = st.number_input("BB標準差", min_value=1.0, max_value=3.0, value=2.0, step=0.5)
+        
+        if st.button("開始訓練BB模型", key="bb_train_btn"):
+            with st.spinner("訓練中..."):
+                loader = BinanceDataLoader()
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=days)
+                df = loader.load_historical_data(symbol, '15m', start_date, end_date)
+                
+                extractor = BBBounceFeatureExtractor(bb_period=bb_period, bb_std=bb_std)
+                df_processed = extractor.process(df, create_labels=True)
+                
+                trainer = BBBounceModelTrainer(model_dir=f'models/saved')
+                trainer.train_both_models(df_processed)
+                trainer.save_models(prefix=symbol)
+                
+                st.success(f"✅ {symbol} BB模型訓練完成!")
+                st.write(f"模型保存至: `models/saved/{symbol}_bb_upper_bounce_model.pkl`")
+    
+    else:  # 批量訓練
+        st.subheader("批量訓練多幣種模型")
+        
+        default_symbols = "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,ADAUSDT"
+        symbols_input = st.text_area(
+            "幣種列表 (逗號分隔)",
+            value=default_symbols,
+            help="輸入多個幣種,用英文逗號分隔"
+        )
+        
+        batch_days = st.number_input("訓練天數", min_value=30, max_value=180, value=60, key="batch_days")
+        
+        if st.button("🚀 一鍵訓練所有幣種", key="batch_train_btn"):
+            symbols_list = [s.strip().upper() for s in symbols_input.split(',')]
             
-            extractor = BBBounceFeatureExtractor(bb_period=bb_period, bb_std=bb_std)
-            df_processed = extractor.process(df, create_labels=True)
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            results = []
             
-            trainer = BBBounceModelTrainer(model_dir='models/saved')
-            trainer.train_both_models(df_processed)
-            trainer.save_models()
+            for idx, symbol in enumerate(symbols_list):
+                status_text.text(f"正在訓練 {symbol} ({idx+1}/{len(symbols_list)})...")
+                progress_bar.progress((idx + 1) / len(symbols_list))
+                
+                try:
+                    loader = BinanceDataLoader()
+                    end_date = datetime.now()
+                    start_date = end_date - timedelta(days=batch_days)
+                    df = loader.load_historical_data(symbol, '15m', start_date, end_date)
+                    
+                    extractor = BBBounceFeatureExtractor(bb_period=20, bb_std=2.0)
+                    df_processed = extractor.process(df, create_labels=True)
+                    
+                    trainer = BBBounceModelTrainer(model_dir='models/saved')
+                    trainer.train_both_models(df_processed)
+                    trainer.save_models(prefix=symbol)
+                    
+                    results.append({'幣種': symbol, '狀態': '✅ 成功', '數據量': len(df)})
+                except Exception as e:
+                    results.append({'幣種': symbol, '狀態': f'❌ 失敗: {str(e)[:30]}', '數據量': 0})
             
-            st.success("BB模型訓練完成!")
+            progress_bar.empty()
+            status_text.empty()
+            
+            st.success("批量訓練完成!")
+            st.dataframe(pd.DataFrame(results))
 
-# ============ TAB 2: 單次回測 ============
+# ============ TAB 2: 多幣種回測 ============
 with tabs[1]:
-    st.header("BB反彈策略回測")
+    st.header("多幣種BB反彈策略回測")
+    
+    st.info("""
+    **多幣種交易說明**:
+    - 總資金會分配到多個幣種
+    - 每個幣種獨立產生信號
+    - 可設置最大同時持倉數量
+    - 資金動態管理,優先執行高信號質量的交易
+    """)
     
     col1, col2 = st.columns(2)
     with col1:
-        bt_symbol = st.text_input("回測交易對", value="BTCUSDT", key="bb_bt_symbol")
+        symbols_input = st.text_area(
+            "交易幣種 (逗號分隔)",
+            value="BTCUSDT,ETHUSDT",
+            key="bt_symbols",
+            help="支持多幣種同時回測"
+        )
         bt_days = st.number_input("回測天數", min_value=7, max_value=90, value=30, key="bb_bt_days")
-        initial_capital = st.number_input("初始資金 (USDT)", min_value=10.0, value=100.0, key="bb_capital")
+        initial_capital = st.number_input("總資金 (USDT)", min_value=10.0, value=100.0, key="bb_capital")
     
     with col2:
-        position_size_pct = st.slider("倉位大小 (%)", min_value=5, max_value=100, value=100, step=5, key="bb_position") / 100
-        tp_atr_mult = st.number_input("止盈 ATR倍數", min_value=0.5, max_value=5.0, value=2.0, step=0.5, key="bb_tp")
-        sl_atr_mult = st.number_input("止損 ATR倍數", min_value=0.5, max_value=3.0, value=1.5, step=0.5, key="bb_sl")
+        max_positions = st.number_input(
+            "最大同時持倉數",
+            min_value=1,
+            max_value=10,
+            value=2,
+            key="max_positions",
+            help="限制同時開倉的最大數量"
+        )
+        position_size_pct = st.slider(
+            "單筆倉位 (%)",
+            min_value=10,
+            max_value=100,
+            value=50,
+            step=10,
+            key="bb_position",
+            help="每筆交易使用總資金的百分比"
+        ) / 100
+        
+        leverage = st.number_input("槓桿倍數", min_value=1, max_value=20, value=10, key="leverage")
     
     col3, col4 = st.columns(2)
     with col3:
+        tp_atr_mult = st.number_input("止盈 ATR倍數", min_value=0.5, max_value=5.0, value=2.0, step=0.5, key="bb_tp")
         bb_threshold = st.slider("BB反彈閾值 (%)", min_value=50, max_value=90, value=60, step=5, key="bb_threshold") / 100
+    
     with col4:
+        sl_atr_mult = st.number_input("止損 ATR倍數", min_value=0.5, max_value=3.0, value=1.5, step=0.5, key="bb_sl")
         adx_threshold = st.number_input("ADX強趨勢閾值", min_value=20, max_value=40, value=30, key="bb_adx_threshold")
     
-    if st.button("執行BB回測", key="bb_bt_btn"):
-        with st.spinner("執行回測..."):
+    if st.button("執行多幣種回測", key="bb_bt_btn"):
+        symbols_list = [s.strip().upper() for s in symbols_input.split(',')]
+        
+        with st.spinner("載入數據並生成信號..."):
             loader = BinanceDataLoader()
             end_date = datetime.now()
             start_date = end_date - timedelta(days=bt_days)
-            df = loader.load_historical_data(bt_symbol, '15m', start_date, end_date)
             
-            signal_gen = BBBounceSignalGenerator(
-                bb_model_dir='models/saved',
-                bb_bounce_threshold=bb_threshold,
-                adx_strong_trend_threshold=adx_threshold
-            )
-            df_signals = signal_gen.generate_signals(df)
+            signals_dict = {}
             
-            if 'open_time' not in df_signals.columns:
-                df_signals['open_time'] = df_signals.index
-            df_signals['open_time'] = pd.to_datetime(df_signals['open_time'])
-            df_signals['15m_atr'] = calculate_atr(df_signals)
+            for symbol in symbols_list:
+                try:
+                    df = loader.load_historical_data(symbol, '15m', start_date, end_date)
+                    
+                    signal_gen = BBBounceSignalGenerator(
+                        bb_model_dir='models/saved',
+                        bb_bounce_threshold=bb_threshold,
+                        adx_strong_trend_threshold=adx_threshold,
+                        model_prefix=symbol
+                    )
+                    
+                    df_signals = signal_gen.generate_signals(df)
+                    
+                    if 'open_time' not in df_signals.columns:
+                        df_signals['open_time'] = df_signals.index
+                    df_signals['open_time'] = pd.to_datetime(df_signals['open_time'])
+                    df_signals['15m_atr'] = calculate_atr(df_signals)
+                    
+                    signals_dict[symbol] = df_signals
+                    
+                except Exception as e:
+                    st.warning(f"{symbol} 載入失敗: {str(e)}")
             
+            if len(signals_dict) == 0:
+                st.error("沒有成功載入任何幣種!")
+                st.stop()
+            
+            st.write(f"✅ 成功載入 {len(signals_dict)} 個幣種")
+        
+        with st.spinner("執行回測..."):
             engine = BacktestEngine(
                 initial_capital=initial_capital,
-                leverage=10.0,
+                leverage=leverage,
                 tp_atr_mult=tp_atr_mult,
                 sl_atr_mult=sl_atr_mult,
                 position_size_pct=position_size_pct,
                 position_mode='fixed',
+                max_positions=max_positions,
                 debug=False
             )
             
-            signals_dict = {bt_symbol: df_signals}
             metrics = engine.run_backtest(signals_dict)
             
             st.subheader("績效指標")
@@ -134,18 +245,37 @@ with tabs[1]:
                 st.metric("總回報", f"{metrics['total_return_pct']:.2f}%")
             with col3:
                 st.metric("獲利因子", f"{metrics['profit_factor']:.2f}")
-            with col4:
                 st.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
+            with col4:
                 st.metric("最大回撤", f"{metrics['max_drawdown_pct']:.2f}%")
+                st.metric("平均持倉(分)", f"{metrics['avg_duration_min']:.0f}")
+            
+            # 各幣種統計
+            if 'trades_per_symbol' in metrics:
+                st.subheader("各幣種交易統計")
+                symbol_stats = pd.DataFrame([
+                    {'幣種': k, '交易數': v}
+                    for k, v in metrics['trades_per_symbol'].items()
+                ]).sort_values('交易數', ascending=False)
+                st.dataframe(symbol_stats)
             
             if metrics['total_trades'] > 0:
                 st.plotly_chart(engine.plot_equity_curve(), use_container_width=True)
                 
                 trades_df = engine.get_trades_dataframe()
                 st.subheader("交易明細")
-                display_cols = ['進場時間', '離場時間', '方向', '進場價格', '離場價格', 
+                display_cols = ['symbol', '進場時間', '離場時間', '方向', '進場價格', '離場價格', 
                                '損益(USDT)', '損益率', '離場原因', '持倉時長(分)']
                 st.dataframe(trades_df[display_cols])
+                
+                # 離場原因統計
+                st.subheader("離場原因分布")
+                exit_reasons = trades_df['離場原因'].value_counts()
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.bar_chart(exit_reasons)
+                with col2:
+                    st.dataframe(exit_reasons)
 
 # ============ TAB 3: 參數優化 ============
 with tabs[2]:
@@ -181,7 +311,6 @@ with tabs[2]:
             
             results = []
             
-            # 減少參數組合,加快測試
             bb_thresholds = [0.50, 0.55, 0.60, 0.65]
             adx_thresholds = [25, 30, 35]
             tp_mults = [1.5, 2.0, 2.5]
@@ -203,7 +332,8 @@ with tabs[2]:
                             signal_gen = BBBounceSignalGenerator(
                                 bb_model_dir='models/saved',
                                 bb_bounce_threshold=bb_th,
-                                adx_strong_trend_threshold=adx_th
+                                adx_strong_trend_threshold=adx_th,
+                                model_prefix=opt_symbol
                             )
                             
                             # 訓練期
@@ -220,6 +350,7 @@ with tabs[2]:
                                 sl_atr_mult=sl_mult,
                                 position_size_pct=1.0,
                                 position_mode='fixed',
+                                max_positions=1,
                                 debug=False
                             )
                             train_metrics = engine_train.run_backtest({opt_symbol: df_train_signals})
@@ -238,6 +369,7 @@ with tabs[2]:
                                 sl_atr_mult=sl_mult,
                                 position_size_pct=1.0,
                                 position_mode='fixed',
+                                max_positions=1,
                                 debug=False
                             )
                             test_metrics = engine_test.run_backtest({opt_symbol: df_test_signals})
@@ -266,29 +398,16 @@ with tabs[2]:
             st.write(f"訓練期交易數 >= 5: {(results_df['訓練_交易數'] >= 5).sum()} 組")
             st.write(f"驗證期交易數 >= 3: {(results_df['驗證_交易數'] >= 3).sum()} 組")
             
-            # 放寬過濾條件
             filtered_df = results_df[
                 (results_df['訓練_交易數'] >= 5) & 
                 (results_df['驗證_交易數'] >= 3) &
-                (results_df['驗證_獲利因子'] > 0)  # 只要驗證期不虧錢
+                (results_df['驗證_獲利因子'] > 0)
             ]
             
             st.write(f"\n過濾後剩餘: {len(filtered_df)} 組")
             
             if len(filtered_df) == 0:
-                st.warning("""
-                沒有符合條件的參數組合!
-                
-                可能原因:
-                1. 訓練期或驗證期太短,交易數不足
-                2. 參數範圍設置不當
-                
-                建議:
-                - 增加訓練期天數至60天
-                - 增加驗證期天數至30天
-                - 或降低BB閾值至50%
-                """)
-                
+                st.warning("沒有符合條件的參數組合!")
                 st.subheader("所有參數組合 (未過濾)")
                 st.dataframe(results_df.sort_values('驗證_獲利因子', ascending=False).head(20).round(2))
             else:
@@ -362,7 +481,8 @@ with tabs[3]:
                 signal_gen = BBBounceSignalGenerator(
                     bb_model_dir='models/saved',
                     bb_bounce_threshold=0.60,
-                    adx_strong_trend_threshold=30
+                    adx_strong_trend_threshold=30,
+                    model_prefix=wf_symbol
                 )
                 
                 df_test_signals = signal_gen.generate_signals(df_test_window.copy())
@@ -378,6 +498,7 @@ with tabs[3]:
                     sl_atr_mult=1.5,
                     position_size_pct=1.0,
                     position_mode='fixed',
+                    max_positions=1,
                     debug=False
                 )
                 
