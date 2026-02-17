@@ -106,70 +106,123 @@ class LabelGenerator:
     
     def label_reversal(self, df: pd.DataFrame, horizon: int = 10) -> pd.DataFrame:
         """
-        Label reversal points and support/resistance levels
+        Label reversal points with AGGRESSIVE criteria for high-frequency trading
+        
+        RELAXED CONDITIONS:
+        - Lower price move threshold: 0.3% (was 2%)
+        - Multiple momentum indicators (not just RSI)
+        - MACD crossovers
+        - Price action patterns
+        - No strict swing point requirement
         """
         df = df.copy()
         
-        # Calculate swing highs and lows
-        df['swing_high'] = df['high'].rolling(window=5, center=True).max()
-        df['swing_low'] = df['low'].rolling(window=5, center=True).min()
+        # Calculate swing highs and lows (wider window for more signals)
+        df['swing_high'] = df['high'].rolling(window=3, center=True).max()
+        df['swing_low'] = df['low'].rolling(window=3, center=True).min()
         df['is_swing_high'] = (df['high'] == df['swing_high']).astype(int)
         df['is_swing_low'] = (df['low'] == df['swing_low']).astype(int)
         
-        # Future price action
+        # Future price action (shorter horizon for 15m)
         df['future_high'] = df['high'].shift(-horizon).rolling(horizon).max()
         df['future_low'] = df['low'].shift(-horizon).rolling(horizon).min()
         
-        # Calculate potential reversal magnitude
+        # RELAXED: Only need 0.3% move (was 2%)
         df['potential_up_move'] = (df['future_high'] - df['close']) / df['close'] * 100
         df['potential_down_move'] = (df['close'] - df['future_low']) / df['close'] * 100
         
-        # RSI for overbought/oversold
+        # RSI (relaxed thresholds)
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         df['rsi'] = 100 - (100 / (1 + rs))
         
-        # Reversal direction
-        bullish_conditions = (
-            (df['is_swing_low'] == 1) | 
-            (df['rsi'] < 30)
-        ) & (df['potential_up_move'] > 2)
+        # MACD for momentum
+        ema12 = df['close'].ewm(span=12, adjust=False).mean()
+        ema26 = df['close'].ewm(span=26, adjust=False).mean()
+        df['macd'] = ema12 - ema26
+        df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+        df['macd_cross_up'] = ((df['macd'] > df['macd_signal']) & 
+                               (df['macd'].shift(1) <= df['macd_signal'].shift(1))).astype(int)
+        df['macd_cross_down'] = ((df['macd'] < df['macd_signal']) & 
+                                 (df['macd'].shift(1) >= df['macd_signal'].shift(1))).astype(int)
         
+        # Price momentum (recent moves)
+        df['momentum_3'] = df['close'].pct_change(3) * 100
+        df['momentum_5'] = df['close'].pct_change(5) * 100
+        
+        # Volume confirmation
+        df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
+        df['volume_surge'] = (df['volume_ratio'] > 1.2).astype(int)
+        
+        # AGGRESSIVE BULLISH CONDITIONS (multiple signals)
+        bullish_conditions = (
+            # Price move potential (VERY RELAXED)
+            (df['potential_up_move'] > 0.3) &
+            (
+                # Any of these momentum signals
+                (df['rsi'] < 50) |  # RSI below midpoint
+                (df['macd_cross_up'] == 1) |  # MACD golden cross
+                (df['momentum_3'] < -0.5) |  # Recent pullback
+                (df['is_swing_low'] == 1)  # Local low
+            )
+        )
+        
+        # AGGRESSIVE BEARISH CONDITIONS (multiple signals)
         bearish_conditions = (
-            (df['is_swing_high'] == 1) | 
-            (df['rsi'] > 70)
-        ) & (df['potential_down_move'] > 2)
+            # Price move potential (VERY RELAXED)
+            (df['potential_down_move'] > 0.3) &
+            (
+                # Any of these momentum signals
+                (df['rsi'] > 50) |  # RSI above midpoint
+                (df['macd_cross_down'] == 1) |  # MACD death cross
+                (df['momentum_3'] > 0.5) |  # Recent rally
+                (df['is_swing_high'] == 1)  # Local high
+            )
+        )
         
         df['reversal_direction'] = 0
         df.loc[bullish_conditions, 'reversal_direction'] = 1
         df.loc[bearish_conditions, 'reversal_direction'] = -1
         
-        # Reversal probability
+        # Reversal probability (more generous scoring)
         df['reversal_prob'] = 0.0
         
+        # Bullish score (easier to reach high probability)
         bullish_score = (
-            (df['rsi'] < 30).astype(int) * 30 +
-            df['is_swing_low'] * 30 +
-            (df['potential_up_move'] / 10 * 40).clip(0, 40)
+            (df['rsi'] < 50).astype(int) * 20 +  # Below midpoint = signal
+            (df['rsi'] < 40).astype(int) * 10 +  # Oversold bonus
+            df['is_swing_low'] * 15 +
+            df['macd_cross_up'] * 25 +  # Strong signal
+            (df['momentum_5'] < -1).astype(int) * 15 +  # Pullback
+            df['volume_surge'] * 15 +
+            (df['potential_up_move'] / 2 * 20).clip(0, 20)  # Move potential
         )
-        df.loc[bullish_conditions, 'reversal_prob'] = bullish_score[bullish_conditions]
+        df.loc[bullish_conditions, 'reversal_prob'] = bullish_score[bullish_conditions].clip(0, 100)
         
+        # Bearish score (easier to reach high probability)
         bearish_score = (
-            (df['rsi'] > 70).astype(int) * 30 +
-            df['is_swing_high'] * 30 +
-            (df['potential_down_move'] / 10 * 40).clip(0, 40)
+            (df['rsi'] > 50).astype(int) * 20 +  # Above midpoint = signal
+            (df['rsi'] > 60).astype(int) * 10 +  # Overbought bonus
+            df['is_swing_high'] * 15 +
+            df['macd_cross_down'] * 25 +  # Strong signal
+            (df['momentum_5'] > 1).astype(int) * 15 +  # Rally
+            df['volume_surge'] * 15 +
+            (df['potential_down_move'] / 2 * 20).clip(0, 20)  # Move potential
         )
-        df.loc[bearish_conditions, 'reversal_prob'] = bearish_score[bearish_conditions]
+        df.loc[bearish_conditions, 'reversal_prob'] = bearish_score[bearish_conditions].clip(0, 100)
         
         # Support and resistance levels
         df['support_level'] = df['swing_low'].fillna(method='ffill')
         df['resistance_level'] = df['swing_high'].fillna(method='ffill')
         
+        # Cleanup
         df.drop(['swing_high', 'swing_low', 'is_swing_high', 'is_swing_low',
                 'future_high', 'future_low', 'potential_up_move', 'potential_down_move',
-                'rsi'], axis=1, inplace=True)
+                'rsi', 'macd', 'macd_signal', 'macd_cross_up', 'macd_cross_down',
+                'momentum_3', 'momentum_5', 'volume_ratio', 'volume_surge'], 
+                axis=1, inplace=True)
         
         return df
     
