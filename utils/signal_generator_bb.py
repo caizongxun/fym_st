@@ -25,7 +25,8 @@ class BBBounceSignalGenerator:
                  reversal_model_path: Optional[str] = None,
                  bb_bounce_threshold: float = 0.60,
                  reversal_threshold: float = 0.50,
-                 adx_strong_trend_threshold: float = 30):
+                 adx_strong_trend_threshold: float = 30,
+                 model_prefix: str = ''):
         """
         Args:
             bb_model_dir: BB模型目錄
@@ -33,19 +34,24 @@ class BBBounceSignalGenerator:
             bb_bounce_threshold: BB反彈機率門檻
             reversal_threshold: 反轉機率門檻
             adx_strong_trend_threshold: 強趨勢ADX門檻
+            model_prefix: 模型前綴(支持多幣種模型,例如'BTCUSDT')
         """
         self.feature_extractor = BBBounceFeatureExtractor()
         self.bb_bounce_threshold = bb_bounce_threshold
         self.reversal_threshold = reversal_threshold
         self.adx_threshold = adx_strong_trend_threshold
+        self.model_prefix = model_prefix
         
-        # 載入BB模型
-        self.upper_model = self._load_model(
-            os.path.join(bb_model_dir, 'bb_upper_bounce_model.pkl')
-        )
-        self.lower_model = self._load_model(
-            os.path.join(bb_model_dir, 'bb_lower_bounce_model.pkl')
-        )
+        # 載入BB模型(支持多幣種)
+        if model_prefix:
+            upper_path = os.path.join(bb_model_dir, f'{model_prefix}_bb_upper_bounce_model.pkl')
+            lower_path = os.path.join(bb_model_dir, f'{model_prefix}_bb_lower_bounce_model.pkl')
+        else:
+            upper_path = os.path.join(bb_model_dir, 'bb_upper_bounce_model.pkl')
+            lower_path = os.path.join(bb_model_dir, 'bb_lower_bounce_model.pkl')
+        
+        self.upper_model = self._load_model(upper_path)
+        self.lower_model = self._load_model(lower_path)
         
         # 載入反轉模型(可選)
         self.reversal_model = None
