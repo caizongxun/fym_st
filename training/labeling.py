@@ -5,19 +5,21 @@ from typing import Tuple
 class LabelGenerator:
     """
     Generate labels for training ML models
-    Simplified trend classification: Bull (1), Range (0), Bear (-1)
+    Binary trend classification: Trending (1) vs Ranging (0)
+    Direction determined by technical indicators, not ML prediction
     """
     
     def label_trend(self, df: pd.DataFrame, horizon: int = 10) -> pd.DataFrame:
         """
-        Label trend direction and strength (SIMPLIFIED 3-CLASS VERSION)
+        Label trend strength only (binary: trending or ranging)
+        Direction will be determined by indicators, not prediction
         
         Args:
             df: DataFrame with OHLCV data
             horizon: Number of candles to look ahead
         
         Returns:
-            DataFrame with trend_label and trend_strength columns
+            DataFrame with trend_label (0=ranging, 1=trending) and trend_strength
         """
         df = df.copy()
         
@@ -33,33 +35,26 @@ class LabelGenerator:
         atr = ranges.max(axis=1).rolling(window=14).mean()
         
         # Normalized move (in ATR terms)
-        df['normalized_move'] = df['net_move'] / (atr / df['close'] * 100)
+        df['normalized_move'] = np.abs(df['net_move']) / (atr / df['close'] * 100)
         
-        # Simplified 3-class labeling with clearer boundaries
-        # Bull: normalized_move > 0.8 ATR
-        # Bear: normalized_move < -0.8 ATR
-        # Range: everything in between
-        
-        conditions = [
-            df['normalized_move'] > 0.8,   # Bullish
-            df['normalized_move'] < -0.8,  # Bearish
-        ]
-        choices = [1, -1]
-        
-        df['trend_label'] = np.select(conditions, choices, default=0)
+        # Binary classification: Is there a trend?
+        # Trending if abs(move) > 0.8 ATR
+        df['trend_label'] = (df['normalized_move'] > 0.8).astype(int)
         
         # Calculate trend strength (0-100)
-        # Based on absolute normalized move, capped at 3 ATR
-        df['trend_strength'] = np.abs(df['normalized_move']).clip(0, 3) / 3 * 100
+        df['trend_strength'] = df['normalized_move'].clip(0, 3) / 3 * 100
         
-        # Calculate directional consistency (rolling window)
+        # Calculate directional consistency
         df['price_momentum'] = df['close'].pct_change(5)
         df['momentum_direction'] = np.sign(df['price_momentum'])
         df['direction_consistency'] = df['momentum_direction'].rolling(10).mean().abs() * 100
         
-        # Combine with volatility for final strength score
+        # Enhance strength with consistency
         df['trend_strength'] = (df['trend_strength'] * 0.7 + 
                                 df['direction_consistency'] * 0.3).clip(0, 100)
+        
+        # Store actual direction for analysis (not for ML prediction)
+        df['actual_direction'] = np.sign(df['net_move'])
         
         # Clean up temporary columns
         df.drop(['future_close', 'normalized_move', 'price_momentum', 
@@ -88,26 +83,23 @@ class LabelGenerator:
         atr_pct = atr.rolling(100).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1])
         
         conditions = [
-            atr_pct < 0.33,   # Low volatility
-            atr_pct > 0.66,   # High volatility
+            atr_pct < 0.33,
+            atr_pct > 0.66,
         ]
         choices = [0, 2]
-        df['volatility_regime'] = np.select(conditions, choices, default=1)  # Medium
+        df['volatility_regime'] = np.select(conditions, choices, default=1)
         
         # Trend initiation probability
-        # Based on volume spike and volatility expansion
         df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
         df['vol_expanding'] = (df['vol_change'] > 10).astype(int)
         df['volume_spike'] = (df['volume_ratio'] > 1.5).astype(int)
         
-        # Probability score (0-100)
         df['trend_initiation_prob'] = (
             df['vol_expanding'] * 40 +
             df['volume_spike'] * 40 +
             (atr_pct * 20)
         ).clip(0, 100)
         
-        # Clean up
         df.drop(['volume_ratio', 'vol_expanding', 'volume_spike'], axis=1, inplace=True)
         
         return df
@@ -140,9 +132,6 @@ class LabelGenerator:
         df['rsi'] = 100 - (100 / (1 + rs))
         
         # Reversal direction
-        # Bullish reversal: at swing low + oversold + future upside
-        # Bearish reversal: at swing high + overbought + future downside
-        
         bullish_conditions = (
             (df['is_swing_low'] == 1) | 
             (df['rsi'] < 30)
@@ -157,10 +146,9 @@ class LabelGenerator:
         df.loc[bullish_conditions, 'reversal_direction'] = 1
         df.loc[bearish_conditions, 'reversal_direction'] = -1
         
-        # Reversal probability (0-100)
+        # Reversal probability
         df['reversal_prob'] = 0.0
         
-        # Bullish reversal probability
         bullish_score = (
             (df['rsi'] < 30).astype(int) * 30 +
             df['is_swing_low'] * 30 +
@@ -168,7 +156,6 @@ class LabelGenerator:
         )
         df.loc[bullish_conditions, 'reversal_prob'] = bullish_score[bullish_conditions]
         
-        # Bearish reversal probability
         bearish_score = (
             (df['rsi'] > 70).astype(int) * 30 +
             df['is_swing_high'] * 30 +
@@ -180,7 +167,6 @@ class LabelGenerator:
         df['support_level'] = df['swing_low'].fillna(method='ffill')
         df['resistance_level'] = df['swing_high'].fillna(method='ffill')
         
-        # Clean up
         df.drop(['swing_high', 'swing_low', 'is_swing_high', 'is_swing_low',
                 'future_high', 'future_low', 'potential_up_move', 'potential_down_move',
                 'rsi'], axis=1, inplace=True)
@@ -190,13 +176,6 @@ class LabelGenerator:
     def split_train_oos(self, df: pd.DataFrame, oos_size: int = 1500) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Split data into training and out-of-sample sets
-        
-        Args:
-            df: Full labeled dataset
-            oos_size: Number of samples to reserve for OOS validation
-        
-        Returns:
-            (train_df, oos_df)
         """
         if len(df) <= oos_size:
             return df, pd.DataFrame()
