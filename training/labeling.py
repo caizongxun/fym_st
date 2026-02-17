@@ -106,123 +106,113 @@ class LabelGenerator:
     
     def label_reversal(self, df: pd.DataFrame, horizon: int = 10) -> pd.DataFrame:
         """
-        Label reversal points with AGGRESSIVE criteria for high-frequency trading
+        BINARY REVERSAL DETECTION: Only detect IF reversal occurs (not direction)
         
-        RELAXED CONDITIONS:
-        - Lower price move threshold: 0.3% (was 2%)
-        - Multiple momentum indicators (not just RSI)
-        - MACD crossovers
-        - Price action patterns
-        - No strict swing point requirement
+        Logic:
+        1. Detect momentum shifts (price direction change)
+        2. Only label as reversal = 1, no direction
+        3. Trading logic will use trend + reversal:
+           - Uptrend + reversal → go SHORT
+           - Downtrend + reversal → go LONG
+        
+        Returns:
+            reversal_signal: 0 (no reversal) or 1 (has reversal)
+            reversal_prob: 0-100 (strength of reversal)
         """
         df = df.copy()
         
-        # Calculate swing highs and lows (wider window for more signals)
-        df['swing_high'] = df['high'].rolling(window=3, center=True).max()
-        df['swing_low'] = df['low'].rolling(window=3, center=True).min()
-        df['is_swing_high'] = (df['high'] == df['swing_high']).astype(int)
-        df['is_swing_low'] = (df['low'] == df['swing_low']).astype(int)
+        # Calculate momentum indicators
+        df['momentum_3'] = df['close'].pct_change(3) * 100
+        df['momentum_5'] = df['close'].pct_change(5) * 100
+        df['momentum_10'] = df['close'].pct_change(10) * 100
         
-        # Future price action (shorter horizon for 15m)
-        df['future_high'] = df['high'].shift(-horizon).rolling(horizon).max()
-        df['future_low'] = df['low'].shift(-horizon).rolling(horizon).min()
+        # Future momentum (to detect actual reversal)
+        df['future_momentum_3'] = df['close'].shift(-3).pct_change(3) * 100
+        df['future_momentum_5'] = df['close'].shift(-5).pct_change(5) * 100
         
-        # RELAXED: Only need 0.3% move (was 2%)
-        df['potential_up_move'] = (df['future_high'] - df['close']) / df['close'] * 100
-        df['potential_down_move'] = (df['close'] - df['future_low']) / df['close'] * 100
-        
-        # RSI (relaxed thresholds)
+        # RSI for extremes
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         df['rsi'] = 100 - (100 / (1 + rs))
         
-        # MACD for momentum
+        # MACD for trend change
         ema12 = df['close'].ewm(span=12, adjust=False).mean()
         ema26 = df['close'].ewm(span=26, adjust=False).mean()
         df['macd'] = ema12 - ema26
         df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
-        df['macd_cross_up'] = ((df['macd'] > df['macd_signal']) & 
-                               (df['macd'].shift(1) <= df['macd_signal'].shift(1))).astype(int)
-        df['macd_cross_down'] = ((df['macd'] < df['macd_signal']) & 
-                                 (df['macd'].shift(1) >= df['macd_signal'].shift(1))).astype(int)
+        df['macd_hist'] = df['macd'] - df['macd_signal']
         
-        # Price momentum (recent moves)
-        df['momentum_3'] = df['close'].pct_change(3) * 100
-        df['momentum_5'] = df['close'].pct_change(5) * 100
+        # Detect MACD histogram direction change (reversal signal)
+        df['macd_hist_change'] = df['macd_hist'].diff()
+        df['macd_reversal'] = (
+            ((df['macd_hist'] > 0) & (df['macd_hist_change'] < 0)) |  # Peak
+            ((df['macd_hist'] < 0) & (df['macd_hist_change'] > 0))     # Trough
+        ).astype(int)
+        
+        # Price action: local extremes (3-bar patterns)
+        df['local_high'] = (df['high'] > df['high'].shift(1)) & (df['high'] > df['high'].shift(-1))
+        df['local_low'] = (df['low'] < df['low'].shift(1)) & (df['low'] < df['low'].shift(-1))
+        df['price_extreme'] = (df['local_high'] | df['local_low']).astype(int)
         
         # Volume confirmation
         df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
         df['volume_surge'] = (df['volume_ratio'] > 1.2).astype(int)
         
-        # AGGRESSIVE BULLISH CONDITIONS (multiple signals)
-        bullish_conditions = (
-            # Price move potential (VERY RELAXED)
-            (df['potential_up_move'] > 0.3) &
-            (
-                # Any of these momentum signals
-                (df['rsi'] < 50) |  # RSI below midpoint
-                (df['macd_cross_up'] == 1) |  # MACD golden cross
-                (df['momentum_3'] < -0.5) |  # Recent pullback
-                (df['is_swing_low'] == 1)  # Local low
-            )
+        # CORE LOGIC: Detect momentum reversal
+        # Reversal = current momentum and future momentum have opposite signs
+        df['momentum_reversal'] = (
+            (np.sign(df['momentum_5']) != np.sign(df['future_momentum_5'])) &
+            (np.abs(df['future_momentum_5']) > 0.3)  # Future move > 0.3%
+        ).astype(int)
+        
+        # AGGRESSIVE CONDITIONS: Multiple reversal signals
+        reversal_conditions = (
+            # Core: momentum reversal detected
+            (df['momentum_reversal'] == 1) |
+            
+            # MACD reversal (strong signal)
+            (df['macd_reversal'] == 1) |
+            
+            # RSI extremes with price action
+            ((df['rsi'] < 40) & (df['price_extreme'] == 1)) |
+            ((df['rsi'] > 60) & (df['price_extreme'] == 1)) |
+            
+            # Strong momentum shift
+            ((df['momentum_3'] > 1) & (df['future_momentum_3'] < -0.5)) |
+            ((df['momentum_3'] < -1) & (df['future_momentum_3'] > 0.5))
         )
         
-        # AGGRESSIVE BEARISH CONDITIONS (multiple signals)
-        bearish_conditions = (
-            # Price move potential (VERY RELAXED)
-            (df['potential_down_move'] > 0.3) &
-            (
-                # Any of these momentum signals
-                (df['rsi'] > 50) |  # RSI above midpoint
-                (df['macd_cross_down'] == 1) |  # MACD death cross
-                (df['momentum_3'] > 0.5) |  # Recent rally
-                (df['is_swing_high'] == 1)  # Local high
-            )
-        )
+        # BINARY OUTPUT: 0 or 1 only
+        df['reversal_signal'] = reversal_conditions.astype(int)
         
-        df['reversal_direction'] = 0
-        df.loc[bullish_conditions, 'reversal_direction'] = 1
-        df.loc[bearish_conditions, 'reversal_direction'] = -1
-        
-        # Reversal probability (more generous scoring)
+        # Reversal probability (strength)
         df['reversal_prob'] = 0.0
         
-        # Bullish score (easier to reach high probability)
-        bullish_score = (
-            (df['rsi'] < 50).astype(int) * 20 +  # Below midpoint = signal
-            (df['rsi'] < 40).astype(int) * 10 +  # Oversold bonus
-            df['is_swing_low'] * 15 +
-            df['macd_cross_up'] * 25 +  # Strong signal
-            (df['momentum_5'] < -1).astype(int) * 15 +  # Pullback
-            df['volume_surge'] * 15 +
-            (df['potential_up_move'] / 2 * 20).clip(0, 20)  # Move potential
+        reversal_score = (
+            df['momentum_reversal'] * 30 +           # Core signal
+            df['macd_reversal'] * 25 +                # Trend change
+            df['price_extreme'] * 15 +                # Local extreme
+            ((df['rsi'] < 40) | (df['rsi'] > 60)).astype(int) * 15 +  # RSI extreme
+            df['volume_surge'] * 10 +                 # Volume confirmation
+            (np.abs(df['momentum_5']) / 3 * 5).clip(0, 5)  # Momentum strength
         )
-        df.loc[bullish_conditions, 'reversal_prob'] = bullish_score[bullish_conditions].clip(0, 100)
         
-        # Bearish score (easier to reach high probability)
-        bearish_score = (
-            (df['rsi'] > 50).astype(int) * 20 +  # Above midpoint = signal
-            (df['rsi'] > 60).astype(int) * 10 +  # Overbought bonus
-            df['is_swing_high'] * 15 +
-            df['macd_cross_down'] * 25 +  # Strong signal
-            (df['momentum_5'] > 1).astype(int) * 15 +  # Rally
-            df['volume_surge'] * 15 +
-            (df['potential_down_move'] / 2 * 20).clip(0, 20)  # Move potential
-        )
-        df.loc[bearish_conditions, 'reversal_prob'] = bearish_score[bearish_conditions].clip(0, 100)
+        df.loc[reversal_conditions, 'reversal_prob'] = reversal_score[reversal_conditions].clip(0, 100)
         
-        # Support and resistance levels
+        # Support and resistance (for stop loss/take profit)
+        df['swing_high'] = df['high'].rolling(window=5, center=True).max()
+        df['swing_low'] = df['low'].rolling(window=5, center=True).min()
         df['support_level'] = df['swing_low'].fillna(method='ffill')
         df['resistance_level'] = df['swing_high'].fillna(method='ffill')
         
-        # Cleanup
-        df.drop(['swing_high', 'swing_low', 'is_swing_high', 'is_swing_low',
-                'future_high', 'future_low', 'potential_up_move', 'potential_down_move',
-                'rsi', 'macd', 'macd_signal', 'macd_cross_up', 'macd_cross_down',
-                'momentum_3', 'momentum_5', 'volume_ratio', 'volume_surge'], 
-                axis=1, inplace=True)
+        # Cleanup temporary columns
+        df.drop(['momentum_3', 'momentum_5', 'momentum_10', 'future_momentum_3', 
+                'future_momentum_5', 'rsi', 'macd', 'macd_signal', 'macd_hist',
+                'macd_hist_change', 'macd_reversal', 'local_high', 'local_low',
+                'price_extreme', 'volume_ratio', 'volume_surge', 'momentum_reversal',
+                'swing_high', 'swing_low'], axis=1, inplace=True)
         
         return df
     
