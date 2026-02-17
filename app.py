@@ -166,7 +166,8 @@ with tabs[1]:
             df_1h['timeframe'] = '1h'
             df_15m['timeframe'] = '15m'
             
-            df_1h_resampled = df_1h.set_index('open_time').resample('15T').last().reset_index()
+            # Use 'min' instead of deprecated 'T'
+            df_1h_resampled = df_1h.set_index('open_time').resample('15min').last().reset_index()
             df_1h_resampled = df_1h_resampled.add_suffix('_1h')
             df_1h_resampled.rename(columns={'open_time_1h': 'open_time'}, inplace=True)
             
@@ -193,24 +194,25 @@ with tabs[1]:
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
-                st.metric("Total Trades", metrics['total_trades'])
-                st.metric("Win Rate", f"{metrics['win_rate']:.2f}%")
+                st.metric("Total Trades", metrics.get('total_trades', 0))
+                st.metric("Win Rate", f"{metrics.get('win_rate', 0):.2f}%")
             
             with col2:
-                st.metric("Final Equity", f"${metrics['final_equity']:.2f}")
-                st.metric("Total Return", f"{metrics['total_return_pct']:.2f}%")
+                st.metric("Final Equity", f"${metrics.get('final_equity', 0):.2f}")
+                st.metric("Total Return", f"{metrics.get('total_return_pct', 0):.2f}%")
             
             with col3:
-                st.metric("Profit Factor", f"{metrics['profit_factor']:.2f}")
-                st.metric("Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}")
+                st.metric("Profit Factor", f"{metrics.get('profit_factor', 0):.2f}")
+                st.metric("Sharpe Ratio", f"{metrics.get('sharpe_ratio', 0):.2f}")
             
             with col4:
-                st.metric("Max Drawdown", f"{metrics['max_drawdown_pct']:.2f}%")
-                st.metric("Avg Trade Duration", f"{metrics['avg_duration_min']:.0f}m")
+                st.metric("Max Drawdown", f"{metrics.get('max_drawdown_pct', 0):.2f}%")
+                avg_duration = metrics.get('avg_duration_min', metrics.get('avg_duration', 0))
+                st.metric("Avg Trade Duration", f"{avg_duration:.0f}m")
             
             st.plotly_chart(engine.plot_equity_curve(), use_container_width=True)
             
-            if metrics['total_trades'] > 0:
+            if metrics.get('total_trades', 0) > 0:
                 st.subheader("Trade Details")
                 trades_df = engine.get_trades_dataframe()
                 st.dataframe(trades_df[[
@@ -250,7 +252,7 @@ with tabs[2]:
             df_1h = trend_trainer.predict(df_1h)
             df_15m = reversal_trainer.predict(df_15m)
             
-            df_1h_resampled = df_1h.set_index('open_time').resample('15T').last().reset_index()
+            df_1h_resampled = df_1h.set_index('open_time').resample('15min').last().reset_index()
             df_1h_resampled = df_1h_resampled.add_suffix('_1h')
             df_1h_resampled.rename(columns={'open_time_1h': 'open_time'}, inplace=True)
             
@@ -283,7 +285,7 @@ with tabs[2]:
                 color = 'green' if signal_name == 'LONG' else ('red' if signal_name == 'SHORT' else 'gray')
                 st.markdown(f"### Action: :{color}[{signal_name}]")
                 st.metric("Support Level", f"${latest['support_pred']:.2f}")
-                st.metric("Resistance Level", f"${latest['resistance_pred']:.2f}")
+                st.metric("Resistance Level", f"{latest['resistance_pred']:.2f}")
             
             st.subheader("Recent Signals")
             recent_signals = df_signals[df_signals['signal'] != 0].tail(10)
