@@ -24,7 +24,8 @@ class BacktestEngine:
                  position_mode: str = 'fixed',
                  max_positions: int = 1,
                  maker_fee: float = 0.0002,
-                 taker_fee: float = 0.0006):
+                 taker_fee: float = 0.0006,
+                 debug: bool = False):
         self.initial_capital = initial_capital
         self.leverage = leverage
         self.tp_atr_mult = tp_atr_mult
@@ -34,6 +35,7 @@ class BacktestEngine:
         self.max_positions = max_positions
         self.maker_fee = maker_fee
         self.taker_fee = taker_fee
+        self.debug = debug
         
         self.equity = initial_capital
         self.peak_equity = initial_capital
@@ -55,6 +57,8 @@ class BacktestEngine:
                              trend_direction: int, trend_strength: float,
                              reversal_prob: float, trend_filter: str) -> bool:
         if self.equity <= 0:
+            if self.debug:
+                print(f"[SKIP] Equity <= 0: {self.equity}")
             return False
             
         if symbol in self.open_positions:
@@ -63,11 +67,15 @@ class BacktestEngine:
                 self.close_position(symbol, entry_price, timestamp, 'REVERSAL_FLIP', 
                                    trend_direction, trend_strength, reversal_prob, trend_filter)
             else:
+                if self.debug:
+                    print(f"[SKIP] Position already exists: {old_pos['direction']}")
                 return False
         
         position_value = self.calculate_position_size()
         required_margin = position_value / self.leverage
         if required_margin > self.equity * 0.95:
+            if self.debug:
+                print(f"[SKIP] Insufficient margin: required={required_margin:.2f}, equity={self.equity:.2f}")
             return False
         
         quantity = position_value / entry_price
@@ -100,6 +108,10 @@ class BacktestEngine:
         }
         
         self.equity -= entry_fee
+        
+        if self.debug:
+            print(f"[OPEN] {direction} @ {entry_price:.2f}, TP={tp_price:.2f}, SL={sl_price:.2f}, ATR={atr:.2f}")
+        
         return True
     
     def check_tp_sl_intrabar(self, symbol: str, high: float, low: float, close: float, timestamp: datetime) -> Optional[Tuple[str, float]]:
@@ -146,6 +158,9 @@ class BacktestEngine:
             pnl = (pos['entry_price'] - exit_price) * pos['quantity'] - pos['entry_fee'] - exit_fee
         
         self.equity += pnl
+        
+        if self.debug:
+            print(f"[CLOSE] {pos['direction']} @ {exit_price:.2f}, PNL={pnl:.2f}, Reason={exit_reason}")
         
         exit_reason_map = {
             'TP': '止盈',
@@ -214,10 +229,19 @@ class BacktestEngine:
         combined_df = pd.concat(all_data, ignore_index=True)
         combined_df = combined_df.sort_values('open_time').reset_index(drop=True)
         
+        if self.debug:
+            print(f"\n=== BACKTEST START ===")
+            print(f"Total rows: {len(combined_df)}")
+            print(f"Signals detected: {(combined_df['signal'] != 0).sum()}")
+            print(f"First signal at index: {combined_df[combined_df['signal'] != 0].index[0] if (combined_df['signal'] != 0).sum() > 0 else 'None'}")
+        
         # Add next candle's open price
         for symbol in signals_dict.keys():
             symbol_mask = combined_df['symbol'] == symbol
             combined_df.loc[symbol_mask, 'next_open'] = combined_df.loc[symbol_mask, 'open'].shift(-1)
+        
+        signal_count = 0
+        entry_count = 0
         
         for idx, row in combined_df.iterrows():
             timestamp = row['open_time']
@@ -246,9 +270,12 @@ class BacktestEngine:
                 signal_filter = pending['trend_filter']
                 
                 # Enter at current candle's OPEN price
-                self.open_or_flip_position(symbol, direction, current_open, timestamp, 
+                result = self.open_or_flip_position(symbol, direction, current_open, timestamp, 
                                           signal_data, signal_atr, signal_trend, 
                                           signal_strength, signal_reversal, signal_filter)
+                if result:
+                    entry_count += 1
+                
                 del self.pending_signals[symbol]
             
             # STEP 2: Check TP/SL for existing positions using high/low
@@ -266,7 +293,12 @@ class BacktestEngine:
             
             # STEP 3: Detect new signal at candle close
             if 'signal' in row and row['signal'] != 0 and not pd.isna(next_open):
+                signal_count += 1
                 direction = 'LONG' if row['signal'] == 1 else 'SHORT'
+                
+                if self.debug and signal_count <= 3:
+                    print(f"\n[SIGNAL #{signal_count}] idx={idx}, time={timestamp}, direction={direction}")
+                    print(f"  ATR={atr:.2f}, next_open={next_open:.2f}")
                 
                 if symbol in self.open_positions:
                     pos = self.open_positions[symbol]
@@ -283,6 +315,8 @@ class BacktestEngine:
                             'reversal_prob': reversal_prob,
                             'trend_filter': trend_filter
                         }
+                        if self.debug:
+                            print(f"  -> Pending reversal to {direction}")
                 else:
                     # No position, prepare new entry at next open
                     self.pending_signals[symbol] = {
@@ -294,6 +328,8 @@ class BacktestEngine:
                         'reversal_prob': reversal_prob,
                         'trend_filter': trend_filter
                     }
+                    if self.debug and signal_count <= 3:
+                        print(f"  -> Pending entry {direction}")
             
             # Record equity
             self.equity_curve.append({
@@ -301,6 +337,12 @@ class BacktestEngine:
                 'equity': self.equity,
                 'open_positions': len(self.open_positions)
             })
+        
+        if self.debug:
+            print(f"\n=== BACKTEST END ===")
+            print(f"Total signals detected: {signal_count}")
+            print(f"Total entries executed: {entry_count}")
+            print(f"Total trades completed: {len(self.trades)}")
         
         # Close remaining positions
         for symbol in list(self.open_positions.keys()):
