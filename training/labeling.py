@@ -4,177 +4,201 @@ from typing import Tuple
 
 class LabelGenerator:
     """
-    Generate labels for training the three models:
-    1. Trend Model (1h): Classify trend strength and direction
-    2. Volatility Model (15m): Predict volatility regime changes
-    3. Reversal Model (15m): Identify reversal points
+    Generate labels for training ML models
+    Simplified trend classification: Bull (1), Range (0), Bear (-1)
     """
     
-    @staticmethod
-    def label_trend(df: pd.DataFrame, horizon: int = 10, atr_col: str = '1h_atr') -> pd.DataFrame:
+    def label_trend(self, df: pd.DataFrame, horizon: int = 10) -> pd.DataFrame:
         """
-        Label trend strength and direction for 1h data
+        Label trend direction and strength (SIMPLIFIED 3-CLASS VERSION)
         
         Args:
-            df: DataFrame with 1h features
+            df: DataFrame with OHLCV data
             horizon: Number of candles to look ahead
-            atr_col: Column name for ATR
         
         Returns:
-            DataFrame with trend labels
+            DataFrame with trend_label and trend_strength columns
         """
         df = df.copy()
         
-        # Calculate future price movement
-        df['future_high'] = df['high'].rolling(horizon).max().shift(-horizon)
-        df['future_low'] = df['low'].rolling(horizon).min().shift(-horizon)
+        # Calculate future return
         df['future_close'] = df['close'].shift(-horizon)
+        df['net_move'] = (df['future_close'] - df['close']) / df['close'] * 100
         
-        # Calculate directional movement relative to ATR
-        df['upside'] = (df['future_high'] - df['close']) / df[atr_col]
-        df['downside'] = (df['close'] - df['future_low']) / df[atr_col]
-        df['net_move'] = (df['future_close'] - df['close']) / df[atr_col]
+        # Calculate ATR for normalization
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['close'].shift())
+        low_close = np.abs(df['low'] - df['close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        atr = ranges.max(axis=1).rolling(window=14).mean()
         
-        # Classify trend
+        # Normalized move (in ATR terms)
+        df['normalized_move'] = df['net_move'] / (atr / df['close'] * 100)
+        
+        # Simplified 3-class labeling with clearer boundaries
+        # Bull: normalized_move > 0.8 ATR
+        # Bear: normalized_move < -0.8 ATR
+        # Range: everything in between
+        
         conditions = [
-            (df['net_move'] > 2) & (df['upside'] > 2),      # Strong Bullish
-            (df['net_move'] > 0.5) & (df['upside'] > 1),    # Weak Bullish
-            (df['net_move'] < -2) & (df['downside'] > 2),   # Strong Bearish
-            (df['net_move'] < -0.5) & (df['downside'] > 1), # Weak Bearish
+            df['normalized_move'] > 0.8,   # Bullish
+            df['normalized_move'] < -0.8,  # Bearish
         ]
-        choices = [4, 3, 0, 1]  # 4=Strong Bull, 3=Weak Bull, 2=Range, 1=Weak Bear, 0=Strong Bear
-        df['trend_label'] = np.select(conditions, choices, default=2)
+        choices = [1, -1]
         
-        # Trend strength score (0-100)
-        df['trend_strength'] = np.clip(abs(df['net_move']) * 20, 0, 100)
+        df['trend_label'] = np.select(conditions, choices, default=0)
         
-        # Clean up intermediate columns
-        df = df.drop(columns=['future_high', 'future_low', 'future_close', 'upside', 'downside'])
+        # Calculate trend strength (0-100)
+        # Based on absolute normalized move, capped at 3 ATR
+        df['trend_strength'] = np.abs(df['normalized_move']).clip(0, 3) / 3 * 100
+        
+        # Calculate directional consistency (rolling window)
+        df['price_momentum'] = df['close'].pct_change(5)
+        df['momentum_direction'] = np.sign(df['price_momentum'])
+        df['direction_consistency'] = df['momentum_direction'].rolling(10).mean().abs() * 100
+        
+        # Combine with volatility for final strength score
+        df['trend_strength'] = (df['trend_strength'] * 0.7 + 
+                                df['direction_consistency'] * 0.3).clip(0, 100)
+        
+        # Clean up temporary columns
+        df.drop(['future_close', 'normalized_move', 'price_momentum', 
+                'momentum_direction', 'direction_consistency'], axis=1, inplace=True)
         
         return df
     
-    @staticmethod
-    def label_volatility(df: pd.DataFrame, horizon: int = 5) -> pd.DataFrame:
+    def label_volatility(self, df: pd.DataFrame, horizon: int = 5) -> pd.DataFrame:
         """
-        Label volatility regime and trend initiation for 15m data
-        
-        Args:
-            df: DataFrame with 15m features
-            horizon: Number of candles to look ahead
-        
-        Returns:
-            DataFrame with volatility labels
+        Label volatility regime and trend initiation probability
         """
         df = df.copy()
         
         # Calculate current and future ATR
-        if '15m_atr' not in df.columns:
-            df['15m_atr'] = df['high'] - df['low']  # Simplified if ATR not available
+        high_low = df['high'] - df['low']
+        high_close = np.abs(df['high'] - df['close'].shift())
+        low_close = np.abs(df['low'] - df['close'].shift())
+        ranges = pd.concat([high_low, high_close, low_close], axis=1)
+        atr = ranges.max(axis=1).rolling(window=14).mean()
         
-        df['current_atr'] = df['15m_atr']
-        df['future_atr'] = df['15m_atr'].rolling(horizon).mean().shift(-horizon)
+        # Future volatility change
+        future_atr = atr.shift(-horizon)
+        df['vol_change'] = (future_atr - atr) / atr * 100
         
-        # Volatility change
-        df['vol_change'] = (df['future_atr'] - df['current_atr']) / df['current_atr']
+        # Classify volatility regime based on percentiles
+        atr_pct = atr.rolling(100).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1])
         
-        # Classify volatility regime
         conditions = [
-            df['vol_change'] > 0.3,   # High volatility incoming
-            df['vol_change'] < -0.3,  # Low volatility incoming
+            atr_pct < 0.33,   # Low volatility
+            atr_pct > 0.66,   # High volatility
         ]
-        choices = [2, 0]  # 2=High, 1=Medium, 0=Low
-        df['volatility_regime'] = np.select(conditions, choices, default=1)
+        choices = [0, 2]
+        df['volatility_regime'] = np.select(conditions, choices, default=1)  # Medium
         
-        # Detect trend initiation
-        # Look for price breakout with expanding volatility
-        df['price_range'] = df['high'] - df['low']
-        df['future_range'] = df['price_range'].rolling(horizon).mean().shift(-horizon)
-        df['range_expansion'] = df['future_range'] / df['price_range']
+        # Trend initiation probability
+        # Based on volume spike and volatility expansion
+        df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
+        df['vol_expanding'] = (df['vol_change'] > 10).astype(int)
+        df['volume_spike'] = (df['volume_ratio'] > 1.5).astype(int)
         
-        # Trend initiation probability (0-100)
-        df['trend_initiation_prob'] = np.clip(
-            (df['vol_change'] + df['range_expansion'] - 1) * 100, 0, 100
-        )
+        # Probability score (0-100)
+        df['trend_initiation_prob'] = (
+            df['vol_expanding'] * 40 +
+            df['volume_spike'] * 40 +
+            (atr_pct * 20)
+        ).clip(0, 100)
         
         # Clean up
-        df = df.drop(columns=['current_atr', 'future_atr', 'price_range', 
-                             'future_range', 'range_expansion'])
+        df.drop(['volume_ratio', 'vol_expanding', 'volume_spike'], axis=1, inplace=True)
         
         return df
     
-    @staticmethod
-    def label_reversal(df: pd.DataFrame, horizon: int = 10) -> pd.DataFrame:
+    def label_reversal(self, df: pd.DataFrame, horizon: int = 10) -> pd.DataFrame:
         """
-        Label reversal points for 15m data
-        
-        Args:
-            df: DataFrame with 15m features
-            horizon: Number of candles to look ahead/behind
-        
-        Returns:
-            DataFrame with reversal labels
+        Label reversal points and support/resistance levels
         """
         df = df.copy()
         
-        # Find local extrema
-        # Bullish reversal: current low is the lowest in the window
-        df['is_local_low'] = (
-            (df['low'] == df['low'].rolling(window=horizon*2+1, center=True).min())
-        ).astype(int)
+        # Calculate swing highs and lows
+        df['swing_high'] = df['high'].rolling(window=5, center=True).max()
+        df['swing_low'] = df['low'].rolling(window=5, center=True).min()
+        df['is_swing_high'] = (df['high'] == df['swing_high']).astype(int)
+        df['is_swing_low'] = (df['low'] == df['swing_low']).astype(int)
         
-        # Bearish reversal: current high is the highest in the window
-        df['is_local_high'] = (
-            (df['high'] == df['high'].rolling(window=horizon*2+1, center=True).max())
-        ).astype(int)
+        # Future price action
+        df['future_high'] = df['high'].shift(-horizon).rolling(horizon).max()
+        df['future_low'] = df['low'].shift(-horizon).rolling(horizon).min()
         
-        # Calculate reversal strength based on subsequent movement
-        df['future_high'] = df['high'].rolling(horizon).max().shift(-horizon)
-        df['future_low'] = df['low'].rolling(horizon).min().shift(-horizon)
+        # Calculate potential reversal magnitude
+        df['potential_up_move'] = (df['future_high'] - df['close']) / df['close'] * 100
+        df['potential_down_move'] = (df['close'] - df['future_low']) / df['close'] * 100
+        
+        # RSI for overbought/oversold
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
+        
+        # Reversal direction
+        # Bullish reversal: at swing low + oversold + future upside
+        # Bearish reversal: at swing high + overbought + future downside
+        
+        bullish_conditions = (
+            (df['is_swing_low'] == 1) | 
+            (df['rsi'] < 30)
+        ) & (df['potential_up_move'] > 2)
+        
+        bearish_conditions = (
+            (df['is_swing_high'] == 1) | 
+            (df['rsi'] > 70)
+        ) & (df['potential_down_move'] > 2)
+        
+        df['reversal_direction'] = 0
+        df.loc[bullish_conditions, 'reversal_direction'] = 1
+        df.loc[bearish_conditions, 'reversal_direction'] = -1
+        
+        # Reversal probability (0-100)
+        df['reversal_prob'] = 0.0
         
         # Bullish reversal probability
-        df['bullish_reversal_strength'] = (
-            (df['future_high'] - df['close']) / df['close'] * 100
-        ).clip(0, 100)
+        bullish_score = (
+            (df['rsi'] < 30).astype(int) * 30 +
+            df['is_swing_low'] * 30 +
+            (df['potential_up_move'] / 10 * 40).clip(0, 40)
+        )
+        df.loc[bullish_conditions, 'reversal_prob'] = bullish_score[bullish_conditions]
         
-        # Bearish reversal probability  
-        df['bearish_reversal_strength'] = (
-            (df['close'] - df['future_low']) / df['close'] * 100
-        ).clip(0, 100)
+        # Bearish reversal probability
+        bearish_score = (
+            (df['rsi'] > 70).astype(int) * 30 +
+            df['is_swing_high'] * 30 +
+            (df['potential_down_move'] / 10 * 40).clip(0, 40)
+        )
+        df.loc[bearish_conditions, 'reversal_prob'] = bearish_score[bearish_conditions]
         
-        # Combined reversal probability
-        df['reversal_prob'] = 0.0
-        df.loc[df['is_local_low'] == 1, 'reversal_prob'] = df['bullish_reversal_strength']
-        df.loc[df['is_local_high'] == 1, 'reversal_prob'] = df['bearish_reversal_strength']
-        
-        # Reversal direction: 1=bullish, -1=bearish, 0=none
-        df['reversal_direction'] = 0
-        df.loc[df['is_local_low'] == 1, 'reversal_direction'] = 1
-        df.loc[df['is_local_high'] == 1, 'reversal_direction'] = -1
-        
-        # Predicted support/resistance levels
-        df['support_level'] = df['low'].rolling(horizon*2).min()
-        df['resistance_level'] = df['high'].rolling(horizon*2).max()
+        # Support and resistance levels
+        df['support_level'] = df['swing_low'].fillna(method='ffill')
+        df['resistance_level'] = df['swing_high'].fillna(method='ffill')
         
         # Clean up
-        df = df.drop(columns=['future_high', 'future_low', 'is_local_low', 'is_local_high',
-                             'bullish_reversal_strength', 'bearish_reversal_strength'])
+        df.drop(['swing_high', 'swing_low', 'is_swing_high', 'is_swing_low',
+                'future_high', 'future_low', 'potential_up_move', 'potential_down_move',
+                'rsi'], axis=1, inplace=True)
         
         return df
     
-    @staticmethod
-    def split_train_oos(df: pd.DataFrame, oos_size: int = 1500) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    def split_train_oos(self, df: pd.DataFrame, oos_size: int = 1500) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Split data into training and out-of-sample sets
         
         Args:
-            df: Full dataset
-            oos_size: Number of candles to reserve for OOS validation
+            df: Full labeled dataset
+            oos_size: Number of samples to reserve for OOS validation
         
         Returns:
-            Tuple of (training_df, oos_df)
+            (train_df, oos_df)
         """
         if len(df) <= oos_size:
-            print(f"Warning: Dataset too small ({len(df)} rows) for OOS split")
             return df, pd.DataFrame()
         
         split_idx = len(df) - oos_size
