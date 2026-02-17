@@ -56,6 +56,23 @@ def calculate_atr(df_signals):
     atr = atr.bfill().fillna(df_signals['close'] * 0.02)
     return atr
 
+def display_metrics(metrics):
+    """顯示績效指標 (安全處理缺失值)"""
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("交易次數", metrics.get('total_trades', 0))
+        st.metric("勝率", f"{metrics.get('win_rate', 0):.2f}%")
+    with col2:
+        st.metric("最終權益", f"${metrics.get('final_equity', 0):.2f}")
+        st.metric("總回報", f"{metrics.get('total_return_pct', 0):.2f}%")
+    with col3:
+        st.metric("獲利因子", f"{metrics.get('profit_factor', 0):.2f}")
+        st.metric("夏普比率", f"{metrics.get('sharpe_ratio', 0):.2f}")
+    with col4:
+        st.metric("最大回撤", f"{metrics.get('max_drawdown_pct', 0):.2f}%")
+        avg_duration = metrics.get('avg_duration_min', 0)
+        st.metric("平均持倉(分)", f"{avg_duration:.0f}" if avg_duration else "N/A")
+
 def symbol_selector(key_prefix: str, multi: bool = False, default_symbols: list = None):
     """幣種選擇器"""
     if data_source == "HuggingFace (38幣)":
@@ -417,21 +434,9 @@ with tabs[1]:
                 metrics = engine.run_backtest(signals_dict)
                 
                 st.subheader("績效指標")
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("交易次數", metrics['total_trades'])
-                    st.metric("勝率", f"{metrics['win_rate']:.2f}%")
-                with col2:
-                    st.metric("最終權益", f"${metrics['final_equity']:.2f}")
-                    st.metric("總回報", f"{metrics['total_return_pct']:.2f}%")
-                with col3:
-                    st.metric("獲利因子", f"{metrics['profit_factor']:.2f}")
-                    st.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
-                with col4:
-                    st.metric("最大回撤", f"{metrics['max_drawdown_pct']:.2f}%")
-                    st.metric("平均持倉(分)", f"{metrics['avg_duration_min']:.0f}")
+                display_metrics(metrics)
                 
-                if metrics['total_trades'] > 0:
+                if metrics.get('total_trades', 0) > 0:
                     st.plotly_chart(engine.plot_equity_curve(), use_container_width=True)
                 else:
                     st.warning("無交易產生,請調整參數")
@@ -495,7 +500,6 @@ with tabs[2]:
                     try:
                         df = loader.load_historical_data(symbol, '15m', start_date, end_date)
                         
-                        # 使用三重確認信號生成器
                         signal_gen = TripleConfirmSignalGenerator(
                             bb_period=20,
                             bb_std=2.0,
@@ -514,7 +518,6 @@ with tabs[2]:
                         
                         signals_dict[symbol] = df_signals
                         
-                        # 顯示信號統計
                         summary = signal_gen.get_signal_summary(df_signals)
                         st.info(f"{symbol}: {summary['total_signals']}個信號 (多:{summary['long_signals']}, 空:{summary['short_signals']})")
                         
@@ -542,21 +545,9 @@ with tabs[2]:
                 metrics = engine.run_backtest(signals_dict)
                 
                 st.subheader("績效指標")
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("交易次數", metrics['total_trades'])
-                    st.metric("勝率", f"{metrics['win_rate']:.2f}%")
-                with col2:
-                    st.metric("最終權益", f"${metrics['final_equity']:.2f}")
-                    st.metric("總回報", f"{metrics['total_return_pct']:.2f}%")
-                with col3:
-                    st.metric("獲利因子", f"{metrics['profit_factor']:.2f}")
-                    st.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
-                with col4:
-                    st.metric("最大回撤", f"{metrics['max_drawdown_pct']:.2f}%")
-                    st.metric("平均持倉(分)", f"{metrics['avg_duration_min']:.0f}")
+                display_metrics(metrics)
                 
-                if metrics['total_trades'] > 0:
+                if metrics.get('total_trades', 0) > 0:
                     st.plotly_chart(engine.plot_equity_curve(), use_container_width=True)
                     
                     trades_df = engine.get_trades_dataframe()
