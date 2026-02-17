@@ -180,45 +180,29 @@ class BacktestEngine:
                 tp_sl_result = self.check_tp_sl(symbol, current_price, timestamp)
                 
                 if tp_sl_result == 'TP':
-                    # Hit TP -> Close and reverse
-                    closed_trade = self.close_position(symbol, current_price, timestamp, 'TP_HIT')
-                    if closed_trade:
-                        # Flip position immediately
-                        new_direction = 'SHORT' if closed_trade['direction'] == 'LONG' else 'LONG'
-                        self.open_or_flip_position(symbol, new_direction, current_price, timestamp, 
-                                                   {'flip_after': 'TP'}, atr)
+                    # Hit TP -> Close ONLY (Wait for next signal to re-enter)
+                    self.close_position(symbol, current_price, timestamp, 'TP_HIT')
                     continue
                 
                 elif tp_sl_result == 'SL':
-                    # Hit SL -> Close and reverse
-                    closed_trade = self.close_position(symbol, current_price, timestamp, 'SL_HIT')
-                    if closed_trade:
-                        # Flip position immediately
-                        new_direction = 'SHORT' if closed_trade['direction'] == 'LONG' else 'LONG'
-                        self.open_or_flip_position(symbol, new_direction, current_price, timestamp, 
-                                                   {'flip_after': 'SL'}, atr)
+                    # Hit SL -> Close ONLY (Wait for next signal to re-enter)
+                    self.close_position(symbol, current_price, timestamp, 'SL_HIT')
                     continue
             
             # Priority 2: Check reversal signals
             if 'signal' in row and row['signal'] != 0:
                 direction = 'LONG' if row['signal'] == 1 else 'SHORT'
                 
-                # If already in profit and reversal signal appears -> flip
                 if symbol in self.open_positions:
                     pos = self.open_positions[symbol]
-                    current_pnl = 0
-                    if pos['direction'] == 'LONG':
-                        current_pnl = (current_price - pos['entry_price']) * pos['quantity']
-                    else:
-                        current_pnl = (pos['entry_price'] - current_price) * pos['quantity']
-                    
-                    # Only flip on reversal if profitable
-                    if current_pnl > 0:
-                        self.close_position(symbol, current_price, timestamp, 'REVERSAL_PROFIT')
+                    # If signal is opposite to current position -> Flip
+                    if pos['direction'] != direction:
+                        # Removed "only if profitable" check to catch all waves
+                        self.close_position(symbol, current_price, timestamp, 'REVERSAL_FLIP')
                         self.open_or_flip_position(symbol, direction, current_price, timestamp, 
                                                    {'reversal_prob': row.get('reversal_prob_pred', 0)}, atr)
                 else:
-                    # No position, open new one
+                    # No position -> Open new one
                     signal_data = {'reversal_prob': row.get('reversal_prob_pred', 0)}
                     self.open_or_flip_position(symbol, direction, current_price, timestamp, signal_data, atr)
             
