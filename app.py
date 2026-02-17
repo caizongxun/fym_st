@@ -14,12 +14,12 @@ from backtesting.engine import BacktestEngine
 
 st.set_page_config(page_title="AI Crypto Trading Dashboard", layout="wide")
 
-st.title("AI Crypto Trading Dashboard - Pure Reversal Strategy")
+st.title("AI Crypto Trading Dashboard - 15m Reversal + ATR Strategy")
 
 tabs = st.tabs(["Model Training", "Backtest", "Live Analysis"])
 
 with tabs[0]:
-    st.header("Model Training (Reversal Only)")
+    st.header("Model Training (15m Trend + Reversal)")
     
     col1, col2, col3 = st.columns(3)
     
@@ -39,20 +39,17 @@ with tabs[0]:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=days)
             
-            df_1h = loader.load_historical_data(symbol, '1h', start_date, end_date)
             df_15m = loader.load_historical_data(symbol, '15m', start_date, end_date)
             
             feature_engineer = FeatureEngineer()
-            df_1h = feature_engineer.create_features(df_1h, timeframe='1h')
             df_15m = feature_engineer.create_features(df_15m, timeframe='15m')
             
-            st.write(f"1h data: {len(df_1h)} samples")
             st.write(f"15m data: {len(df_15m)} samples")
         
-        st.subheader("Training Trend Detection Model")
+        st.subheader("Training 15m Trend Detection Model")
         with st.spinner("Training trend model..."):
             trend_trainer = TrendModelTrainer()
-            train_df_trend, oos_df_trend = trend_trainer.prepare_data(df_1h, oos_size=oos_size)
+            train_df_trend, oos_df_trend = trend_trainer.prepare_data(df_15m, oos_size=oos_size)
             
             st.write(f"Training samples: {len(train_df_trend)}, OOS samples: {len(oos_df_trend)}")
             
@@ -74,7 +71,7 @@ with tabs[0]:
                 if not oos_df_trend.empty:
                     st.metric("OOS Regression RMSE", f"{oos_metrics['oos_regression_rmse']:.2f}")
         
-        st.subheader("Training Reversal Detection Model")
+        st.subheader("Training 15m Reversal Detection Model")
         with st.spinner("Training reversal model..."):
             reversal_trainer = ReversalModelTrainer()
             train_df_rev, oos_df_rev = reversal_trainer.prepare_data(df_15m, oos_size=oos_size)
@@ -107,15 +104,16 @@ with tabs[0]:
         st.success("Training complete")
 
 with tabs[1]:
-    st.header("Backtest - Pure Reversal Strategy")
+    st.header("Backtest - 15m Reversal + ATR Strategy")
     
     st.info("""
     Strategy Logic:
-    - Uses indicator-based trend detection (EMA, MACD, ADX) to know current market direction
-    - When in DOWNTREND and BULLISH reversal appears -> GO LONG
-    - When in UPTREND and BEARISH reversal appears -> GO SHORT
-    - Exit and flip position on next reversal signal
-    - No TP/SL, no filters, pure flip-flop system
+    - Trend detection on 15m (faster response for short-term trading)
+    - Downtrend + Bullish reversal -> GO LONG
+    - Uptrend + Bearish reversal -> GO SHORT
+    - ATR-based TP/SL (Priority: TP/SL > Reversal)
+    - When profitable: TP hit OR reversal signal -> Flip position
+    - When losing: SL hit -> Flip position
     """)
     
     col1, col2 = st.columns(2)
@@ -133,6 +131,13 @@ with tabs[1]:
     with col4:
         leverage = st.number_input("Leverage", min_value=1, max_value=20, value=10)
     
+    col5, col6 = st.columns(2)
+    with col5:
+        tp_atr_mult = st.number_input("TP ATR Multiplier", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
+    
+    with col6:
+        sl_atr_mult = st.number_input("SL ATR Multiplier", min_value=0.5, max_value=3.0, value=1.5, step=0.5)
+    
     if st.button("Run Backtest"):
         with st.spinner("Loading data and models..."):
             loader = BinanceDataLoader()
@@ -141,10 +146,7 @@ with tabs[1]:
             end_date = datetime.now()
             start_date = end_date - timedelta(days=bt_days)
             
-            df_1h = loader.load_historical_data(bt_symbol, '1h', start_date, end_date)
             df_15m = loader.load_historical_data(bt_symbol, '15m', start_date, end_date)
-            
-            df_1h = feature_engineer.create_features(df_1h, timeframe='1h')
             df_15m = feature_engineer.create_features(df_15m, timeframe='15m')
             
             trend_trainer = TrendModelTrainer()
@@ -157,29 +159,16 @@ with tabs[1]:
                 st.error(f"Models not found for {bt_symbol}. Please train first.")
                 st.stop()
             
-            df_1h = trend_trainer.predict(df_1h)
+            df_15m = trend_trainer.predict(df_15m)
             df_15m = reversal_trainer.predict(df_15m)
             
-            df_1h['timeframe'] = '1h'
-            df_15m['timeframe'] = '15m'
-            
-            # Use 'min' instead of deprecated 'T'
-            df_1h_resampled = df_1h.set_index('open_time').resample('15min').last().reset_index()
-            df_1h_resampled = df_1h_resampled.add_suffix('_1h')
-            df_1h_resampled.rename(columns={'open_time_1h': 'open_time'}, inplace=True)
-            
-            df_combined = pd.merge(df_15m, df_1h_resampled, on='open_time', how='left')
-            df_combined['trend_direction'] = df_combined['trend_direction_1h'].fillna(0)
-            
-            # NO PARAMETERS - pure reversal
             signal_gen = SignalGenerator()
-            df_signals = signal_gen.generate_signals(df_combined)
+            df_signals = signal_gen.generate_signals(df_15m)
             df_signals = signal_gen.add_signal_metadata(df_signals)
             
             signal_count = (df_signals['signal'] != 0).sum()
             st.write(f"Generated {signal_count} reversal signals")
             
-            # Debug info
             if signal_count == 0:
                 st.warning("No signals generated. Checking conditions...")
                 st.write("Trend direction distribution:")
@@ -193,8 +182,8 @@ with tabs[1]:
             engine = BacktestEngine(
                 initial_capital=initial_capital,
                 leverage=leverage,
-                tp_atr_mult=None,
-                sl_atr_mult=None
+                tp_atr_mult=tp_atr_mult,
+                sl_atr_mult=sl_atr_mult
             )
             
             signals_dict = {bt_symbol: df_signals}
@@ -216,8 +205,13 @@ with tabs[1]:
             
             with col4:
                 st.metric("Max Drawdown", f"{metrics.get('max_drawdown_pct', 0):.2f}%")
-                avg_duration = metrics.get('avg_duration_min', metrics.get('avg_duration', 0))
+                avg_duration = metrics.get('avg_duration_min', 0)
                 st.metric("Avg Trade Duration", f"{avg_duration:.0f}m")
+            
+            # Exit reasons breakdown
+            if 'exit_reasons' in metrics:
+                st.subheader("Exit Reasons")
+                st.write(metrics['exit_reasons'])
             
             st.plotly_chart(engine.plot_equity_curve(), use_container_width=True)
             
@@ -226,7 +220,8 @@ with tabs[1]:
                 trades_df = engine.get_trades_dataframe()
                 st.dataframe(trades_df[[
                     'symbol', 'direction', 'entry_time', 'exit_time', 
-                    'entry_price', 'exit_price', 'pnl', 'pnl_pct', 'exit_reason'
+                    'entry_price', 'exit_price', 'tp_price', 'sl_price',
+                    'pnl', 'pnl_pct', 'exit_reason'
                 ]].round(4))
 
 with tabs[2]:
@@ -240,12 +235,9 @@ with tabs[2]:
             feature_engineer = FeatureEngineer()
             
             end_date = datetime.now()
-            start_date = end_date - timedelta(days=30)  # Increased to 30 days for better indicators
+            start_date = end_date - timedelta(days=30)
             
-            df_1h = loader.load_historical_data(live_symbol, '1h', start_date, end_date)
             df_15m = loader.load_historical_data(live_symbol, '15m', start_date, end_date)
-            
-            df_1h = feature_engineer.create_features(df_1h, timeframe='1h')
             df_15m = feature_engineer.create_features(df_15m, timeframe='15m')
             
             trend_trainer = TrendModelTrainer()
@@ -258,18 +250,11 @@ with tabs[2]:
                 st.error(f"Models not found for {live_symbol}")
                 st.stop()
             
-            df_1h = trend_trainer.predict(df_1h)
+            df_15m = trend_trainer.predict(df_15m)
             df_15m = reversal_trainer.predict(df_15m)
             
-            df_1h_resampled = df_1h.set_index('open_time').resample('15min').last().reset_index()
-            df_1h_resampled = df_1h_resampled.add_suffix('_1h')
-            df_1h_resampled.rename(columns={'open_time_1h': 'open_time'}, inplace=True)
-            
-            df_combined = pd.merge(df_15m, df_1h_resampled, on='open_time', how='left')
-            df_combined['trend_direction'] = df_combined['trend_direction_1h'].fillna(0)
-            
             signal_gen = SignalGenerator()
-            df_signals = signal_gen.generate_signals(df_combined)
+            df_signals = signal_gen.generate_signals(df_15m)
             df_signals = signal_gen.add_signal_metadata(df_signals)
             
             latest = df_signals.iloc[-1]
@@ -282,7 +267,8 @@ with tabs[2]:
                 st.metric("Current Price", f"${latest['close']:.2f}")
                 trend_map = {1: 'BULL', -1: 'BEAR', 0: 'NEUTRAL'}
                 trend_name = trend_map.get(int(latest['trend_direction']), 'UNKNOWN')
-                st.metric("Trend Direction", trend_name)
+                st.metric("Trend Direction (15m)", trend_name)
+                st.metric("ATR", f"{latest.get('15m_atr', 0):.2f}")
             
             with col2:
                 reversal_name = latest.get('reversal_name', 'None')
@@ -293,8 +279,14 @@ with tabs[2]:
                 signal_name = latest.get('signal_name', 'HOLD')
                 color = 'green' if signal_name == 'LONG' else ('red' if signal_name == 'SHORT' else 'gray')
                 st.markdown(f"### Action: :{color}[{signal_name}]")
-                st.metric("Support Level", f"${latest['support_pred']:.2f}")
-                st.metric("Resistance Level", f"{latest['resistance_pred']:.2f}")
+                
+                atr = latest.get('15m_atr', 0)
+                if signal_name == 'LONG':
+                    st.metric("TP Target", f"${latest['close'] + atr*2:.2f}")
+                    st.metric("SL Level", f"${latest['close'] - atr*1.5:.2f}")
+                elif signal_name == 'SHORT':
+                    st.metric("TP Target", f"${latest['close'] - atr*2:.2f}")
+                    st.metric("SL Level", f"${latest['close'] + atr*1.5:.2f}")
             
             st.subheader("Recent Signals")
             recent_signals = df_signals[df_signals['signal'] != 0].tail(10)
