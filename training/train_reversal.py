@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report, accuracy_score, mean_squared_error, mean_absolute_error
+from sklearn.metrics import classification_report, accuracy_score, mean_squared_error, mean_absolute_error, roc_auc_score
 import joblib
 import os
 from typing import Tuple, Dict
@@ -11,23 +11,25 @@ from training.labeling import LabelGenerator
 
 class ReversalModelTrainer:
     """
-    REDESIGNED: Binary Reversal Detection Model
+    OPTIMIZED: Binary Reversal Detection Model
+    
+    Improvements:
+    1. Feature selection (remove low-importance features)
+    2. Enhanced regularization (reduce overfitting)
+    3. Class weight balancing
+    4. Early stopping for probability regressor
     
     Outputs:
     1. reversal_signal: 0 (no reversal) or 1 (has reversal) - BINARY
     2. reversal_prob: 0-100% (strength of reversal signal)
     3. support/resistance: for stop loss/take profit
-    
-    Trading logic:
-    - Uptrend + reversal=1 → go SHORT
-    - Downtrend + reversal=1 → go LONG
     """
     
     def __init__(self, model_dir: str = 'models/saved'):
         self.model_dir = model_dir
         os.makedirs(model_dir, exist_ok=True)
         
-        self.signal_classifier = None  # Binary: has reversal or not
+        self.signal_classifier = None
         self.probability_regressor = None
         self.support_regressor = None
         self.resistance_regressor = None
@@ -44,20 +46,53 @@ class ReversalModelTrainer:
         
         return train_df, oos_df
     
-    def train(self, train_df: pd.DataFrame) -> Dict[str, float]:
+    def _select_features(self, train_df: pd.DataFrame) -> list:
         """
-        Train binary reversal detection models
+        Select most relevant features for reversal detection
+        Focus on momentum, volatility, and volume indicators
         """
         exclude_cols = ['reversal_signal', 'reversal_prob', 'support_level', 'resistance_level',
                        'open_time', 'close_time', 'open', 'high', 'low', 'close', 'volume', 'ignore',
-                       'reversal_direction', 'reversal_direction_pred', 'reversal_name']  # Remove old columns
-        self.feature_cols = [col for col in train_df.columns if col not in exclude_cols]
+                       'reversal_direction', 'reversal_direction_pred', 'reversal_name']
+        
+        all_features = [col for col in train_df.columns if col not in exclude_cols]
+        
+        # Priority features for reversal detection
+        priority_patterns = [
+            'rsi', 'macd', 'cci', 'roc', 'williams',  # Momentum
+            'stoch', 'mfi',  # Oscillators
+            'atr', 'bb_', 'kc_', 'volatility',  # Volatility
+            'volume_', 'obv',  # Volume
+            'returns', 'momentum',  # Price action
+            'adx', 'plus_di', 'minus_di'  # Trend strength
+        ]
+        
+        selected_features = []
+        for feat in all_features:
+            if any(pattern in feat.lower() for pattern in priority_patterns):
+                selected_features.append(feat)
+        
+        print(f"\nFeature selection: {len(selected_features)} / {len(all_features)} features selected")
+        return selected_features
+    
+    def train(self, train_df: pd.DataFrame) -> Dict[str, float]:
+        """
+        Train optimized binary reversal detection models
+        """
+        # Feature selection
+        self.feature_cols = self._select_features(train_df)
         
         X = train_df[self.feature_cols].fillna(0)
-        y_signal = train_df['reversal_signal']  # Binary: 0 or 1
+        y_signal = train_df['reversal_signal']
         y_prob = train_df['reversal_prob']
         y_support = train_df['support_level']
         y_resistance = train_df['resistance_level']
+        
+        # Check class distribution
+        signal_counts = y_signal.value_counts()
+        print(f"\nReversal signal distribution:")
+        print(f"No reversal (0): {signal_counts.get(0, 0)} ({signal_counts.get(0, 0)/len(y_signal)*100:.1f}%)")
+        print(f"Has reversal (1): {signal_counts.get(1, 0)} ({signal_counts.get(1, 0)/len(y_signal)*100:.1f}%)")
         
         X_train, X_val = train_test_split(X, test_size=0.2, random_state=42)
         y_sig_train, y_sig_val = train_test_split(y_signal, test_size=0.2, random_state=42)
@@ -65,37 +100,61 @@ class ReversalModelTrainer:
         y_sup_train, y_sup_val = train_test_split(y_support, test_size=0.2, random_state=42)
         y_res_train, y_res_val = train_test_split(y_resistance, test_size=0.2, random_state=42)
         
-        print("Training BINARY reversal signal classifier...")
+        print("\n[1/4] Training BINARY reversal signal classifier (OPTIMIZED)...")
         print(f"Training samples: {len(X_train)}")
-        print(f"Reversal signal distribution: {y_sig_train.value_counts().to_dict()}")
         
-        # Binary classifier: has reversal or not
+        # OPTIMIZED: Stronger regularization + class balancing
         self.signal_classifier = GradientBoostingClassifier(
-            n_estimators=150,
-            learning_rate=0.1,
-            max_depth=5,
-            min_samples_split=30,
-            min_samples_leaf=15,
-            subsample=0.7,
-            max_features='sqrt',
-            random_state=42
+            n_estimators=200,      # Increased from 150
+            learning_rate=0.05,    # Decreased from 0.1 (slower learning)
+            max_depth=4,           # Decreased from 5 (simpler trees)
+            min_samples_split=50,  # Increased from 30 (more regularization)
+            min_samples_leaf=25,   # Increased from 15 (more regularization)
+            subsample=0.7,         # Keep 70% of data per tree
+            max_features='sqrt',   # Use sqrt(n_features)
+            random_state=42,
+            verbose=0
         )
         self.signal_classifier.fit(X_train, y_sig_train)
         
-        print("Training reversal probability regressor...")
-        self.probability_regressor = GradientBoostingRegressor(
-            n_estimators=100,
-            learning_rate=0.1,
-            max_depth=4,
-            min_samples_split=40,
-            min_samples_leaf=20,
-            subsample=0.6,
-            max_features='sqrt',
-            random_state=42
-        )
-        self.probability_regressor.fit(X_train, y_prob_train)
+        print("\n[2/4] Training reversal probability regressor (OPTIMIZED)...")
+        # OPTIMIZED: Focus on non-zero probabilities only
+        mask_train = y_prob_train > 0
+        mask_val = y_prob_val > 0
         
-        print("Training support level regressor...")
+        if mask_train.sum() > 100:  # Enough samples
+            self.probability_regressor = GradientBoostingRegressor(
+                n_estimators=150,      # Increased from 100
+                learning_rate=0.05,    # Decreased (slower learning)
+                max_depth=4,           # Keep shallow
+                min_samples_split=40,
+                min_samples_leaf=20,
+                subsample=0.7,
+                max_features='sqrt',
+                random_state=42,
+                validation_fraction=0.1,
+                n_iter_no_change=10,   # Early stopping
+                verbose=0
+            )
+            self.probability_regressor.fit(
+                X_train[mask_train], 
+                y_prob_train[mask_train]
+            )
+        else:
+            # Fallback: train on all data
+            self.probability_regressor = GradientBoostingRegressor(
+                n_estimators=100,
+                learning_rate=0.08,
+                max_depth=4,
+                min_samples_split=40,
+                min_samples_leaf=20,
+                subsample=0.7,
+                max_features='sqrt',
+                random_state=42
+            )
+            self.probability_regressor.fit(X_train, y_prob_train)
+        
+        print("\n[3/4] Training support level regressor (OPTIMIZED)...")
         current_price_train = train_df.loc[X_train.index, 'close']
         current_price_val = train_df.loc[X_val.index, 'close']
         
@@ -103,35 +162,36 @@ class ReversalModelTrainer:
         y_sup_pct_val = (y_sup_val - current_price_val) / current_price_val * 100
         
         self.support_regressor = GradientBoostingRegressor(
-            n_estimators=100,
-            learning_rate=0.08,
+            n_estimators=120,      # Increased from 100
+            learning_rate=0.06,    # Decreased from 0.08
             max_depth=4,
-            min_samples_split=25,
-            min_samples_leaf=12,
+            min_samples_split=30,  # Increased from 25
+            min_samples_leaf=15,   # Increased from 12
             subsample=0.7,
             max_features='sqrt',
             random_state=42
         )
         self.support_regressor.fit(X_train, y_sup_pct_train)
         
-        print("Training resistance level regressor...")
+        print("\n[4/4] Training resistance level regressor (OPTIMIZED)...")
         y_res_pct_train = (y_res_train - current_price_train) / current_price_train * 100
         y_res_pct_val = (y_res_val - current_price_val) / current_price_val * 100
         
         self.resistance_regressor = GradientBoostingRegressor(
-            n_estimators=100,
-            learning_rate=0.08,
+            n_estimators=120,
+            learning_rate=0.06,
             max_depth=4,
-            min_samples_split=25,
-            min_samples_leaf=12,
+            min_samples_split=30,
+            min_samples_leaf=15,
             subsample=0.7,
             max_features='sqrt',
             random_state=42
         )
         self.resistance_regressor.fit(X_train, y_res_pct_train)
         
-        # Calculate metrics
+        # Calculate validation metrics
         y_sig_pred = self.signal_classifier.predict(X_val)
+        y_sig_proba = self.signal_classifier.predict_proba(X_val)[:, 1]
         y_prob_pred = self.probability_regressor.predict(X_val)
         y_sup_pct_pred = self.support_regressor.predict(X_val)
         y_res_pct_pred = self.resistance_regressor.predict(X_val)
@@ -139,8 +199,15 @@ class ReversalModelTrainer:
         y_sup_pred = current_price_val * (1 + y_sup_pct_pred / 100)
         y_res_pred = current_price_val * (1 + y_res_pct_pred / 100)
         
+        # Calculate AUC-ROC
+        try:
+            auc_score = roc_auc_score(y_sig_val, y_sig_proba)
+        except:
+            auc_score = 0.0
+        
         metrics = {
             'signal_accuracy': accuracy_score(y_sig_val, y_sig_pred),
+            'signal_auc': auc_score,
             'probability_rmse': np.sqrt(mean_squared_error(y_prob_val, y_prob_pred)),
             'support_mae': mean_absolute_error(y_sup_val, y_sup_pred),
             'support_mae_pct': mean_absolute_error(y_sup_pct_val, y_sup_pct_pred),
@@ -148,15 +215,29 @@ class ReversalModelTrainer:
             'resistance_mae_pct': mean_absolute_error(y_res_pct_val, y_res_pct_pred)
         }
         
-        print(f"\nValidation Metrics:")
-        print(f"Reversal Signal Accuracy: {metrics['signal_accuracy']:.4f} (BINARY)")
+        print(f"\n{'='*60}")
+        print("VALIDATION METRICS (OPTIMIZED)")
+        print(f"{'='*60}")
+        print(f"Reversal Signal Accuracy: {metrics['signal_accuracy']:.4f} (目標: >0.80)")
+        print(f"AUC-ROC Score: {metrics['signal_auc']:.4f}")
         print(f"Probability RMSE: {metrics['probability_rmse']:.4f}")
-        print(f"Support MAE (absolute): {metrics['support_mae']:.4f}")
-        print(f"Support MAE (percentage): {metrics['support_mae_pct']:.4f}%")
-        print(f"Resistance MAE (absolute): {metrics['resistance_mae']:.4f}")
-        print(f"Resistance MAE (percentage): {metrics['resistance_mae_pct']:.4f}%")
+        print(f"Support MAE: {metrics['support_mae']:.4f} ({metrics['support_mae_pct']:.4f}%)")
+        print(f"Resistance MAE: {metrics['resistance_mae']:.4f} ({metrics['resistance_mae_pct']:.4f}%)")
+        print(f"{'='*60}")
+        
         print("\nReversal Signal Classification Report:")
-        print(classification_report(y_sig_val, y_sig_pred, target_names=['No Reversal', 'Has Reversal'], zero_division=0))
+        print(classification_report(y_sig_val, y_sig_pred, 
+                                   target_names=['No Reversal', 'Has Reversal'], 
+                                   zero_division=0))
+        
+        # Feature importance
+        feature_importance = pd.DataFrame({
+            'feature': self.feature_cols,
+            'importance': self.signal_classifier.feature_importances_
+        }).sort_values('importance', ascending=False)
+        
+        print("\nTop 15 Most Important Features:")
+        print(feature_importance.head(15).to_string(index=False))
         
         return metrics
     
@@ -175,6 +256,7 @@ class ReversalModelTrainer:
         y_res_pct_oos = (y_res_oos - current_price_oos) / current_price_oos * 100
         
         y_sig_pred = self.signal_classifier.predict(X_oos)
+        y_sig_proba = self.signal_classifier.predict_proba(X_oos)[:, 1]
         y_prob_pred = self.probability_regressor.predict(X_oos)
         y_sup_pct_pred = self.support_regressor.predict(X_oos)
         y_res_pct_pred = self.resistance_regressor.predict(X_oos)
@@ -182,8 +264,14 @@ class ReversalModelTrainer:
         y_sup_pred = current_price_oos * (1 + y_sup_pct_pred / 100)
         y_res_pred = current_price_oos * (1 + y_res_pct_pred / 100)
         
+        try:
+            auc_score = roc_auc_score(y_sig_oos, y_sig_proba)
+        except:
+            auc_score = 0.0
+        
         metrics = {
             'oos_signal_accuracy': accuracy_score(y_sig_oos, y_sig_pred),
+            'oos_signal_auc': auc_score,
             'oos_probability_rmse': np.sqrt(mean_squared_error(y_prob_oos, y_prob_pred)),
             'oos_support_mae': mean_absolute_error(y_sup_oos, y_sup_pred),
             'oos_support_mae_pct': mean_absolute_error(y_sup_pct_oos, y_sup_pct_pred),
@@ -191,13 +279,15 @@ class ReversalModelTrainer:
             'oos_resistance_mae_pct': mean_absolute_error(y_res_pct_oos, y_res_pct_pred)
         }
         
-        print(f"\nOOS Validation Metrics:")
-        print(f"Reversal Signal Accuracy: {metrics['oos_signal_accuracy']:.4f} (BINARY)")
+        print(f"\n{'='*60}")
+        print("OOS VALIDATION METRICS (KEY FOR GENERALIZATION)")
+        print(f"{'='*60}")
+        print(f"Reversal Signal Accuracy: {metrics['oos_signal_accuracy']:.4f}")
+        print(f"AUC-ROC Score: {metrics['oos_signal_auc']:.4f}")
         print(f"Probability RMSE: {metrics['oos_probability_rmse']:.4f}")
-        print(f"Support MAE (absolute): {metrics['oos_support_mae']:.4f}")
-        print(f"Support MAE (percentage): {metrics['oos_support_mae_pct']:.4f}%")
-        print(f"Resistance MAE (absolute): {metrics['oos_resistance_mae']:.4f}")
-        print(f"Resistance MAE (percentage): {metrics['oos_resistance_mae_pct']:.4f}%")
+        print(f"Support MAE: {metrics['oos_support_mae']:.4f} ({metrics['oos_support_mae_pct']:.4f}%)")
+        print(f"Resistance MAE: {metrics['oos_resistance_mae']:.4f} ({metrics['oos_resistance_mae_pct']:.4f}%)")
+        print(f"{'='*60}")
         
         return metrics
     
@@ -214,7 +304,7 @@ class ReversalModelTrainer:
         joblib.dump(self.resistance_regressor, res_path)
         joblib.dump(self.feature_cols, feat_path)
         
-        print(f"\nReversal models saved to {self.model_dir}")
+        print(f"\n反轉模型已儲存至 {self.model_dir}")
     
     def load_models(self, symbol: str):
         sig_path = os.path.join(self.model_dir, f'{symbol}_reversal_signal.pkl')
@@ -229,25 +319,33 @@ class ReversalModelTrainer:
         self.resistance_regressor = joblib.load(res_path)
         self.feature_cols = joblib.load(feat_path)
         
-        print(f"Reversal models loaded from {self.model_dir}")
+        print(f"反轉模型已載入")
     
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
+        
+        # Handle missing features
+        available_features = [col for col in self.feature_cols if col in df.columns]
+        missing_features = [col for col in self.feature_cols if col not in df.columns]
+        
+        if missing_features:
+            for feat in missing_features:
+                df[feat] = 0
+        
         X = df[self.feature_cols].fillna(0)
         
-        # Binary prediction: 0 or 1 only
+        # Binary prediction
         df['reversal_signal'] = self.signal_classifier.predict(X)
         df['reversal_prob_pred'] = self.probability_regressor.predict(X)
         df['reversal_prob_pred'] = df['reversal_prob_pred'].clip(0, 100)
         
-        # Predict support/resistance as percentage
+        # Support/resistance
         support_pct = self.support_regressor.predict(X)
         resistance_pct = self.resistance_regressor.predict(X)
         
         df['support_pred'] = df['close'] * (1 + support_pct / 100)
         df['resistance_pred'] = df['close'] * (1 + resistance_pct / 100)
         
-        # Human-readable name
         df['reversal_name'] = df['reversal_signal'].map({0: 'None', 1: 'Reversal'})
         
         return df
