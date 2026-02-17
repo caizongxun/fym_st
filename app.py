@@ -37,7 +37,6 @@ def calculate_atr(df_signals):
     low_close = abs(df_signals['low'] - df_signals['close'].shift(1))
     true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     atr = true_range.rolling(window=14).mean()
-    # FIX: 使用bfill()代替fillna(method='bfill')
     atr = atr.bfill().fillna(df_signals['close'] * 0.02)
     return atr
 
@@ -110,8 +109,6 @@ with tabs[1]:
             if 'open_time' not in df_signals.columns:
                 df_signals['open_time'] = df_signals.index
             df_signals['open_time'] = pd.to_datetime(df_signals['open_time'])
-            
-            # 使用共用函數計算ATR
             df_signals['15m_atr'] = calculate_atr(df_signals)
             
             engine = BacktestEngine(
@@ -158,8 +155,8 @@ with tabs[2]:
     **目標**: 找到最佳參數組合
     
     優化參數:
-    1. BB反彈閾值 (50%-80%)
-    2. ADX閾值 (25-40)
+    1. BB反彈閾值 (50%-70%)
+    2. ADX閾值 (25-35)
     3. 止盈/止損倍數
     
     使用訓練期優化,驗證期測試避免過擬合
@@ -184,10 +181,11 @@ with tabs[2]:
             
             results = []
             
-            bb_thresholds = [0.50, 0.55, 0.60, 0.65, 0.70]
+            # 減少參數組合,加快測試
+            bb_thresholds = [0.50, 0.55, 0.60, 0.65]
             adx_thresholds = [25, 30, 35]
             tp_mults = [1.5, 2.0, 2.5]
-            sl_mults = [1.0, 1.5, 2.0]
+            sl_mults = [1.0, 1.5]
             
             total_combinations = len(bb_thresholds) * len(adx_thresholds) * len(tp_mults) * len(sl_mults)
             progress_bar = st.progress(0)
@@ -264,19 +262,43 @@ with tabs[2]:
             
             results_df = pd.DataFrame(results)
             
-            results_df = results_df[
-                (results_df['訓練_交易數'] >= 10) & 
-                (results_df['驗證_交易數'] >= 5)
+            st.write(f"總共測試了 {len(results_df)} 組參數")
+            st.write(f"訓練期交易數 >= 5: {(results_df['訓練_交易數'] >= 5).sum()} 組")
+            st.write(f"驗證期交易數 >= 3: {(results_df['驗證_交易數'] >= 3).sum()} 組")
+            
+            # 放寬過濾條件
+            filtered_df = results_df[
+                (results_df['訓練_交易數'] >= 5) & 
+                (results_df['驗證_交易數'] >= 3) &
+                (results_df['驗證_獲利因子'] > 0)  # 只要驗證期不虧錢
             ]
             
-            results_df = results_df.sort_values('驗證_獲利因子', ascending=False)
+            st.write(f"\n過濾後剩餘: {len(filtered_df)} 組")
             
-            st.success("優化完成!")
-            st.subheader("Top 10 參數組合 (按驗證期獲利因子排序)")
-            st.dataframe(results_df.head(10).round(2))
-            
-            if len(results_df) > 0:
-                best = results_df.iloc[0]
+            if len(filtered_df) == 0:
+                st.warning("""
+                沒有符合條件的參數組合!
+                
+                可能原因:
+                1. 訓練期或驗證期太短,交易數不足
+                2. 參數範圍設置不當
+                
+                建議:
+                - 增加訓練期天數至60天
+                - 增加驗證期天數至30天
+                - 或降低BB閾值至50%
+                """)
+                
+                st.subheader("所有參數組合 (未過濾)")
+                st.dataframe(results_df.sort_values('驗證_獲利因子', ascending=False).head(20).round(2))
+            else:
+                filtered_df = filtered_df.sort_values('驗證_獲利因子', ascending=False)
+                
+                st.success("優化完成!")
+                st.subheader("Top 10 參數組合 (按驗證期獲利因子排序)")
+                st.dataframe(filtered_df.head(10).round(2))
+                
+                best = filtered_df.iloc[0]
                 st.info(f"""
                 **推薦參數**:
                 - BB反彈閾值: {best['BB閾值']:.0%}
@@ -288,6 +310,7 @@ with tabs[2]:
                 - 獲利因子: {best['驗證_獲利因子']:.2f}
                 - 勝率: {best['驗證_勝率']:.1f}%
                 - 回報: {best['驗證_回報']:.1f}%
+                - 交易數: {int(best['驗證_交易數'])}
                 """)
 
 # ============ TAB 4: Walk-Forward測試 ============
@@ -310,7 +333,7 @@ with tabs[3]:
         wf_symbol = st.text_input("測試交易對", value="BTCUSDT", key="wf_symbol")
         wf_total_days = st.number_input("總測試天數", min_value=60, max_value=180, value=90, key="wf_days")
     with col2:
-        wf_window_days = st.number_input("每個窗口天數", min_value=15, max_value=30, value=15, key="wf_window")
+        wf_window_days = st.number_input("每個窗口天數", min_value=15, max_value=30, value=20, key="wf_window")
     
     if st.button("執行Walk-Forward測試", key="wf_btn"):
         with st.spinner("執行Walk-Forward測試..."):
@@ -323,7 +346,7 @@ with tabs[3]:
             window_size = wf_window_days * 96
             n_windows = len(df_full) // window_size
             
-            st.write(f"總共 {n_windows} 個窗口")
+            st.write(f"總共 {n_windows} 個窗口,每個窗口約{wf_window_days}天")
             
             all_trades = []
             window_results = []
@@ -377,15 +400,41 @@ with tabs[3]:
             st.dataframe(results_df.round(2))
             
             st.subheader("綜合統計")
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("平均獲利因子", f"{results_df['獲利因子'].mean():.2f}")
             with col2:
                 st.metric("平均勝率", f"{results_df['勝率'].mean():.1f}%")
             with col3:
                 st.metric("平均回報", f"{results_df['回報'].mean():.1f}%")
+            with col4:
+                st.metric("總交易數", f"{results_df['交易數'].sum():.0f}")
+            
+            # 穩定性評估
+            st.subheader("策略穩定性評估")
+            profitable_windows = (results_df['獲利因子'] > 1.0).sum()
+            total_windows = len(results_df)
+            consistency_rate = profitable_windows / total_windows * 100
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("獲利窗口比例", f"{consistency_rate:.1f}%")
+                if consistency_rate >= 75:
+                    st.success("策略非常穩定!")
+                elif consistency_rate >= 60:
+                    st.info("策略表現良好")
+                else:
+                    st.warning("策略穩定性待改善")
+            
+            with col2:
+                pf_std = results_df['獲利因子'].std()
+                st.metric("獲利因子標準差", f"{pf_std:.2f}")
+                if pf_std < 2.0:
+                    st.success("績效波動小")
+                else:
+                    st.warning("績效波動較大")
             
             if len(all_trades) > 0:
                 combined_trades = pd.concat(all_trades, ignore_index=True)
-                st.write(f"總交易數: {len(combined_trades)}")
+                st.write(f"\n總交易數: {len(combined_trades)}")
                 st.dataframe(combined_trades[['進場時間', '方向', '損益(USDT)', '損益率', '離場原因']].head(20))
