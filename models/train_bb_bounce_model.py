@@ -169,26 +169,42 @@ class BBBounceModelTrainer:
                 X_lower, y_lower, 'Lower Bounce Model'
             )
     
-    def save_models(self):
+    def save_models(self, prefix: str = ''):
         """
         保存模型
+        
+        Args:
+            prefix: 檔案名前綴(支持多幣種,例如'BTCUSDT')
         """
         if self.upper_model is not None:
-            upper_path = os.path.join(self.model_dir, 'bb_upper_bounce_model.pkl')
+            if prefix:
+                upper_path = os.path.join(self.model_dir, f'{prefix}_bb_upper_bounce_model.pkl')
+            else:
+                upper_path = os.path.join(self.model_dir, 'bb_upper_bounce_model.pkl')
             joblib.dump(self.upper_model, upper_path)
             print(f"\n上軌模型已保存: {upper_path}")
         
         if self.lower_model is not None:
-            lower_path = os.path.join(self.model_dir, 'bb_lower_bounce_model.pkl')
+            if prefix:
+                lower_path = os.path.join(self.model_dir, f'{prefix}_bb_lower_bounce_model.pkl')
+            else:
+                lower_path = os.path.join(self.model_dir, 'bb_lower_bounce_model.pkl')
             joblib.dump(self.lower_model, lower_path)
             print(f"下軌模型已保存: {lower_path}")
     
-    def load_models(self):
+    def load_models(self, prefix: str = ''):
         """
         載入模型
+        
+        Args:
+            prefix: 檔案名前綴(支持多幣種,例如'BTCUSDT')
         """
-        upper_path = os.path.join(self.model_dir, 'bb_upper_bounce_model.pkl')
-        lower_path = os.path.join(self.model_dir, 'bb_lower_bounce_model.pkl')
+        if prefix:
+            upper_path = os.path.join(self.model_dir, f'{prefix}_bb_upper_bounce_model.pkl')
+            lower_path = os.path.join(self.model_dir, f'{prefix}_bb_lower_bounce_model.pkl')
+        else:
+            upper_path = os.path.join(self.model_dir, 'bb_upper_bounce_model.pkl')
+            lower_path = os.path.join(self.model_dir, 'bb_lower_bounce_model.pkl')
         
         if os.path.exists(upper_path):
             self.upper_model = joblib.load(upper_path)
@@ -214,10 +230,10 @@ if __name__ == '__main__':
     # 3. 訓練模型
     trainer = BBBounceModelTrainer()
     trainer.train_both_models(df_processed)
-    trainer.save_models()
+    trainer.save_models(prefix='BTCUSDT')  # 多幣種支持
     
     # 4. 預測
-    trainer.load_models()
+    trainer.load_models(prefix='BTCUSDT')
     
     # 獲取觸碰上軌的樣本
     upper_samples = df_processed[df_processed['touch_upper'] == 1]
