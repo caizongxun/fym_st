@@ -9,10 +9,9 @@ TAIPEI_TZ = timezone(timedelta(hours=8))
 
 class BacktestEngine:
     """
-    v2: FIXED Look-Ahead Bias
-    - Signal detected at candle N close
-    - Entry at candle N+1 open (realistic)
-    - TP/SL checked using high/low (intra-candle)
+    v3: Support dynamic TP/SL from dataframe
+    - When tp_atr_mult=0 and sl_atr_mult=0, use tp_price/sl_price from df
+    - Otherwise use ATR-based TP/SL as before
     """
     
     def __init__(self, 
@@ -37,6 +36,9 @@ class BacktestEngine:
         self.taker_fee = taker_fee
         self.debug = debug
         
+        # Dynamic TP/SL mode
+        self.use_dynamic_tpsl = (tp_atr_mult == 0 and sl_atr_mult == 0)
+        
         self.equity = initial_capital
         self.peak_equity = initial_capital
         self.trades = []
@@ -55,7 +57,8 @@ class BacktestEngine:
     def open_or_flip_position(self, symbol: str, direction: str, entry_price: float, 
                              timestamp: datetime, signal_data: dict, atr: float, 
                              trend_direction: int, trend_strength: float,
-                             reversal_prob: float, trend_filter: str) -> bool:
+                             reversal_prob: float, trend_filter: str,
+                             tp_price: float = None, sl_price: float = None) -> bool:
         if self.equity <= 0:
             if self.debug:
                 print(f"[SKIP] Equity <= 0: {self.equity}")
@@ -74,7 +77,6 @@ class BacktestEngine:
         position_value = self.calculate_position_size()
         required_margin = position_value / self.leverage
         
-        # FIX: 改為 > equity (不是 > equity * 0.95)
         if required_margin > self.equity:
             if self.debug:
                 print(f"[SKIP] Insufficient margin: required={required_margin:.2f}, equity={self.equity:.2f}")
@@ -84,12 +86,17 @@ class BacktestEngine:
         margin = position_value / self.leverage
         entry_fee = position_value * self.taker_fee
         
-        if direction == 'LONG':
-            tp_price = entry_price + (atr * self.tp_atr_mult)
-            sl_price = entry_price - (atr * self.sl_atr_mult)
+        # Use dynamic TP/SL if provided, otherwise calculate from ATR
+        if self.use_dynamic_tpsl and tp_price is not None and sl_price is not None:
+            final_tp = tp_price
+            final_sl = sl_price
         else:
-            tp_price = entry_price - (atr * self.tp_atr_mult)
-            sl_price = entry_price + (atr * self.sl_atr_mult)
+            if direction == 'LONG':
+                final_tp = entry_price + (atr * self.tp_atr_mult)
+                final_sl = entry_price - (atr * self.sl_atr_mult)
+            else:
+                final_tp = entry_price - (atr * self.tp_atr_mult)
+                final_sl = entry_price + (atr * self.sl_atr_mult)
         
         self.open_positions[symbol] = {
             'direction': direction,
@@ -99,8 +106,8 @@ class BacktestEngine:
             'margin': margin,
             'entry_fee': entry_fee,
             'entry_time': timestamp,
-            'tp_price': tp_price,
-            'sl_price': sl_price,
+            'tp_price': final_tp,
+            'sl_price': final_sl,
             'atr': atr,
             'signal_data': signal_data,
             'entry_trend': trend_direction,
@@ -112,7 +119,7 @@ class BacktestEngine:
         self.equity -= entry_fee
         
         if self.debug:
-            print(f"[OPEN] {direction} @ {entry_price:.2f}, TP={tp_price:.2f}, SL={sl_price:.2f}, ATR={atr:.2f}")
+            print(f"[OPEN] {direction} @ {entry_price:.2f}, TP={final_tp:.2f}, SL={final_sl:.2f}, ATR={atr:.2f}")
         
         return True
     
@@ -225,9 +232,9 @@ class BacktestEngine:
         
         if self.debug:
             print(f"\n=== BACKTEST START ===")
+            print(f"Dynamic TP/SL mode: {self.use_dynamic_tpsl}")
             print(f"Total rows: {len(combined_df)}")
             print(f"Signals detected: {(combined_df['signal'] != 0).sum()}")
-            print(f"First signal at index: {combined_df[combined_df['signal'] != 0].index[0] if (combined_df['signal'] != 0).sum() > 0 else 'None'}")
         
         for symbol in signals_dict.keys():
             symbol_mask = combined_df['symbol'] == symbol
@@ -251,6 +258,10 @@ class BacktestEngine:
             reversal_prob = row.get('reversal_prob_pred', 0)
             trend_filter = row.get('trend_filter', 'unknown')
             
+            # Get dynamic TP/SL if available
+            tp_price = row.get('tp_price', None)
+            sl_price = row.get('sl_price', None)
+            
             if symbol in self.pending_signals:
                 pending = self.pending_signals[symbol]
                 direction = pending['direction']
@@ -260,10 +271,15 @@ class BacktestEngine:
                 signal_strength = pending['trend_strength']
                 signal_reversal = pending['reversal_prob']
                 signal_filter = pending['trend_filter']
+                signal_tp = pending.get('tp_price', None)
+                signal_sl = pending.get('sl_price', None)
                 
-                result = self.open_or_flip_position(symbol, direction, current_open, timestamp, 
-                                          signal_data, signal_atr, signal_trend, 
-                                          signal_strength, signal_reversal, signal_filter)
+                result = self.open_or_flip_position(
+                    symbol, direction, current_open, timestamp, 
+                    signal_data, signal_atr, signal_trend, 
+                    signal_strength, signal_reversal, signal_filter,
+                    tp_price=signal_tp, sl_price=signal_sl
+                )
                 if result:
                     entry_count += 1
                 
@@ -286,7 +302,7 @@ class BacktestEngine:
                 
                 if self.debug and signal_count <= 3:
                     print(f"\n[SIGNAL #{signal_count}] idx={idx}, time={timestamp}, direction={direction}")
-                    print(f"  ATR={atr:.2f}, next_open={next_open:.2f}")
+                    print(f"  TP={tp_price:.2f}, SL={sl_price:.2f}" if tp_price else f"  ATR={atr:.2f}")
                 
                 if symbol in self.open_positions:
                     pos = self.open_positions[symbol]
@@ -300,10 +316,10 @@ class BacktestEngine:
                             'trend_direction': trend_direction,
                             'trend_strength': trend_strength,
                             'reversal_prob': reversal_prob,
-                            'trend_filter': trend_filter
+                            'trend_filter': trend_filter,
+                            'tp_price': tp_price,
+                            'sl_price': sl_price
                         }
-                        if self.debug:
-                            print(f"  -> Pending reversal to {direction}")
                 else:
                     self.pending_signals[symbol] = {
                         'direction': direction,
@@ -312,10 +328,10 @@ class BacktestEngine:
                         'trend_direction': trend_direction,
                         'trend_strength': trend_strength,
                         'reversal_prob': reversal_prob,
-                        'trend_filter': trend_filter
+                        'trend_filter': trend_filter,
+                        'tp_price': tp_price,
+                        'sl_price': sl_price
                     }
-                    if self.debug and signal_count <= 3:
-                        print(f"  -> Pending entry {direction}")
             
             self.equity_curve.append({
                 'timestamp': timestamp,
