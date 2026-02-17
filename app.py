@@ -4,6 +4,8 @@ import numpy as np
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import sys
+from io import StringIO
 
 from data.binance_loader import BinanceDataLoader
 from data.feature_engineer import FeatureEngineer
@@ -182,14 +184,12 @@ if strategy == 'BB反彈策略 (v6)':
                     
                     # CRITICAL: 確保f_signals有open_time欄位
                     if 'open_time' not in df_signals.columns:
-                        # 如果index是datetime,將其設為open_time
                         if isinstance(df_signals.index, pd.DatetimeIndex):
                             df_signals['open_time'] = df_signals.index
                         else:
-                            st.error("無法找到open_time欄位,請檢查數據格式")
+                            st.error("無法找到open_time欄位")
                             st.stop()
                     
-                    # 確保open_time是datetime類型
                     df_signals['open_time'] = pd.to_datetime(df_signals['open_time'])
                     
                     total_signals = (df_signals['signal'] != 0).sum()
@@ -205,11 +205,11 @@ if strategy == 'BB反彈策略 (v6)':
                         st.metric("做空信號", short_signals)
                     
                     if total_signals == 0:
-                        st.warning("未產生任何信號,請降低bb_threshold或增加回測天數")
+                        st.warning("未產生任何信號")
                         st.stop()
                     
                 except FileNotFoundError:
-                    st.error("BB模型未找到,請先訓練模型")
+                    st.error("BB模型未找到")
                     st.stop()
             
             with st.spinner("執行回測..."):
@@ -225,14 +225,15 @@ if strategy == 'BB反彈策略 (v6)':
                 # DEBUG INFO
                 st.write("### Debug Info")
                 st.write(f"DataFrame shape: {df_signals.shape}")
-                st.write(f"Columns: {df_signals.columns.tolist()}")
                 st.write(f"ATR範圍: {df_signals['15m_atr'].min():.2f} - {df_signals['15m_atr'].max():.2f}")
-                st.write(f"ATR平均: {df_signals['15m_atr'].mean():.2f}")
                 
-                # 顯示有信號的幾筆
                 signal_rows = df_signals[df_signals['signal'] != 0].head(3)
                 st.write("\n前3筆信號:")
-                st.dataframe(signal_rows[['open_time', 'signal', '15m_atr', 'close']].round(2))
+                st.dataframe(signal_rows[['open_time', 'signal', '15m_atr', 'close', 'open']].round(2))
+                
+                # Capture debug output
+                old_stdout = sys.stdout
+                sys.stdout = buffer = StringIO()
                 
                 engine = BacktestEngine(
                     initial_capital=initial_capital,
@@ -242,13 +243,19 @@ if strategy == 'BB反彈策略 (v6)':
                     position_size_pct=position_size_pct,
                     position_mode='fixed',
                     maker_fee=0.0002,
-                    taker_fee=0.0006
+                    taker_fee=0.0006,
+                    debug=True  # Enable debug
                 )
                 
                 signals_dict = {bt_symbol: df_signals}
                 metrics = engine.run_backtest(signals_dict)
                 
-                st.write(f"\nBacktest完成! 總交易: {metrics['total_trades']}")
+                # Restore stdout and get debug output
+                sys.stdout = old_stdout
+                debug_output = buffer.getvalue()
+                
+                st.write("### Backtest Debug Log")
+                st.code(debug_output)
                 
                 st.subheader("績效指標")
                 
@@ -264,36 +271,15 @@ if strategy == 'BB反彈策略 (v6)':
                 
                 with col3:
                     st.metric("獲利因子", f"{metrics['profit_factor']:.2f}")
-                    pf_color = 'green' if metrics['profit_factor'] > 1.5 else ('orange' if metrics['profit_factor'] > 1.0 else 'red')
-                    st.markdown(f":{pf_color}[{'優秀' if metrics['profit_factor'] > 1.5 else ('尚可' if metrics['profit_factor'] > 1.0 else '需優化')}]")
                 
                 with col4:
                     st.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
                     st.metric("最大回撤", f"{metrics['max_drawdown_pct']:.2f}%")
                 
-                avg_duration = metrics.get('avg_duration_min', 0)
-                if avg_duration > 0:
-                    st.metric("平均持倉時長", f"{avg_duration:.0f}分鐘")
-                
                 if metrics['total_trades'] > 0:
                     st.plotly_chart(engine.plot_equity_curve(), use_container_width=True)
                     
                     trades_df = engine.get_trades_dataframe()
-                    
-                    st.subheader("離場原因分布")
-                    exit_reasons = trades_df['離場原因'].value_counts()
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.bar_chart(exit_reasons)
-                    
-                    with col2:
-                        st.write("各原因績效:")
-                        for reason in exit_reasons.index:
-                            subset = trades_df[trades_df['離場原因'] == reason]
-                            win_rate = (subset['pnl'] > 0).sum() / len(subset) * 100
-                            avg_pnl = subset['pnl'].mean()
-                            st.write(f"{reason}: 勝率{win_rate:.1f}% | 平均{avg_pnl:.2f}U")
                     
                     st.subheader("交易明細")
                     display_cols = [
@@ -302,123 +288,7 @@ if strategy == 'BB反彈策略 (v6)':
                         '離場原因', '持倉時長(分)'
                     ]
                     st.dataframe(trades_df[display_cols])
-                    
-                    csv = trades_df.to_csv(index=False, encoding='utf-8-sig')
-                    st.download_button(
-                        label="下載交易記錄",
-                        data=csv,
-                        file_name=f'bb_backtest_{bt_symbol}_{datetime.now().strftime("%Y%m%d")}.csv',
-                        mime='text/csv'
-                    )
                 else:
-                    st.warning("""
-                    ### 無交易產生
-                    
-                    請檢查上方Debug Info
-                    """)
-                
-                st.subheader("優化建議")
-                if metrics['total_trades'] == 0:
-                    st.warning("無法提供建議,未產生交易")
-                elif metrics['profit_factor'] < 1.0:
-                    st.error("""
-                    獲利因子 < 1.0,策略虧損
-                    
-                    建議:
-                    - 提高bb_threshold至70%
-                    - 增加ADX過濾強度(35)
-                    - 調整風險回報比為1:2
-                    """)
-                elif metrics['profit_factor'] > 1.5:
-                    st.success("""
-                    獲利因子 > 1.5,策略表現優秀!
-                    
-                    下一步:
-                    - 測試更長時間(60-90天)
-                    - 測試其他幣種
-                    """)
-                else:
-                    st.info("獲利因子 1.0-1.5,策略有潛力")
-    
-    with tabs[2]:
-        st.header("BB即時分析")
-        
-        live_symbol = st.text_input("交易對", value="BTCUSDT", key="bb_live_symbol")
-        
-        if st.button("分析當前市場", key="bb_live_btn"):
-            with st.spinner("載入數據..."):
-                loader = BinanceDataLoader()
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=30)
-                
-                df = loader.load_historical_data(live_symbol, '15m', start_date, end_date)
-            
-            with st.spinner("生成BB信號..."):
-                try:
-                    signal_gen = BBBounceSignalGenerator(
-                        bb_model_dir='models/saved',
-                        bb_bounce_threshold=0.60,
-                        adx_strong_trend_threshold=30
-                    )
-                    
-                    df_signals = signal_gen.generate_signals(df)
-                    
-                    latest = df_signals.iloc[-1]
-                    
-                    st.subheader(f"當前市場狀態 - {live_symbol}")
-                    
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    with col1:
-                        st.metric("當前價格", f"${latest['close']:.2f}")
-                        st.metric("BB上軌", f"${latest['bb_upper']:.2f}")
-                        st.metric("BB下軌", f"${latest['bb_lower']:.2f}")
-                    
-                    with col2:
-                        st.metric("BB位置", f"{latest['bb_position']:.2%}")
-                        st.metric("BB寬度", f"{latest['bb_width']:.2f}%")
-                        trend_map = {'strong_uptrend': '強多頭', 'weak_uptrend': '弱多頭', 
-                                   'ranging': '盤整', 'weak_downtrend': '弱空頭', 'strong_downtrend': '強空頭'}
-                        st.metric("趨勢狀態", trend_map.get(latest['trend_state'], latest['trend_state']))
-                    
-                    with col3:
-                        st.metric("ADX", f"{latest['adx']:.1f}")
-                        st.metric("RSI", f"{latest['rsi']:.1f}")
-                        
-                        touch_status = "無"
-                        if latest['touch_upper'] == 1:
-                            touch_status = "上軌"
-                        elif latest['touch_lower'] == 1:
-                            touch_status = "下軌"
-                        st.metric("觸碰狀態", touch_status)
-                    
-                    with col4:
-                        if latest['bb_upper_bounce_prob'] > 0:
-                            st.metric("上軌反彈機率", f"{latest['bb_upper_bounce_prob']:.1%}")
-                        if latest['bb_lower_bounce_prob'] > 0:
-                            st.metric("下軌反彈機率", f"{latest['bb_lower_bounce_prob']:.1%}")
-                        
-                        signal_map = {1: '做多', -1: '做空', 0: '觀望'}
-                        signal_name = signal_map.get(int(latest['signal']), '觀望')
-                        color = 'green' if latest['signal'] == 1 else ('red' if latest['signal'] == -1 else 'gray')
-                        st.markdown(f"### :{color}[{signal_name}]")
-                    
-                    if latest['signal'] != 0:
-                        st.info(f"**信號原因**: {latest['signal_reason']}")
-                    
-                    st.subheader("最近信號")
-                    recent_signals = df_signals[df_signals['signal'] != 0].tail(10)
-                    if not recent_signals.empty:
-                        st.dataframe(recent_signals[[
-                            'close', 'signal', 'bb_upper_bounce_prob',
-                            'bb_lower_bounce_prob', 'trend_state', 'adx', 'rsi'
-                        ]].round(2))
-                    else:
-                        st.info("近期無交易信號")
-                    
-                except FileNotFoundError:
-                    st.error("BB模型未找到,請先訓練模型")
-
+                    st.warning("無交易產生 - 請檢查上方Debug Log")
 else:
-    st.sidebar.info("原有策略")
     st.info("請選擇BB反彈策略 (v6)")
