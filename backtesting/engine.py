@@ -9,14 +9,17 @@ TAIPEI_TZ = timezone(timedelta(hours=8))
 
 class BacktestEngine:
     """
-    v1: Increased SL to 2.0 ATR + Enhanced diagnostics
+    v2: FIXED Look-Ahead Bias
+    - Signal detected at candle N close
+    - Entry at candle N+1 open (realistic)
+    - TP/SL checked using high/low (intra-candle)
     """
     
     def __init__(self, 
                  initial_capital: float = 100.0,
                  leverage: float = 10.0,
                  tp_atr_mult: float = 2.0,
-                 sl_atr_mult: float = 2.0,  # CHANGED: 1.5 → 2.0
+                 sl_atr_mult: float = 2.0,
                  position_size_pct: float = 0.1,
                  position_mode: str = 'fixed',
                  max_positions: int = 1,
@@ -37,6 +40,7 @@ class BacktestEngine:
         self.trades = []
         self.equity_curve = []
         self.open_positions = {}
+        self.pending_signals = {}  # NEW: Store signals for next candle entry
         
     def calculate_position_size(self) -> float:
         if self.position_mode == 'fixed':
@@ -98,22 +102,30 @@ class BacktestEngine:
         self.equity -= entry_fee
         return True
     
-    def check_tp_sl(self, symbol: str, current_price: float, timestamp: datetime) -> Optional[str]:
+    def check_tp_sl_intrabar(self, symbol: str, high: float, low: float, close: float, timestamp: datetime) -> Optional[Tuple[str, float]]:
+        """
+        Check TP/SL using high/low (more realistic)
+        Returns: (exit_reason, exit_price) or None
+        """
         if symbol not in self.open_positions:
             return None
         
         pos = self.open_positions[symbol]
         
         if pos['direction'] == 'LONG':
-            if current_price >= pos['tp_price']:
-                return 'TP'
-            elif current_price <= pos['sl_price']:
-                return 'SL'
-        else:
-            if current_price <= pos['tp_price']:
-                return 'TP'
-            elif current_price >= pos['sl_price']:
-                return 'SL'
+            # Check SL first (conservative)
+            if low <= pos['sl_price']:
+                return ('SL', pos['sl_price'])
+            # Then check TP
+            elif high >= pos['tp_price']:
+                return ('TP', pos['tp_price'])
+        else:  # SHORT
+            # Check SL first
+            if high >= pos['sl_price']:
+                return ('SL', pos['sl_price'])
+            # Then check TP
+            elif low <= pos['tp_price']:
+                return ('TP', pos['tp_price'])
         
         return None
     
@@ -136,8 +148,8 @@ class BacktestEngine:
         self.equity += pnl
         
         exit_reason_map = {
-            'TP_HIT': '止盈',
-            'SL_HIT': '止損',
+            'TP': '止盈',
+            'SL': '止損',
             'REVERSAL_FLIP': '反轉信號',
             'END': '回測結束'
         }
@@ -202,51 +214,95 @@ class BacktestEngine:
         combined_df = pd.concat(all_data, ignore_index=True)
         combined_df = combined_df.sort_values('open_time').reset_index(drop=True)
         
+        # Add next candle's open price
+        for symbol in signals_dict.keys():
+            symbol_mask = combined_df['symbol'] == symbol
+            combined_df.loc[symbol_mask, 'next_open'] = combined_df.loc[symbol_mask, 'open'].shift(-1)
+        
         for idx, row in combined_df.iterrows():
             timestamp = row['open_time']
             symbol = row['symbol']
-            current_price = row['close']
+            current_open = row['open']
+            current_high = row['high']
+            current_low = row['low']
+            current_close = row['close']
+            next_open = row.get('next_open', np.nan)
+            
             atr = row.get('15m_atr', row.get('atr', 0))
             trend_direction = int(row.get('trend_direction', 0))
             trend_strength = row.get('trend_strength_pred', 50)
             reversal_prob = row.get('reversal_prob_pred', 0)
             trend_filter = row.get('trend_filter', 'unknown')
             
+            # STEP 1: Check if we have pending signal from previous candle
+            if symbol in self.pending_signals:
+                pending = self.pending_signals[symbol]
+                direction = pending['direction']
+                signal_atr = pending['atr']
+                signal_data = pending['signal_data']
+                signal_trend = pending['trend_direction']
+                signal_strength = pending['trend_strength']
+                signal_reversal = pending['reversal_prob']
+                signal_filter = pending['trend_filter']
+                
+                # Enter at current candle's OPEN price
+                self.open_or_flip_position(symbol, direction, current_open, timestamp, 
+                                          signal_data, signal_atr, signal_trend, 
+                                          signal_strength, signal_reversal, signal_filter)
+                del self.pending_signals[symbol]
+            
+            # STEP 2: Check TP/SL for existing positions using high/low
             if symbol in self.open_positions:
-                tp_sl_result = self.check_tp_sl(symbol, current_price, timestamp)
+                tp_sl_result = self.check_tp_sl_intrabar(symbol, current_high, current_low, current_close, timestamp)
                 
-                if tp_sl_result == 'TP':
-                    self.close_position(symbol, current_price, timestamp, 'TP_HIT', 
+                if tp_sl_result:
+                    exit_reason, exit_price = tp_sl_result
+                    self.close_position(symbol, exit_price, timestamp, exit_reason, 
                                        trend_direction, trend_strength, reversal_prob, trend_filter)
-                    continue
-                
-                elif tp_sl_result == 'SL':
-                    self.close_position(symbol, current_price, timestamp, 'SL_HIT', 
-                                       trend_direction, trend_strength, reversal_prob, trend_filter)
+                    # If stopped out, don't process new signal this candle
+                    if symbol in self.pending_signals:
+                        del self.pending_signals[symbol]
                     continue
             
-            if 'signal' in row and row['signal'] != 0:
+            # STEP 3: Detect new signal at candle close
+            if 'signal' in row and row['signal'] != 0 and not pd.isna(next_open):
                 direction = 'LONG' if row['signal'] == 1 else 'SHORT'
                 
                 if symbol in self.open_positions:
                     pos = self.open_positions[symbol]
                     if pos['direction'] != direction:
-                        self.close_position(symbol, current_price, timestamp, 'REVERSAL_FLIP', 
+                        # Close at current close, prepare to reverse at next open
+                        self.close_position(symbol, current_close, timestamp, 'REVERSAL_FLIP', 
                                            trend_direction, trend_strength, reversal_prob, trend_filter)
-                        self.open_or_flip_position(symbol, direction, current_price, timestamp, 
-                                                   {'reversal_prob': reversal_prob}, atr, 
-                                                   trend_direction, trend_strength, reversal_prob, trend_filter)
+                        self.pending_signals[symbol] = {
+                            'direction': direction,
+                            'atr': atr,
+                            'signal_data': {'reversal_prob': reversal_prob},
+                            'trend_direction': trend_direction,
+                            'trend_strength': trend_strength,
+                            'reversal_prob': reversal_prob,
+                            'trend_filter': trend_filter
+                        }
                 else:
-                    signal_data = {'reversal_prob': reversal_prob}
-                    self.open_or_flip_position(symbol, direction, current_price, timestamp, signal_data, atr, 
-                                              trend_direction, trend_strength, reversal_prob, trend_filter)
+                    # No position, prepare new entry at next open
+                    self.pending_signals[symbol] = {
+                        'direction': direction,
+                        'atr': atr,
+                        'signal_data': {'reversal_prob': reversal_prob},
+                        'trend_direction': trend_direction,
+                        'trend_strength': trend_strength,
+                        'reversal_prob': reversal_prob,
+                        'trend_filter': trend_filter
+                    }
             
+            # Record equity
             self.equity_curve.append({
                 'timestamp': timestamp,
                 'equity': self.equity,
                 'open_positions': len(self.open_positions)
             })
         
+        # Close remaining positions
         for symbol in list(self.open_positions.keys()):
             last_row = combined_df[combined_df['symbol'] == symbol].iloc[-1]
             last_price = last_row['close']
@@ -291,7 +347,6 @@ class BacktestEngine:
         
         exit_reasons = trades_df['離場原因'].value_counts().to_dict()
         
-        # NEW: Detailed diagnostics
         stop_loss_trades = trades_df[trades_df['離場原因'] == '止損']
         fast_stops = stop_loss_trades[stop_loss_trades['持倉時長(分)'] < 60]
         
