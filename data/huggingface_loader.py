@@ -58,7 +58,7 @@ class HuggingFaceKlineLoader:
             DataFrame with Binance-compatible columns
         """
         if symbol not in self.SUPPORTED_SYMBOLS:
-            raise ValueError(f"Symbol {symbol} not supported. Supported: {self.SUPPORTED_SYMBOLS}")
+            raise ValueError(f"Symbol {symbol} not supported. Supported: {len(self.SUPPORTED_SYMBOLS)} symbols")
         
         if timeframe not in self.TIMEFRAMES:
             raise ValueError(f"Timeframe {timeframe} not supported. Supported: {self.TIMEFRAMES}")
@@ -129,42 +129,88 @@ class HuggingFaceKlineLoader:
         獲取分類後的幣種組
         """
         groups = {
-            '主流幣': ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT'],
-            'Layer1': ['AVAXUSDT', 'DOTUSDT', 'ATOMUSDT', 'NEARUSDT', 'ALGOUSDT'],
-            'Layer2': ['ARBUSDT', 'OPUSDT', 'MATICUSDT', 'IMXUSDT'],
-            'DeFi': ['UNIUSDT', 'LINKUSDT', 'AAVEUSDT', 'CRVUSDT', 'COMPUSDT', 'MKRUSDT', 'SNXUSDT', 'BALUSDT'],
-            'NFT/遊戲': ['SANDUSDT', 'MANAUSDT', 'ENJUSDT', 'GALAUSDT', 'ENSUSDT', 'SPELLUSDT'],
-            '其他': ['LTCUSDT', 'BCHUSDT', 'ETCUSDT', 'FILUSDT', 'GRTUSDT', 'BATUSDT', 'KAVAUSDT', 'ZRXUSDT']
+            '💰 主流幣': [
+                'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'ADAUSDT', 'DOGEUSDT'
+            ],
+            '🌐 Layer1 公鏈': [
+                'AVAXUSDT', 'DOTUSDT', 'ATOMUSDT', 'NEARUSDT', 'ALGOUSDT'
+            ],
+            '⚡ Layer2 擴展': [
+                'ARBUSDT', 'OPUSDT', 'MATICUSDT', 'IMXUSDT'
+            ],
+            '🤝 DeFi 生態': [
+                'UNIUSDT', 'LINKUSDT', 'AAVEUSDT', 'CRVUSDT', 'COMPUSDT', 
+                'MKRUSDT', 'SNXUSDT', 'BALUSDT', 'GRTUSDT'
+            ],
+            '🎮 NFT/元宇宙': [
+                'SANDUSDT', 'MANAUSDT', 'ENJUSDT', 'GALAUSDT', 'ENSUSDT', 'SPELLUSDT'
+            ],
+            '🔧 傳統幣/其他': [
+                'LTCUSDT', 'BCHUSDT', 'ETCUSDT', 'FILUSDT', 'BATUSDT', 'KAVAUSDT', 'ZRXUSDT'
+            ]
         }
         return groups
     
     @classmethod
     def get_top_symbols(cls, n: int = 10):
         """
-        獲取前n個交易量最大的幣種(按市值排序)
+        獲取前n個市值最大的幣種(按市值排序)
         """
+        # 按市值排序的Top幣種
         top_symbols = [
-            'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT',
-            'ADAUSDT', 'AVAXUSDT', 'DOGEUSDT', 'DOTUSDT', 'MATICUSDT',
-            'LINKUSDT', 'UNIUSDT', 'ATOMUSDT', 'LTCUSDT', 'NEARUSDT'
+            'BTCUSDT',   # #1 比特幣
+            'ETHUSDT',   # #2 以太坠
+            'BNBUSDT',   # #4 幣安幣
+            'SOLUSDT',   # #5 Solana
+            'XRPUSDT',   # #6 瑞波幣
+            'ADAUSDT',   # #9 艾達幣
+            'AVAXUSDT',  # #10 雪崩
+            'DOGEUSDT',  # #11 狗狗幣
+            'DOTUSDT',   # #12 波卡
+            'MATICUSDT', # #13 Polygon
+            'LINKUSDT',  # #15 Chainlink
+            'UNIUSDT',   # #18 Uniswap
+            'ATOMUSDT',  # #20 Cosmos
+            'LTCUSDT',   # #21 萊特幣
+            'NEARUSDT',  # #22 Near
         ]
-        return top_symbols[:n]
+        return top_symbols[:min(n, len(top_symbols))]
+    
+    @classmethod
+    def get_all_symbols_by_category(cls):
+        """
+        獲取所有38個幣種的分類列表(帶emoji)
+        """
+        groups = cls.get_symbol_groups()
+        result = []
+        for category, symbols in groups.items():
+            result.append(f"\n{category} ({len(symbols)}個):")
+            result.extend([f"  - {s}" for s in symbols])
+        return "\n".join(result)
 
 
 if __name__ == '__main__':
     # 測試
     loader = HuggingFaceKlineLoader()
     
-    print("\n支持的交易對:")
-    print(f"總計: {len(loader.SUPPORTED_SYMBOLS)} 個")
+    print("=" * 70)
+    print("HuggingFace 加密貨幣資料集")
+    print("=" * 70)
     
-    print("\n分類:")
+    print(f"\n📊 支持的交易對: {len(loader.SUPPORTED_SYMBOLS)} 個")
+    print(f"⏱️  時間週期: {', '.join(loader.TIMEFRAMES)}")
+    
+    print("\n" + loader.get_all_symbols_by_category())
+    
+    print("\n" + "=" * 70)
+    print("🔥 熱門Top 10")
+    print("=" * 70)
+    top10 = loader.get_top_symbols(10)
+    for i, symbol in enumerate(top10, 1):
+        print(f"  {i:2d}. {symbol}")
+    
+    print("\n" + "=" * 70)
+    print("📋 分類統計")
+    print("=" * 70)
     for category, symbols in loader.get_symbol_groups().items():
         print(f"{category}: {len(symbols)} 個")
-    
-    print("\n載入BTCUSDT 15m資料測試...")
-    df = loader.load_klines('BTCUSDT', '15m')
-    print(f"\n資料範圍: {df.index[0]} 至 {df.index[-1]}")
-    print(f"總K線數: {len(df)}")
-    print("\n前5筆資料:")
-    print(df.head())
