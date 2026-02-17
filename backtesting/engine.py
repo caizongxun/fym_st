@@ -10,7 +10,7 @@ TAIPEI_TZ = timezone(timedelta(hours=8))
 
 class BacktestEngine:
     """
-    ATR-based flip-flop reversal backtesting
+    ATR-based flip-flop reversal backtesting with FIXED position sizing
     """
     
     def __init__(self, 
@@ -18,7 +18,7 @@ class BacktestEngine:
                  leverage: float = 10.0,
                  tp_atr_mult: float = 2.0,
                  sl_atr_mult: float = 1.5,
-                 position_size_pct: float = 1.0,  # Fixed: Use 100% but limit absolute value
+                 position_size_pct: float = 0.1,  # FIXED: Use 10% of INITIAL capital
                  max_positions: int = 1,
                  maker_fee: float = 0.0002,
                  taker_fee: float = 0.0006):
@@ -39,13 +39,18 @@ class BacktestEngine:
         self.open_positions = {}
         
     def calculate_position_size(self) -> float:
-        """Use fixed percentage of equity per trade"""
-        position_value = self.equity * self.position_size_pct * self.leverage
+        """FIXED position sizing: Always use percentage of INITIAL capital (no compound)"""
+        base_capital = self.initial_capital * self.position_size_pct
+        position_value = base_capital * self.leverage
         return position_value
     
     def open_or_flip_position(self, symbol: str, direction: str, entry_price: float, 
                              timestamp: datetime, signal_data: dict, atr: float, 
                              trend_direction: int) -> bool:
+        # Check if equity is positive
+        if self.equity <= 0:
+            return False
+            
         # Close existing opposite position
         if symbol in self.open_positions:
             old_pos = self.open_positions[symbol]
@@ -54,8 +59,12 @@ class BacktestEngine:
             else:
                 return False
         
+        # Fixed position sizing based on INITIAL capital
         position_value = self.calculate_position_size()
-        if position_value <= 0:
+        
+        # Safety check: don't open if required margin exceeds equity
+        required_margin = position_value / self.leverage
+        if required_margin > self.equity:
             return False
         
         quantity = position_value / entry_price
@@ -82,7 +91,7 @@ class BacktestEngine:
             'sl_price': sl_price,
             'atr': atr,
             'signal_data': signal_data,
-            'entry_trend': trend_direction  # Store trend at entry
+            'entry_trend': trend_direction
         }
         
         self.equity -= entry_fee
@@ -164,6 +173,7 @@ class BacktestEngine:
             'tp_price': pos['tp_price'],
             'sl_price': pos['sl_price'],
             'quantity': pos['quantity'],
+            'position_value': pos['position_value'],
             '手續費': pos['entry_fee'] + exit_fee,
             'pnl': pnl,
             'pnl_pct': (pnl / pos['margin']) * 100,
