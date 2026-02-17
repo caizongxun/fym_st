@@ -7,6 +7,19 @@ class FeatureEngineer:
     def __init__(self):
         pass
     
+    def create_features(self, df: pd.DataFrame, timeframe: str = '1h') -> pd.DataFrame:
+        """
+        Create technical indicators and features (main interface)
+        
+        Args:
+            df: OHLCV DataFrame
+            timeframe: Timeframe label (e.g., '1h', '15m')
+        
+        Returns:
+            DataFrame with added feature columns
+        """
+        return self.compute_features(df, timeframe_label=f'{timeframe}_')
+    
     def compute_features(self, df: pd.DataFrame, timeframe_label: str = '') -> pd.DataFrame:
         """
         Compute technical indicators and features
@@ -41,8 +54,8 @@ class FeatureEngineer:
         
         # Trend Indicators
         df[f'{prefix}adx'] = ta.trend.adx(df['high'], df['low'], df['close'], window=14)
-        df[f'{prefix}adx_pos'] = ta.trend.adx_pos(df['high'], df['low'], df['close'], window=14)
-        df[f'{prefix}adx_neg'] = ta.trend.adx_neg(df['high'], df['low'], df['close'], window=14)
+        df[f'{prefix}plus_di'] = ta.trend.adx_pos(df['high'], df['low'], df['close'], window=14)
+        df[f'{prefix}minus_di'] = ta.trend.adx_neg(df['high'], df['low'], df['close'], window=14)
         
         macd = ta.trend.MACD(df['close'])
         df[f'{prefix}macd'] = macd.macd()
