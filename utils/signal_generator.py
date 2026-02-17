@@ -4,12 +4,9 @@ from typing import Dict, List
 
 class SignalGenerator:
     """
-    Pure Reversal Trading Strategy with ATR Risk Management
-    - Detect trend on SAME timeframe (15m) for faster response
-    - Every reversal signal = potential entry/flip
-    - ATR-based TP/SL has priority
-    - When profitable: TP hit OR reversal signal -> Flip
-    - When losing: SL hit -> Flip
+    Pure Reversal Trading Strategy
+    - Relaxed trend detection to capture more reversal opportunities
+    - Every reversal signal triggers entry/flip
     """
     
     def __init__(self):
@@ -17,31 +14,27 @@ class SignalGenerator:
     
     def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Generate reversal signals on 15m timeframe
+        Generate reversal signals with RELAXED trend requirements
         
-        Args:
-            df: DataFrame with 15m predictions
-                Required columns:
-                - trend_direction: 1 (bull), -1 (bear), 0 (neutral)
-                - reversal_direction_pred: 1 (bullish), -1 (bearish)
-                - close, atr: for TP/SL calculation
+        Strategy:
+        - Downtrend OR Neutral + Bullish reversal -> LONG
+        - Uptrend OR Neutral + Bearish reversal -> SHORT
         
-        Returns:
-            DataFrame with 'signal' column (1=LONG, -1=SHORT, 0=HOLD)
+        This allows catching reversals even in sideways markets
         """
         df = df.copy()
         df['signal'] = 0
         
-        # Pure reversal logic - no filters
-        # Long: Downtrend + Bullish reversal
+        # RELAXED LOGIC - Include neutral trend
+        # Long: (Downtrend OR Neutral) + Bullish reversal
         long_conditions = (
-            (df['trend_direction'] == -1) &
+            (df['trend_direction'] <= 0) &  # -1 or 0
             (df['reversal_direction_pred'] == 1)
         )
         
-        # Short: Uptrend + Bearish reversal
+        # Short: (Uptrend OR Neutral) + Bearish reversal
         short_conditions = (
-            (df['trend_direction'] == 1) &
+            (df['trend_direction'] >= 0) &  # 1 or 0
             (df['reversal_direction_pred'] == -1)
         )
         
@@ -51,9 +44,6 @@ class SignalGenerator:
         return df
     
     def add_signal_metadata(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Add signal metadata
-        """
         df = df.copy()
         
         signal_map = {1: 'LONG', -1: 'SHORT', 0: 'HOLD'}

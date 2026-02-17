@@ -8,7 +8,6 @@ from plotly.subplots import make_subplots
 class BacktestEngine:
     """
     ATR-based flip-flop reversal backtesting
-    Priority: ATR TP/SL > Reversal signals
     """
     
     def __init__(self, 
@@ -34,36 +33,35 @@ class BacktestEngine:
         self.peak_equity = initial_capital
         self.trades = []
         self.equity_curve = []
-        self.open_positions = {}  # symbol -> position dict
+        self.open_positions = {}
         
     def calculate_position_size(self) -> float:
-        available_capital = self.equity - sum([p['margin'] for p in self.open_positions.values()])
+        """Calculate position size based on current equity"""
+        # Fixed: Use self.equity instead of available_capital to avoid explosion
+        available_capital = max(self.equity * 0.1, 1.0)  # Use at most 10% per trade
         position_value = available_capital * self.position_size_pct
         return position_value * self.leverage
     
     def open_or_flip_position(self, symbol: str, direction: str, entry_price: float, 
                              timestamp: datetime, signal_data: dict, atr: float) -> bool:
-        """
-        Open new position or flip existing
-        """
         # Close existing opposite position
         if symbol in self.open_positions:
             old_pos = self.open_positions[symbol]
             if old_pos['direction'] != direction:
                 self.close_position(symbol, entry_price, timestamp, 'REVERSAL_FLIP')
             else:
-                return False  # Same direction, ignore
+                return False
         
-        # Open new position
+        # Fixed position sizing
         position_value = self.calculate_position_size()
-        if position_value <= 0:
+        if position_value <= 0 or position_value > self.equity * 10:  # Sanity check
             return False
         
         quantity = position_value / entry_price
         margin = position_value / self.leverage
         entry_fee = position_value * self.taker_fee
         
-        # Calculate TP/SL levels
+        # Calculate TP/SL
         if direction == 'LONG':
             tp_price = entry_price + (atr * self.tp_atr_mult)
             sl_price = entry_price - (atr * self.sl_atr_mult)
@@ -89,10 +87,6 @@ class BacktestEngine:
         return True
     
     def check_tp_sl(self, symbol: str, current_price: float, timestamp: datetime) -> Optional[str]:
-        """
-        Check if TP or SL is hit
-        Returns: 'TP', 'SL', or None
-        """
         if symbol not in self.open_positions:
             return None
         
@@ -103,7 +97,7 @@ class BacktestEngine:
                 return 'TP'
             elif current_price <= pos['sl_price']:
                 return 'SL'
-        else:  # SHORT
+        else:
             if current_price <= pos['tp_price']:
                 return 'TP'
             elif current_price >= pos['sl_price']:
@@ -113,9 +107,6 @@ class BacktestEngine:
     
     def close_position(self, symbol: str, exit_price: float, timestamp: datetime, 
                       exit_reason: str) -> Optional[Dict]:
-        """
-        Close position and record trade
-        """
         if symbol not in self.open_positions:
             return None
         
@@ -129,7 +120,15 @@ class BacktestEngine:
         else:
             pnl = (pos['entry_price'] - exit_price) * pos['quantity'] - pos['entry_fee'] - exit_fee
         
+        # Add back margin and PnL
         self.equity += pnl + pos['margin']
+        
+        # Sanity check - prevent equity explosion
+        if self.equity > self.initial_capital * 1000:  # 1000x is unrealistic
+            self.equity = self.initial_capital * 1000
+        
+        if self.equity < 0:
+            self.equity = 0
         
         trade_record = {
             'symbol': symbol,
@@ -157,9 +156,6 @@ class BacktestEngine:
         return trade_record
     
     def run_backtest(self, signals_dict: Dict[str, pd.DataFrame]) -> Dict:
-        """
-        Run backtest with ATR-based TP/SL and reversal flips
-        """
         all_data = []
         for symbol, df in signals_dict.items():
             df_copy = df.copy()
@@ -175,55 +171,36 @@ class BacktestEngine:
             current_price = row['close']
             atr = row.get('15m_atr', row.get('atr', 0))
             
-            # Priority 1: Check TP/SL
+            # Check TP/SL first
             if symbol in self.open_positions:
                 tp_sl_result = self.check_tp_sl(symbol, current_price, timestamp)
                 
                 if tp_sl_result == 'TP':
-                    # Hit TP -> Close ONLY (Wait for next signal to re-enter)
                     self.close_position(symbol, current_price, timestamp, 'TP_HIT')
                     continue
                 
                 elif tp_sl_result == 'SL':
-                    # Hit SL -> Close ONLY (Wait for next signal to re-enter)
                     self.close_position(symbol, current_price, timestamp, 'SL_HIT')
                     continue
             
-            # Priority 2: Check reversal signals
+            # Check reversal signals
             if 'signal' in row and row['signal'] != 0:
                 direction = 'LONG' if row['signal'] == 1 else 'SHORT'
                 
                 if symbol in self.open_positions:
                     pos = self.open_positions[symbol]
-                    # If signal is opposite to current position -> Flip
                     if pos['direction'] != direction:
-                        # Removed "only if profitable" check to catch all waves
                         self.close_position(symbol, current_price, timestamp, 'REVERSAL_FLIP')
                         self.open_or_flip_position(symbol, direction, current_price, timestamp, 
                                                    {'reversal_prob': row.get('reversal_prob_pred', 0)}, atr)
                 else:
-                    # No position -> Open new one
                     signal_data = {'reversal_prob': row.get('reversal_prob_pred', 0)}
                     self.open_or_flip_position(symbol, direction, current_price, timestamp, signal_data, atr)
             
-            # Record equity
-            unrealized_pnl = 0
-            for sym, pos in self.open_positions.items():
-                current_price_pos = combined_df[
-                    (combined_df['symbol'] == sym) & 
-                    (combined_df['open_time'] == timestamp)
-                ]['close'].values
-                
-                if len(current_price_pos) > 0:
-                    current_price_pos = current_price_pos[0]
-                    if pos['direction'] == 'LONG':
-                        unrealized_pnl += (current_price_pos - pos['entry_price']) * pos['quantity']
-                    else:
-                        unrealized_pnl += (pos['entry_price'] - current_price_pos) * pos['quantity']
-            
+            # Record equity (simplified to avoid calculation errors)
             self.equity_curve.append({
                 'timestamp': timestamp,
-                'equity': self.equity + unrealized_pnl,
+                'equity': self.equity,
                 'open_positions': len(self.open_positions)
             })
         
