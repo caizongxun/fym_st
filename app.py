@@ -115,10 +115,10 @@ with tabs[1]:
     - When in DOWNTREND and BULLISH reversal appears -> GO LONG
     - When in UPTREND and BEARISH reversal appears -> GO SHORT
     - Exit and flip position on next reversal signal
-    - No TP/SL, pure flip-flop system
+    - No TP/SL, no filters, pure flip-flop system
     """)
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     
     with col1:
         bt_symbol = st.text_input("Backtest Symbol", value="BTCUSDT", key="bt_symbol")
@@ -126,14 +126,11 @@ with tabs[1]:
     with col2:
         bt_days = st.number_input("Backtest Days", min_value=7, max_value=180, value=60, key="bt_days")
     
+    col3, col4 = st.columns(2)
     with col3:
-        min_reversal_prob = st.slider("Min Reversal Probability", 50, 90, 75, key="min_prob")
-    
-    col4, col5 = st.columns(2)
-    with col4:
         initial_capital = st.number_input("Initial Capital (USDT)", min_value=10.0, value=100.0)
     
-    with col5:
+    with col4:
         leverage = st.number_input("Leverage", min_value=1, max_value=20, value=10)
     
     if st.button("Run Backtest"):
@@ -174,11 +171,23 @@ with tabs[1]:
             df_combined = pd.merge(df_15m, df_1h_resampled, on='open_time', how='left')
             df_combined['trend_direction'] = df_combined['trend_direction_1h'].fillna(0)
             
-            signal_gen = SignalGenerator(min_reversal_prob=min_reversal_prob)
+            # NO PARAMETERS - pure reversal
+            signal_gen = SignalGenerator()
             df_signals = signal_gen.generate_signals(df_combined)
             df_signals = signal_gen.add_signal_metadata(df_signals)
             
-            st.write(f"Generated {(df_signals['signal'] != 0).sum()} reversal signals")
+            signal_count = (df_signals['signal'] != 0).sum()
+            st.write(f"Generated {signal_count} reversal signals")
+            
+            # Debug info
+            if signal_count == 0:
+                st.warning("No signals generated. Checking conditions...")
+                st.write("Trend direction distribution:")
+                st.write(df_signals['trend_direction'].value_counts())
+                st.write("\nReversal direction distribution:")
+                st.write(df_signals['reversal_direction_pred'].value_counts())
+                st.write("\nSample data (last 20 rows):")
+                st.dataframe(df_signals[['open_time', 'close', 'trend_direction', 'reversal_direction_pred', 'signal']].tail(20))
         
         with st.spinner("Running backtest..."):
             engine = BacktestEngine(
@@ -231,7 +240,7 @@ with tabs[2]:
             feature_engineer = FeatureEngineer()
             
             end_date = datetime.now()
-            start_date = end_date - timedelta(days=7)
+            start_date = end_date - timedelta(days=30)  # Increased to 30 days for better indicators
             
             df_1h = loader.load_historical_data(live_symbol, '1h', start_date, end_date)
             df_15m = loader.load_historical_data(live_symbol, '15m', start_date, end_date)
@@ -259,7 +268,7 @@ with tabs[2]:
             df_combined = pd.merge(df_15m, df_1h_resampled, on='open_time', how='left')
             df_combined['trend_direction'] = df_combined['trend_direction_1h'].fillna(0)
             
-            signal_gen = SignalGenerator(min_reversal_prob=75)
+            signal_gen = SignalGenerator()
             df_signals = signal_gen.generate_signals(df_combined)
             df_signals = signal_gen.add_signal_metadata(df_signals)
             
