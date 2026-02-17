@@ -4,60 +4,46 @@ from typing import Dict, List
 
 class SignalGenerator:
     """
-    Pure Reversal Trading Strategy (SIMPLIFIED)
-    - Always know current trend direction using indicators
-    - When reversal signal appears in uptrend -> Go SHORT
-    - When reversal signal appears in downtrend -> Go LONG
-    - Exit and flip position on next reversal signal
+    Pure Reversal Trading Strategy (ULTRA SIMPLIFIED)
+    - Detect current trend direction using indicators (Bull/Bear/Neutral)
+    - When reversal signal appears -> Flip position
+    - NO filters, NO thresholds, just pure reversal signals
     """
     
-    def __init__(self,
-                 min_reversal_prob: float = 75.0,
-                 use_volatility_filter: bool = False):
-        
-        self.min_reversal_prob = min_reversal_prob
-        self.use_volatility_filter = use_volatility_filter
+    def __init__(self):
+        pass  # No parameters needed
     
     def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Generate flip-flop reversal signals
+        Generate flip-flop reversal signals with ZERO filters
         
         Args:
             df: DataFrame with predictions
                 Required columns:
                 - trend_direction: 1 (bull), -1 (bear), 0 (neutral) from indicators
                 - reversal_direction_pred: 1 (bullish reversal), -1 (bearish reversal)
-                - reversal_prob_pred: 0-100
                 - close: current price
         
         Returns:
             DataFrame with 'signal' column:
-            - 1: Open/Flip to LONG
-            - -1: Open/Flip to SHORT
-            - 0: Hold current position
+            - 1: Go LONG (downtrend + bullish reversal)
+            - -1: Go SHORT (uptrend + bearish reversal)
+            - 0: Hold
         """
         df = df.copy()
         df['signal'] = 0
         
-        # Determine if reversal is strong enough
-        df['strong_reversal'] = df['reversal_prob_pred'] >= self.min_reversal_prob
-        
-        # Logic: Counter-trend reversal trading
-        # If in UPTREND and see BEARISH reversal -> SHORT (trend exhaustion)
-        # If in DOWNTREND and see BULLISH reversal -> LONG (trend exhaustion)
-        
-        # Long signal: Downtrend + Bullish reversal = Bottom reversal
+        # ULTRA SIMPLE LOGIC:
+        # Long: Downtrend (-1) + Bullish reversal (1) = Bottom reversal
         long_conditions = (
-            (df['trend_direction'] == -1) &  # Currently in downtrend
-            (df['reversal_direction_pred'] == 1) &  # Bullish reversal detected
-            df['strong_reversal']
+            (df['trend_direction'] == -1) &  # In downtrend
+            (df['reversal_direction_pred'] == 1)  # Bullish reversal detected
         )
         
-        # Short signal: Uptrend + Bearish reversal = Top reversal
+        # Short: Uptrend (1) + Bearish reversal (-1) = Top reversal
         short_conditions = (
-            (df['trend_direction'] == 1) &  # Currently in uptrend
-            (df['reversal_direction_pred'] == -1) &  # Bearish reversal detected
-            df['strong_reversal']
+            (df['trend_direction'] == 1) &  # In uptrend
+            (df['reversal_direction_pred'] == -1)  # Bearish reversal detected
         )
         
         df.loc[long_conditions, 'signal'] = 1
@@ -75,6 +61,6 @@ class SignalGenerator:
         df['signal_name'] = df['signal'].map(signal_map)
         
         # Signal strength = reversal probability
-        df['signal_strength'] = df['reversal_prob_pred']
+        df['signal_strength'] = df.get('reversal_prob_pred', 0)
         
         return df
