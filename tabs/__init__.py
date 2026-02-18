@@ -1,23 +1,26 @@
 """
-Tabs 模組
+Ensemble RL-Transformer 交易系統
 
-每個 Tab 都是獨立的模組，便於維護和更新
+三層架構:
+1. 多時間框架特徵提取 (Transformer)
+2. Ensemble 模型預測 (Transformer + LSTM + XGBoost + Attention-GRU)
+3. 強化學習決策 (PPO/SAC)
 """
 
-from .tab_bb_visualization import render_bb_visualization_tab
-from .tab_bb_training import render_bb_training_tab
-from .tab_bb_backtest import render_bb_backtest_tab
-from .tab_scalping_training import render_scalping_training_tab
-from .tab_scalping_backtest import render_scalping_backtest_tab
-from .tab_nextbar_training import render_nextbar_training_tab
-from .tab_nextbar_backtest import render_nextbar_backtest_tab
+from .tab_data_analysis import render_data_analysis_tab
+from .tab_feature_engineering import render_feature_engineering_tab
+from .tab_transformer_training import render_transformer_training_tab
+from .tab_ensemble_training import render_ensemble_training_tab
+from .tab_rl_training import render_rl_training_tab
+from .tab_backtest import render_backtest_tab
+from .tab_live_trading import render_live_trading_tab
 
 __all__ = [
-    'render_bb_visualization_tab',
-    'render_bb_training_tab',
-    'render_bb_backtest_tab',
-    'render_scalping_training_tab',
-    'render_scalping_backtest_tab',
-    'render_nextbar_training_tab',
-    'render_nextbar_backtest_tab'
+    'render_data_analysis_tab',
+    'render_feature_engineering_tab',
+    'render_transformer_training_tab',
+    'render_ensemble_training_tab',
+    'render_rl_training_tab',
+    'render_backtest_tab',
+    'render_live_trading_tab'
 ]
