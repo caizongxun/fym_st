@@ -168,7 +168,13 @@ with tabs[0]:
     if st.button("生成BB反轉點圖表", key="gen_bb_viz", type="primary"):
         with st.spinner(f"載入 {viz_symbol} 數據..."):
             try:
-                df = loader.load_klines(viz_symbol, '15m')
+                if isinstance(loader, BinanceDataLoader):
+                    end_date = datetime.now()
+                    start_date = end_date - timedelta(days=viz_days+1)
+                    df = loader.load_historical_data(viz_symbol, '15m', start_date, end_date)
+                else:
+                    df = loader.load_klines(viz_symbol, '15m')
+                    
                 df = df.tail(viz_candles)
                 
                 detector = BBReversalDetector(
@@ -277,7 +283,16 @@ with tabs[1]:
         with st.spinner(f"正在訓練 {train_symbol} BB反轉模型 (OOS模式)..."):
             try:
                 # 載入全部數據
-                df_all = loader.load_klines(train_symbol, '15m')
+                if isinstance(loader, BinanceDataLoader):
+                    # 加載足夠的數據用於訓練+OOS
+                    # 估算需要的天數
+                    total_candles = train_candles + oos_candles
+                    days_needed = (total_candles / 96) + 5 # 緩衝
+                    end_date = datetime.now()
+                    start_date = end_date - timedelta(days=days_needed)
+                    df_all = loader.load_historical_data(train_symbol, '15m', start_date, end_date)
+                else:
+                    df_all = loader.load_klines(train_symbol, '15m')
                 
                 # 分割OOS
                 df_oos = df_all.tail(oos_candles).copy()
@@ -433,12 +448,15 @@ with tabs[2]:
             with st.spinner(f"正在回測 {backtest_symbol}..."):
                 try:
                     # 載入數據
-                    df = loader.load_klines(backtest_symbol, '15m')
-                    df = df.tail(backtest_days * 96)
+                    if isinstance(loader, BinanceDataLoader):
+                        end_date = datetime.now()
+                        start_date = end_date - timedelta(days=backtest_days)
+                        df = loader.load_historical_data(backtest_symbol, '15m', start_date, end_date)
+                    else:
+                        df = loader.load_klines(backtest_symbol, '15m')
+                        df = df.tail(backtest_days * 96)
                     
                     # 生成信號
-                    # 使用與訓練時相同的參數 (這裡假設用戶記得參數，或者我們應該保存參數)
-                    # 這裡先使用預設值，理想情況下應從模型配置載入
                     generator = BBReversalSignalGenerator(
                         model_path=model_path,
                         bb_period=bb_period_train,  # 使用OOS頁面設定的參數
@@ -447,10 +465,6 @@ with tabs[2]:
                     )
                     
                     df_signals = generator.generate_signals(df)
-                    
-                    # 準備回測數據
-                    # BacktestEngine需要 'signal' 列 (1=Long, -1=Short, 0=None)
-                    # 已經由generator生成
                     
                     # 執行回測
                     engine = BacktestEngine(
