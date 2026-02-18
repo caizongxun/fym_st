@@ -16,8 +16,13 @@ from models.train_bb_reversal_model import BBReversalModelTrainer
 from backtesting.engine import BacktestEngine
 from utils.signal_generator_bb_reversal import BBReversalSignalGenerator
 
+# Scalping imports
+from models.train_scalping_model import ScalpingModelTrainer
+from utils.signal_generator_scalping import ScalpingSignalGenerator
+from backtesting.limit_order_engine import LimitOrderBacktestEngine
+
 st.set_page_config(page_title="AI 加密貨幣交易儀表板", layout="wide")
-st.title("AI 加密貨幣交易儀表板 - BB反轉系統")
+st.title("AI 加密貨幣交易儀表板 - 多策略系統")
 
 st.sidebar.title("設定")
 data_source = st.sidebar.radio(
@@ -134,7 +139,7 @@ def symbol_selector(key_prefix: str, multi: bool = False, default_symbols: list 
                 key=f"{key_prefix}_binance_single"
             ).strip().upper()]
 
-tabs = st.tabs(["BB反轉視覺化", "BB反轉訓練(OOS)", "BB模型回測"])
+tabs = st.tabs(["BB反轉視覺化", "BB反轉訓練(OOS)", "BB模型回測", "剝頭皮訓練", "剝頭皮回測"])
 
 with tabs[0]:
     st.header("BB反轉點視覺化")
@@ -342,11 +347,12 @@ with tabs[1]:
                     X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
                 )
                 
-                trainer.model = trainer.model or __import__('lightgbm').LGBMClassifier(**trainer.lgb_params)
+                import lightgbm as lgb
+                trainer.model = trainer.model or lgb.LGBMClassifier(**trainer.lgb_params)
                 trainer.model.fit(
                     X_t, y_t,
                     eval_set=[(X_v, y_v)],
-                    callbacks=[__import__('lightgbm').early_stopping(stopping_rounds=50, verbose=False)]
+                    callbacks=[lgb.early_stopping(stopping_rounds=50, verbose=False)]
                 )
                 
                 # 訓練集準確率
@@ -440,7 +446,7 @@ with tabs[2]:
         tp_mult = st.number_input("ATR止盈倍數", 1.0, 5.0, 2.0, key="bt_tp")
         sl_mult = st.number_input("ATR止損倍數", 1.0, 5.0, 1.5, key="bt_sl")
     
-    if st.button("開始回測", type="primary"):
+    if st.button("開始回測", type="primary", key="bb_bt_btn"):
         model_path = f"models/saved/{backtest_symbol}_oos_bb_reversal_lgb.pkl"
         if not os.path.exists(model_path):
             st.error(f"找不到模型文件: {model_path}，請先進行訓練")
@@ -459,9 +465,9 @@ with tabs[2]:
                     # 生成信號
                     generator = BBReversalSignalGenerator(
                         model_path=model_path,
-                        bb_period=bb_period_train,  # 使用OOS頁面設定的參數
-                        bb_std=bb_std_train,
-                        touch_threshold=touch_threshold_train
+                        bb_period=20,
+                        bb_std=2.0,
+                        touch_threshold=0.001
                     )
                     
                     df_signals = generator.generate_signals(df)
@@ -488,9 +494,278 @@ with tabs[2]:
                     trades_df = engine.get_trades_dataframe()
                     if not trades_df.empty:
                         st.subheader("交易明細")
-                        st.dataframe(trades_df, use_container_width=True)
+                        display_cols = ['進場時間', '離場時間', '方向', '進場價格', '離場價格', 
+                                      '損益(USDT)', '損益率', '離場原因', '持倉時長(分)']
+                        st.dataframe(trades_df[display_cols], use_container_width=True)
                     else:
                         st.warning("沒有產生任何交易")
+                        
+                except Exception as e:
+                    st.error(f"回測錯誤: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
+
+# ==================== 剝頭皮訓練 Tab ====================
+with tabs[3]:
+    st.header("剝頭皮模型訓練")
+    
+    st.success("""
+    **剝頭皮策略 - 全新設計**:
+    - 不依賴BB通道，使用40+多維技術指標
+    - 預測未來5根K線內價格變動 ≥ 0.3%
+    - 三分類: 做多(1) / 做空(0) / 觀望(2)
+    - 只訓練明確的做多/做空信號
+    
+    **特徵包含**:
+    - 趨勢: EMA, MACD, ADX
+    - 動量: RSI, Stochastic, Williams %R
+    - 波動率: ATR, BB, Keltner
+    - 量價: Volume Ratio, OBV, 背離
+    - 市場結構: K線形態, 支撐阻力
+    - 時間: 交易時段
+    """)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        scalp_train_symbols = symbol_selector("scalp_train", multi=False)
+        scalp_train_symbol = scalp_train_symbols[0]
+        
+        scalp_train_candles = st.number_input(
+            "訓練K棒數量",
+            min_value=10000,
+            max_value=50000,
+            value=30000,
+            step=5000,
+            key="scalp_train_candles"
+        )
+        
+        target_pct = st.slider(
+            "目標利潤 (%)",
+            min_value=0.1,
+            max_value=1.0,
+            value=0.3,
+            step=0.1,
+            key="scalp_target_pct"
+        ) / 100
+    
+    with col2:
+        st.subheader("標籤參數")
+        
+        lookforward = st.number_input(
+            "預測K線數",
+            min_value=3,
+            max_value=10,
+            value=5,
+            key="scalp_lookforward",
+            help="預測未來N根K線內的價格變動"
+        )
+        
+        risk_reward = st.slider(
+            "風報比過濾",
+            min_value=1.0,
+            max_value=3.0,
+            value=1.5,
+            step=0.1,
+            key="scalp_rr",
+            help="上漲空間必須 > 下跌空間 * 風報比"
+        )
+    
+    st.caption(f"訓練數據: {scalp_train_candles}根 | 目標: {target_pct*100:.1f}% | 預測: {lookforward}根K線 | 風報比: {risk_reward}")
+    
+    if st.button("開始訓練剝頭皮模型", key="train_scalp_btn", type="primary"):
+        with st.spinner(f"正在訓練 {scalp_train_symbol} 剝頭皮模型..."):
+            try:
+                # 載入數據
+                if isinstance(loader, BinanceDataLoader):
+                    days_needed = (scalp_train_candles / 96) + 5
+                    end_date = datetime.now()
+                    start_date = end_date - timedelta(days=days_needed)
+                    df = loader.load_historical_data(scalp_train_symbol, '15m', start_date, end_date)
+                else:
+                    df = loader.load_klines(scalp_train_symbol, '15m')
+                
+                df = df.tail(scalp_train_candles)
+                
+                st.info(f"載入 {len(df)} 根K線")
+                
+                # 訓練模型
+                trainer = ScalpingModelTrainer(model_dir='models/saved')
+                trainer.label_generator.target_pct = target_pct
+                trainer.label_generator.lookforward = lookforward
+                trainer.label_generator.risk_reward_ratio = risk_reward
+                
+                metrics = trainer.train(df, target_pct=target_pct, lookforward=lookforward)
+                
+                # 顯示結果
+                st.subheader("訓練結果")
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("訓練集準確率", f"{metrics['train_accuracy']:.2%}")
+                with col2:
+                    st.metric("驗證集準確率", f"{metrics['test_accuracy']:.2%}")
+                with col3:
+                    st.metric("訓練樣本數", metrics['train_samples'])
+                
+                # 特徵重要性
+                st.subheader("Top 20 重要特徵")
+                importance_df = metrics['feature_importance']
+                st.dataframe(importance_df, use_container_width=True)
+                
+                # 保存模型
+                trainer.save_model(scalp_train_symbol, prefix='scalping_v1')
+                st.success(f"模型已保存: models/saved/{scalp_train_symbol}_scalping_v1_scalping_lgb.pkl")
+                
+                if metrics['test_accuracy'] >= 0.55:
+                    st.balloons()
+                    st.success("模型訓練完成! 可以進行回測")
+                    
+            except Exception as e:
+                st.error(f"訓練失敗: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
+
+# ==================== 剝頭皮回測 Tab ====================
+with tabs[4]:
+    st.header("剝頭皮模型回測 (Limit Order)")
+    
+    st.info("""
+    **Limit Order 掛單回測**:
+    1. 模型預測信號 + 置信度 > 65%
+    2. 在當前價 ± 0.1% 掛限價單 (等回調)
+    3. 只有價格觸碰限價才成交
+    4. 止盈: Limit Order (Maker 0.02%)
+    5. 止損: Stop Market (Taker 0.06%)
+    
+    **優勢**:
+    - 雙Maker結構，大幅降低手續費
+    - 不追高殺低，等最佳進場點
+    - 模擬真實掛單成交邏輯
+    """)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        scalp_bt_symbol = st.selectbox(
+            "回測幣種",
+            ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+            key="scalp_bt_symbol"
+        )
+        
+        scalp_bt_days = st.slider(
+            "回測天數",
+            30, 180, 60,
+            key="scalp_bt_days"
+        )
+        
+        confidence_threshold = st.slider(
+            "置信度閾值",
+            0.5, 0.9, 0.65,
+            step=0.05,
+            key="scalp_confidence",
+            help="只有模型置信度 > 此值才進場"
+        )
+    
+    with col2:
+        st.subheader("風險管理")
+        
+        scalp_capital = st.number_input(
+            "初始資金",
+            100, 10000, 1000,
+            key="scalp_capital"
+        )
+        
+        scalp_leverage = st.number_input(
+            "槓桿倍數",
+            1, 20, 5,
+            key="scalp_leverage"
+        )
+        
+        scalp_position_pct = st.slider(
+            "單筆倉位 (%)",
+            10, 50, 20,
+            key="scalp_position_pct"
+        ) / 100
+    
+    st.caption(f"回測: {scalp_bt_days}天 | 資金: ${scalp_capital} | 槓桿: {scalp_leverage}x | 單筆: {scalp_position_pct*100:.0f}% | 置信度: {confidence_threshold:.0%}")
+    
+    if st.button("開始剝頭皮回測", key="scalp_bt_btn", type="primary"):
+        model_path = f"models/saved/{scalp_bt_symbol}_scalping_v1_scalping_lgb.pkl"
+        
+        if not os.path.exists(model_path):
+            st.error(f"找不到模型: {model_path}，請先訓練模型")
+        else:
+            with st.spinner(f"正在回測 {scalp_bt_symbol}..."):
+                try:
+                    # 載入數據
+                    if isinstance(loader, BinanceDataLoader):
+                        end_date = datetime.now()
+                        start_date = end_date - timedelta(days=scalp_bt_days)
+                        df = loader.load_historical_data(scalp_bt_symbol, '15m', start_date, end_date)
+                    else:
+                        df = loader.load_klines(scalp_bt_symbol, '15m')
+                        df = df.tail(scalp_bt_days * 96)
+                    
+                    st.info(f"載入 {len(df)} 根K線")
+                    
+                    # 生成信號
+                    generator = ScalpingSignalGenerator(
+                        model_path=model_path,
+                        confidence_threshold=confidence_threshold,
+                        entry_offset_pct=0.001,
+                        tp_pct=0.003,
+                        sl_pct=0.002
+                    )
+                    
+                    df_signals = generator.generate_signals(df)
+                    
+                    signal_count = (df_signals['signal'] != 0).sum()
+                    st.info(f"生成 {signal_count} 個信號 (做多: {(df_signals['signal']==1).sum()}, 做空: {(df_signals['signal']==-1).sum()})")
+                    
+                    # 執行回測
+                    engine = LimitOrderBacktestEngine(
+                        initial_capital=scalp_capital,
+                        leverage=scalp_leverage,
+                        position_size_pct=scalp_position_pct,
+                        maker_fee=0.0002,
+                        taker_fee=0.0006
+                    )
+                    
+                    signals_dict = {scalp_bt_symbol: df_signals}
+                    metrics = engine.run_backtest(signals_dict)
+                    
+                    # 顯示結果
+                    st.subheader("回測結果")
+                    display_metrics(metrics)
+                    
+                    # 權益曲線
+                    fig = engine.plot_equity_curve()
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 交易明細
+                    trades_df = engine.get_trades_dataframe()
+                    if not trades_df.empty:
+                        st.subheader("交易明細")
+                        display_cols = ['進場時間', '離場時間', '方向', '進場價格', '離場價格',
+                                      '損益(USDT)', '損益率', '離場原因', '持倉時長(分)']
+                        st.dataframe(trades_df[display_cols], use_container_width=True)
+                        
+                        # 統計分析
+                        st.subheader("交易統計")
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric("止盈交易", (trades_df['exit_reason'] == 'TP').sum())
+                        with col2:
+                            st.metric("止損交易", (trades_df['exit_reason'] == 'SL').sum())
+                        with col3:
+                            avg_conf = trades_df.get('signal_data', pd.Series()).apply(
+                                lambda x: x.get('confidence', 0) if isinstance(x, dict) else 0
+                            ).mean()
+                            st.metric("平均置信度", f"{avg_conf:.2%}")
+                    else:
+                        st.warning("沒有產生任何交易，請降低置信度閾值")
                         
                 except Exception as e:
                     st.error(f"回測錯誤: {str(e)}")
