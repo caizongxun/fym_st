@@ -10,6 +10,7 @@ from .tab_bb_backtest import render_bb_backtest_tab
 from .tab_scalping_training import render_scalping_training_tab
 from .tab_scalping_backtest import render_scalping_backtest_tab
 from .tab_nextbar_training import render_nextbar_training_tab
+from .tab_nextbar_backtest import render_nextbar_backtest_tab
 
 __all__ = [
     'render_bb_visualization_tab',
@@ -17,5 +18,6 @@ __all__ = [
     'render_bb_backtest_tab',
     'render_scalping_training_tab',
     'render_scalping_backtest_tab',
-    'render_nextbar_training_tab'
+    'render_nextbar_training_tab',
+    'render_nextbar_backtest_tab'
 ]
