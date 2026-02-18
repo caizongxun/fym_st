@@ -8,7 +8,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix, precision_recall_curve
 import xgboost as xgb
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 from data.binance_loader import BinanceDataLoader
 from data.huggingface_loader import HuggingFaceKlineLoader
@@ -19,12 +18,12 @@ def render_reversal_training_tab(loader):
     
     st.info("""
     **優化策略**: 
-    - 使用 14 個精簡特徵
-    - 可調整機率閾值提高召回率
-    - 可調整 class weight 平衡精確/召回
+    - 14 個精簡特徵
+    - 機率閾值調整
+    - Class weight 調整
+    - 可選擇激進模式提高召回率
     """)
     
-    # 參數設定
     st.subheader("訓練參數")
     
     col1, col2, col3 = st.columns(3)
@@ -40,18 +39,10 @@ def render_reversal_training_tab(loader):
             train_days = 90
     
     with col2:
-        lookback_period = st.number_input(
-            "歷史波動期數",
-            5, 50, 20,
-            key="train_lookback"
-        )
+        lookback_period = st.number_input("歷史波動期數", 5, 50, 20, key="train_lookback")
     
     with col3:
-        volatility_multiplier = st.number_input(
-            "波動倍數",
-            1.0, 5.0, 2.0, 0.5,
-            key="train_multiplier"
-        )
+        volatility_multiplier = st.number_input("波動倍數", 1.0, 5.0, 2.0, 0.5, key="train_multiplier")
     
     col4, col5, col6 = st.columns(3)
     
@@ -68,30 +59,45 @@ def render_reversal_training_tab(loader):
     with st.expander("進階設定: XGBoost 超參數"):
         col1, col2, col3 = st.columns(3)
         with col1:
-            max_depth = st.slider("max_depth", 3, 10, 5, key="max_depth")
-            n_estimators = st.slider("n_estimators", 50, 300, 150, 50, key="n_estimators")
+            max_depth = st.slider("max_depth", 3, 10, 6, key="max_depth", help="增加可提高召回率")
+            n_estimators = st.slider("n_estimators", 50, 300, 200, 50, key="n_estimators", help="更多樹")
         with col2:
-            learning_rate = st.select_slider("learning_rate", [0.01, 0.05, 0.1, 0.2], 0.1, key="lr")
-            min_child_weight = st.slider("min_child_weight", 1, 10, 1, key="min_child")
+            learning_rate = st.select_slider("learning_rate", [0.01, 0.05, 0.1, 0.2], 0.05, key="lr", help="降低學習率")
+            min_child_weight = st.slider("min_child_weight", 1, 10, 1, key="min_child", help="保持 1")
         with col3:
-            gamma = st.slider("gamma", 0.0, 1.0, 0.0, 0.1, key="gamma", help="增加可減少過擬合")
+            gamma = st.slider("gamma", 0.0, 1.0, 0.1, 0.1, key="gamma")
             scale_pos_weight_multiplier = st.slider(
                 "scale_pos_weight 倍數", 
-                0.5, 2.0, 1.0, 0.1, 
+                0.5, 3.0, 1.5, 0.1, 
                 key="scale_multiplier",
-                help=">1 提高召回率, <1 提高精確率"
+                help="提高可增加召回率"
             )
     
     # 機率閾值調整
-    with st.expander("進階設定: 機率閾值調整"):
-        st.write("調整機率閾值可平衡精確率和召回率")
+    with st.expander("進階設定: 機率閾值調整", expanded=True):
+        st.write("降低閾值 = 提高召回率")
         probability_threshold = st.slider(
             "機率閾值",
-            0.3, 0.7, 0.5, 0.05,
+            0.25, 0.65, 0.40, 0.05,
             key="prob_threshold",
-            help="降低可提高召回率 (捕捉更多反轉), 提高可提高精確率 (減少誤判)"
+            help="建議 0.35-0.45 提高召回率"
         )
-        st.info(f"當前閾值: {probability_threshold} | 機率 > {probability_threshold} 才預測為反轉")
+        st.info(f"當前: 機率 > {probability_threshold} 預測為反轉")
+        
+        optimization_mode = st.radio(
+            "優化模式",
+            ["平衡模式", "高召回模式", "高精確模式"],
+            help="高召回: 捕捉更多反轉 | 高精確: 減少誤判"
+        )
+        
+        if optimization_mode == "高召回模式":
+            st.warning("高召回模式: 會提高 FP (誤判), 但減少 FN (漏掉)")
+            probability_threshold = 0.35
+            scale_pos_weight_multiplier = 2.0
+        elif optimization_mode == "高精確模式":
+            st.info("高精確模式: 會增加 FN (漏掉), 但減少 FP (誤判)")
+            probability_threshold = 0.55
+            scale_pos_weight_multiplier = 0.8
     
     if st.button("開始訓練", key="start_training", type="primary"):
         with st.spinner(f"正在訓練 {symbol} 反轉模型..."):
@@ -114,10 +120,10 @@ def render_reversal_training_tab(loader):
                 upper_labels = df['label_upper_reversal'].sum()
                 lower_labels = df['label_lower_reversal'].sum()
                 
-                st.info(f"上軌反轉標籤: {upper_labels} | 下軌反轉標籤: {lower_labels}")
+                st.info(f"上軌反轉: {upper_labels} | 下軌反轉: {lower_labels}")
                 
                 if upper_labels < 10 or lower_labels < 10:
-                    st.warning("標籤數量過少! 建議降低波動倍數或增加訓練天數")
+                    st.warning("標籤數量過少! 建議降低波動倍數")
                     return
                 
                 # 3. 提取特徵
@@ -125,7 +131,7 @@ def render_reversal_training_tab(loader):
                 df = extract_simple_features(df, bb_period)
                 
                 # 4. 訓練上軌模型
-                st.write("步驟 4/5: 訓練上軌反轉模型...")
+                st.write("步驟 4/5: 訓練上軌模型...")
                 xgb_params = {
                     'max_depth': max_depth,
                     'learning_rate': learning_rate,
@@ -143,7 +149,7 @@ def render_reversal_training_tab(loader):
                 )
                 
                 # 5. 訓練下軌模型
-                st.write("步驟 5/5: 訓練下軌反轉模型...")
+                st.write("步驟 5/5: 訓練下軌模型...")
                 lower_result = train_model_with_threshold(
                     df[df['touch_lower']].copy(),
                     'label_lower_reversal',
@@ -160,12 +166,20 @@ def render_reversal_training_tab(loader):
                 with col1:
                     st.subheader("上軌反轉模型")
                     display_detailed_metrics(upper_result['metrics'])
+                    
+                    if upper_result['metrics']['recall'] < 60:
+                        st.warning(f"召回率 {upper_result['metrics']['recall']:.1f}% 偏低! 建議降低機率閾值到 0.35")
+                    
                     st.plotly_chart(plot_feature_importance(upper_result['importance'], "上軌"), use_container_width=True)
                     st.plotly_chart(plot_pr_curve(upper_result['pr_curve'], "上軌"), use_container_width=True)
                 
                 with col2:
                     st.subheader("下軌反轉模型")
                     display_detailed_metrics(lower_result['metrics'])
+                    
+                    if lower_result['metrics']['recall'] < 60:
+                        st.warning(f"召回率 {lower_result['metrics']['recall']:.1f}% 偏低! 建議降低機率閾值到 0.35")
+                    
                     st.plotly_chart(plot_feature_importance(lower_result['importance'], "下軌"), use_container_width=True)
                     st.plotly_chart(plot_pr_curve(lower_result['pr_curve'], "下軌"), use_container_width=True)
                 
@@ -274,7 +288,7 @@ def train_model_with_threshold(df, label_col, test_size, xgb_params, prob_thresh
     
     accuracy = (y_pred == y_test).mean() * 100
     auc = roc_auc_score(y_test, y_pred_proba)
-    report = classification_report(y_test, y_pred)
+    report = classification_report(y_test, y_pred, zero_division=0)
     cm = confusion_matrix(y_test, y_pred)
     
     precision, recall, thresholds = precision_recall_curve(y_test, y_pred_proba)
@@ -284,14 +298,16 @@ def train_model_with_threshold(df, label_col, test_size, xgb_params, prob_thresh
         'importance': model.feature_importances_
     }).sort_values('importance', ascending=False)
     
+    tp, fp, fn, tn = cm[1,1], cm[0,1], cm[1,0], cm[0,0]
+    
     metrics = {
         'accuracy': accuracy,
         'auc': auc,
         'report': report,
         'confusion_matrix': cm,
-        'precision': (cm[1,1] / (cm[1,1] + cm[0,1]) * 100) if (cm[1,1] + cm[0,1]) > 0 else 0,
-        'recall': (cm[1,1] / (cm[1,1] + cm[1,0]) * 100) if (cm[1,1] + cm[1,0]) > 0 else 0,
-        'f1': 2 * cm[1,1] / (2 * cm[1,1] + cm[0,1] + cm[1,0]) if (2 * cm[1,1] + cm[0,1] + cm[1,0]) > 0 else 0
+        'precision': (tp / (tp + fp) * 100) if (tp + fp) > 0 else 0,
+        'recall': (tp / (tp + fn) * 100) if (tp + fn) > 0 else 0,
+        'f1': (2 * tp / (2 * tp + fp + fn)) if (2 * tp + fp + fn) > 0 else 0
     }
     
     return {
@@ -308,20 +324,19 @@ def display_detailed_metrics(metrics):
     with col2:
         st.metric("准確率", f"{metrics['accuracy']:.1f}%")
     with col3:
-        st.metric("F1 Score", f"{metrics['f1']:.3f}")
+        st.metric("F1", f"{metrics['f1']:.3f}")
     
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("精確率 (Precision)", f"{metrics['precision']:.1f}%", help="預測為反轉中真正反轉的比例")
+        st.metric("精確率", f"{metrics['precision']:.1f}%")
     with col2:
-        st.metric("召回率 (Recall)", f"{metrics['recall']:.1f}%", help="所有反轉中成功捕捉的比例")
+        recall_color = "normal" if metrics['recall'] >= 65 else "inverse"
+        st.metric("召回率", f"{metrics['recall']:.1f}%", delta_color=recall_color)
     
-    st.text("混淆矩陣:")
     cm = metrics['confusion_matrix']
-    st.text(f"TN: {cm[0,0]}  FP: {cm[0,1]}")
-    st.text(f"FN: {cm[1,0]}  TP: {cm[1,1]}")
+    st.text(f"TN:{cm[0,0]} FP:{cm[0,1]} | FN:{cm[1,0]} TP:{cm[1,1]}")
     
-    with st.expander("詳細分類報告"):
+    with st.expander("分類報告"):
         st.text(metrics['report'])
 
 def plot_feature_importance(importance, title):
@@ -330,11 +345,7 @@ def plot_feature_importance(importance, title):
         y=importance['feature'],
         orientation='h'
     ))
-    fig.update_layout(
-        title=f"{title} - 特徵重要性",
-        height=350,
-        xaxis_title="重要性"
-    )
+    fig.update_layout(title=f"{title}特徵重要性", height=350)
     return fig
 
 def plot_pr_curve(pr_curve, title):
@@ -342,13 +353,12 @@ def plot_pr_curve(pr_curve, title):
     fig.add_trace(go.Scatter(
         x=pr_curve['recall'],
         y=pr_curve['precision'],
-        mode='lines',
-        name='PR Curve'
+        mode='lines'
     ))
     fig.update_layout(
-        title=f"{title} - Precision-Recall 曲線",
-        xaxis_title="Recall (召回率)",
-        yaxis_title="Precision (精確率)",
+        title=f"{title} PR曲線",
+        xaxis_title="Recall",
+        yaxis_title="Precision",
         height=300
     )
     return fig
@@ -360,13 +370,11 @@ def save_model_package(symbol, upper_model, lower_model, bb_period, bb_std,
     os.makedirs(model_dir, exist_ok=True)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_name = f"{symbol}_bb_reversal_{timestamp}.pkl"
-    model_path = os.path.join(model_dir, model_name)
+    model_name = f"{symbol}_bb_{timestamp}.pkl"
     
-    model_package = {
+    joblib.dump({
         'upper_model': upper_model,
         'lower_model': lower_model,
-        'feature_columns': upper_model.get_booster().feature_names,
         'params': {
             'bb_period': bb_period,
             'bb_std': bb_std,
@@ -374,11 +382,7 @@ def save_model_package(symbol, upper_model, lower_model, bb_period, bb_std,
             'volatility_multiplier': volatility_multiplier,
             'probability_threshold': prob_threshold
         },
-        'metrics': {
-            'upper': upper_metrics,
-            'lower': lower_metrics
-        }
-    }
+        'metrics': {'upper': upper_metrics, 'lower': lower_metrics}
+    }, os.path.join(model_dir, model_name))
     
-    joblib.dump(model_package, model_path)
     st.success(f"模型已保存: {model_name}")
