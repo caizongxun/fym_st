@@ -1,231 +1,118 @@
 import pandas as pd
 import numpy as np
-import ta
-from typing import Dict, Optional
+import joblib
+import os
+from utils.scalping_feature_extractor import ScalpingFeatureExtractor
 
-class UltraScalpingSignalGenerator:
+class ScalpingSignalGenerator:
     """
-    超高頻剩頭皮策略信號生成器
+    剝頭皮信號生成器
     
-    策略原理:
-    - 捕捉微小價格波動 (0.05-0.15%)
-    - 快進快出,持倉時間 < 30分鐘
-    - 目標: 每筆賺 0.1-0.2 USDT (含手續費)
-    - 適用: 低波動/震盪市場
-    
-    信號條件:
-    1. BB寬度縮小 (低波動)
-    2. 價格觸及BB上/下軌
-    3. 成交量激增 (確認反轉)
-    4. 快速止盈/止損
+    特點:
+    - 使用模型置信度過濾 (confidence > threshold)
+    - 自動計算 Limit Order 進場價
+    - 自動計算 TP/SL
     """
     
-    def __init__(self,
-                 bb_period: int = 20,
-                 bb_std: float = 2.0,
-                 volume_multiplier: float = 1.5,
-                 quick_tp_pct: float = 0.15,
-                 quick_sl_pct: float = 0.1,
-                 min_bb_width: float = 0.01,
-                 max_bb_width: float = 0.03):
+    def __init__(self, 
+                 model_path: str,
+                 confidence_threshold: float = 0.65,
+                 entry_offset_pct: float = 0.001,  # 進場價偏移 0.1%
+                 tp_pct: float = 0.003,            # 止盈 0.3%
+                 sl_pct: float = 0.002):           # 止損 0.2%
         
-        self.bb_period = bb_period
-        self.bb_std = bb_std
-        self.volume_multiplier = volume_multiplier
-        self.quick_tp_pct = quick_tp_pct
-        self.quick_sl_pct = quick_sl_pct
-        self.min_bb_width = min_bb_width
-        self.max_bb_width = max_bb_width
-    
-    def add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        df = df.copy()
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"模型文件不存在: {model_path}")
         
-        # Bollinger Bands
-        bb_indicator = ta.volatility.BollingerBands(
-            close=df['close'],
-            window=self.bb_period,
-            window_dev=self.bb_std
-        )
-        df['bb_upper'] = bb_indicator.bollinger_hband()
-        df['bb_middle'] = bb_indicator.bollinger_mavg()
-        df['bb_lower'] = bb_indicator.bollinger_lband()
-        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
+        # 載入模型包
+        model_package = joblib.load(model_path)
+        self.model = model_package['model']
+        self.feature_columns = model_package['feature_columns']
         
-        # BB位置
-        df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
-        df['bb_position'] = df['bb_position'].clip(0, 1)
+        self.confidence_threshold = confidence_threshold
+        self.entry_offset_pct = entry_offset_pct
+        self.tp_pct = tp_pct
+        self.sl_pct = sl_pct
         
-        # 成交量指標
-        df['volume_sma'] = df['volume'].rolling(window=20).mean()
-        df['volume_ratio'] = df['volume'] / df['volume_sma']
-        
-        # 價格動量
-        df['price_change'] = df['close'].pct_change()
-        df['price_volatility'] = df['price_change'].rolling(window=20).std()
-        
-        # RSI (輔助)
-        df['rsi'] = ta.momentum.RSIIndicator(close=df['close'], window=14).rsi()
-        
-        df = df.ffill().bfill()
-        return df
+        # 特徵提取器
+        self.extractor = ScalpingFeatureExtractor()
     
     def generate_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        生成超高頻剩頭皮信號
+        生成交易信號
         
-        逻輯:
-        - 低波動 + BB邊界 + 成交量確認 = 入場
-        - 賺到 0.1-0.2% 即離場
+        Returns:
+            df with columns:
+            - signal: 1=LONG, -1=SHORT, 0=NEUTRAL
+            - confidence: 模型置信度
+            - limit_price: 限價進場價
+            - tp_price: 止盈價
+            - sl_price: 止損價
         """
-        df = self.add_indicators(df)
+        df = df.copy()
         
-        df['signal'] = 0
-        df['signal_strength'] = 0.0
-        df['quick_tp_price'] = 0.0
-        df['quick_sl_price'] = 0.0
+        # 確保有 open_time
+        if 'time' in df.columns and 'open_time' not in df.columns:
+            df['open_time'] = pd.to_datetime(df['time'])
+        elif 'open_time' in df.columns:
+            df['open_time'] = pd.to_datetime(df['open_time'])
         
-        # 做多條件: BB下軌 + 低波動 + 成交量確認
-        long_conditions = (
-            # 1. BB寬度在合理範圍 (不太窄不太寬)
-            (df['bb_width'] > self.min_bb_width) &
-            (df['bb_width'] < self.max_bb_width) &
+        # 1. 提取特徵
+        df_features = self.extractor.extract_features(df)
+        
+        # 恢復 open_time (同 BB版本的過程)
+        if 'open_time' not in df_features.columns:
+            if 'open_time' in df.columns:
+                try:
+                    df_features = df_features.join(df[['open_time']], how='left')
+                except Exception:
+                    if len(df_features) == len(df):
+                        df_features['open_time'] = df['open_time'].values
+        
+        # 2. 準備模型輸入
+        X = df_features[self.feature_columns].fillna(0)
+        
+        # 3. 預測
+        y_pred = self.model.predict(X)
+        y_prob = self.model.predict_proba(X)
+        
+        # 4. 生成信號
+        df_features['signal'] = 0
+        df_features['confidence'] = 0.0
+        df_features['limit_price'] = 0.0
+        df_features['tp_price'] = 0.0
+        df_features['sl_price'] = 0.0
+        
+        for i in range(len(df_features)):
+            pred_class = y_pred[i]
+            prob = y_prob[i]
             
-            # 2. 價格接近下軌 (BB position < 0.15)
-            (df['bb_position'] < 0.15) &
+            # 獲取預測類別的置信度
+            if pred_class == 1:  # LONG
+                conf = prob[1]
+                if conf >= self.confidence_threshold:
+                    df_features.iloc[i, df_features.columns.get_loc('signal')] = 1
+                    df_features.iloc[i, df_features.columns.get_loc('confidence')] = conf
+                    
+                    # 計算 Limit Order 價格 (等回調)
+                    current_close = df_features.iloc[i]['close']
+                    df_features.iloc[i, df_features.columns.get_loc('limit_price')] = current_close * (1 - self.entry_offset_pct)
+                    df_features.iloc[i, df_features.columns.get_loc('tp_price')] = current_close * (1 + self.tp_pct)
+                    df_features.iloc[i, df_features.columns.get_loc('sl_price')] = current_close * (1 - self.sl_pct)
             
-            # 3. 成交量激增 (確認反轉動能)
-            (df['volume_ratio'] > self.volume_multiplier) &
-            
-            # 4. 價格開始回升 (前一根K棒下跌,當前K棒上漲)
-            (df['price_change'].shift(1) < 0) &
-            (df['price_change'] > 0)
-        )
+            elif pred_class == 0:  # SHORT
+                conf = prob[0]
+                if conf >= self.confidence_threshold:
+                    df_features.iloc[i, df_features.columns.get_loc('signal')] = -1
+                    df_features.iloc[i, df_features.columns.get_loc('confidence')] = conf
+                    
+                    current_close = df_features.iloc[i]['close']
+                    df_features.iloc[i, df_features.columns.get_loc('limit_price')] = current_close * (1 + self.entry_offset_pct)
+                    df_features.iloc[i, df_features.columns.get_loc('tp_price')] = current_close * (1 - self.tp_pct)
+                    df_features.iloc[i, df_features.columns.get_loc('sl_price')] = current_close * (1 + self.sl_pct)
         
-        # 做空條件: BB上軌 + 低波動 + 成交量確認
-        short_conditions = (
-            # 1. BB寬度在合理範圏
-            (df['bb_width'] > self.min_bb_width) &
-            (df['bb_width'] < self.max_bb_width) &
-            
-            # 2. 價格接近上軌 (BB position > 0.85)
-            (df['bb_position'] > 0.85) &
-            
-            # 3. 成交量激增
-            (df['volume_ratio'] > self.volume_multiplier) &
-            
-            # 4. 價格開始回落
-            (df['price_change'].shift(1) > 0) &
-            (df['price_change'] < 0)
-        )
-        
-        # 設置信號
-        df.loc[long_conditions, 'signal'] = 1
-        df.loc[short_conditions, 'signal'] = -1
-        
-        # 計算快速止盈止損價格
-        df.loc[long_conditions, 'quick_tp_price'] = df.loc[long_conditions, 'close'] * (1 + self.quick_tp_pct / 100)
-        df.loc[long_conditions, 'quick_sl_price'] = df.loc[long_conditions, 'close'] * (1 - self.quick_sl_pct / 100)
-        
-        df.loc[short_conditions, 'quick_tp_price'] = df.loc[short_conditions, 'close'] * (1 - self.quick_tp_pct / 100)
-        df.loc[short_conditions, 'quick_sl_price'] = df.loc[short_conditions, 'close'] * (1 + self.quick_sl_pct / 100)
-        
-        # 信號強度 = BB位置 + 成交量 + 波動率
-        df.loc[long_conditions, 'signal_strength'] = (
-            (0.15 - df.loc[long_conditions, 'bb_position']) / 0.15 * 0.4 +
-            np.clip((df.loc[long_conditions, 'volume_ratio'] - 1) / 2, 0, 1) * 0.3 +
-            (1 - np.clip(df.loc[long_conditions, 'bb_width'] / self.max_bb_width, 0, 1)) * 0.3
-        )
-        
-        df.loc[short_conditions, 'signal_strength'] = (
-            (df.loc[short_conditions, 'bb_position'] - 0.85) / 0.15 * 0.4 +
-            np.clip((df.loc[short_conditions, 'volume_ratio'] - 1) / 2, 0, 1) * 0.3 +
-            (1 - np.clip(df.loc[short_conditions, 'bb_width'] / self.max_bb_width, 0, 1)) * 0.3
-        )
-        
-        df['signal_strength'] = np.clip(df['signal_strength'], 0, 1)
-        
-        return df
-    
-    def get_signal_summary(self, df: pd.DataFrame) -> Dict:
-        signals = df[df['signal'] != 0]
-        
-        return {
-            'total_signals': len(signals),
-            'long_signals': len(signals[signals['signal'] == 1]),
-            'short_signals': len(signals[signals['signal'] == -1]),
-            'avg_signal_strength': signals['signal_strength'].mean() if len(signals) > 0 else 0,
-            'signal_frequency': len(signals) / len(df) * 100,
-            'avg_bb_width': df['bb_width'].mean(),
-            'avg_volume_ratio': df['volume_ratio'].mean()
-        }
-    
-    def calculate_expected_pnl(self, entry_price: float, leverage: float = 10, position_value: float = 50) -> Dict:
-        """計算預期PNL (考慮手續費)"""
-        maker_fee = 0.0002
-        taker_fee = 0.0006
-        
-        # 進場手續費 (taker)
-        entry_fee = position_value * taker_fee
-        
-        # 止盈離場 (maker, 使用limit order)
-        tp_price = entry_price * (1 + self.quick_tp_pct / 100)
-        tp_pnl = (tp_price - entry_price) / entry_price * position_value
-        tp_fee = position_value * maker_fee
-        tp_net = tp_pnl - entry_fee - tp_fee
-        
-        # 止損離場 (taker)
-        sl_price = entry_price * (1 - self.quick_sl_pct / 100)
-        sl_pnl = (sl_price - entry_price) / entry_price * position_value
-        sl_fee = position_value * taker_fee
-        sl_net = sl_pnl - entry_fee - sl_fee
-        
-        return {
-            'entry_price': entry_price,
-            'tp_price': tp_price,
-            'sl_price': sl_price,
-            'tp_net_pnl': tp_net,
-            'sl_net_pnl': sl_net,
-            'risk_reward': abs(tp_net / sl_net) if sl_net != 0 else 0
-        }
-
+        return df_features
 
 if __name__ == '__main__':
-    print("超高頻剩頭皮策略測試")
-    print("="*50)
-    
-    dates = pd.date_range('2024-01-01', periods=2000, freq='15min')
-    np.random.seed(42)
-    
-    base_price = 50000
-    prices = base_price + np.random.randn(2000).cumsum() * 50
-    
-    df = pd.DataFrame({
-        'open_time': dates,
-        'open': prices,
-        'high': prices + np.random.rand(2000) * 30,
-        'low': prices - np.random.rand(2000) * 30,
-        'close': prices + np.random.randn(2000) * 10,
-        'volume': np.random.randint(100, 2000, 2000)
-    })
-    
-    # 測試不同參數
-    for tp_pct, sl_pct in [(0.1, 0.08), (0.15, 0.1), (0.2, 0.12)]:
-        print(f"\n測試參數: TP={tp_pct}%, SL={sl_pct}%")
-        
-        generator = UltraScalpingSignalGenerator(
-            quick_tp_pct=tp_pct,
-            quick_sl_pct=sl_pct
-        )
-        
-        df_signals = generator.generate_signals(df)
-        summary = generator.get_signal_summary(df_signals)
-        
-        print(f"  信號數: {summary['total_signals']} (多:{summary['long_signals']}, 空:{summary['short_signals']})")
-        print(f"  信號頻率: {summary['signal_frequency']:.2f}%")
-        
-        if summary['total_signals'] > 0:
-            first_signal = df_signals[df_signals['signal'] != 0].iloc[0]
-            pnl_calc = generator.calculate_expected_pnl(first_signal['close'], leverage=10, position_value=50)
-            print(f"  預期TP PNL: {pnl_calc['tp_net_pnl']:.3f} USDT")
-            print(f"  預期SL PNL: {pnl_calc['sl_net_pnl']:.3f} USDT")
-            print(f"  風報比: {pnl_calc['risk_reward']:.2f}")
+    print("Scalping Signal Generator")
+    print("請在App中使用")
