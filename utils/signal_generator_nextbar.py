@@ -93,8 +93,9 @@ class NextBarSignalGenerator:
         df.loc[valid_signal, 'signal'] = 2  # 2 表示雙向掛單
         
         # 7. 計算進場價 (在預測價位留一點空間)
-        df['entry_long'] = df['pred_low'] * (1 - self.entry_offset_pct)
-        df['entry_short'] = df['pred_high'] * (1 + self.entry_offset_pct)
+        # 修正: 做多在低點"上方"掛單, 做空在高點"下方"掛單
+        df['entry_long'] = df['pred_low'] * (1 + self.entry_offset_pct)  # 往上偏移
+        df['entry_short'] = df['pred_high'] * (1 - self.entry_offset_pct)  # 往下偏移
         
         # 8. 計算止盈止損
         # 做多: 止盈=預測高點, 止損=預測低點-buffer
