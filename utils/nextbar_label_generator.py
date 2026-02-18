@@ -26,25 +26,34 @@ class NextBarLabelGenerator:
         
         # 計算下一根K棒的high/low相對百分比
         if self.use_log_return:
-            # 對數收益率 (更適合機器學習)
-            df['next_high_pct'] = np.log(df['high'].shift(-1) / df['close'])
-            df['next_low_pct'] = np.log(df['low'].shift(-1) / df['close'])
+            # 對數收益率
+            df['next_high_pct'] = np.log((df['high'].shift(-1) + 1e-10) / (df['close'] + 1e-10))
+            df['next_low_pct'] = np.log((df['low'].shift(-1) + 1e-10) / (df['close'] + 1e-10))
         else:
             # 簡單百分比變化
-            df['next_high_pct'] = (df['high'].shift(-1) - df['close']) / df['close']
-            df['next_low_pct'] = (df['low'].shift(-1) - df['close']) / df['close']
+            df['next_high_pct'] = (df['high'].shift(-1) - df['close']) / (df['close'] + 1e-10)
+            df['next_low_pct'] = (df['low'].shift(-1) - df['close']) / (df['close'] + 1e-10)
         
-        # 計算預測區間寬度 (用於過濾)
+        # 計算預測區間寬度
         df['next_range_pct'] = df['next_high_pct'] - df['next_low_pct']
         
         # 計算實際振幅
         df['next_actual_range'] = df['high'].shift(-1) - df['low'].shift(-1)
         
-        # 記錄下一根K棒的實際價格 (用於回測驗證)
+        # 記錄下一根K棒的實際價格
         df['next_open'] = df['open'].shift(-1)
         df['next_high'] = df['high'].shift(-1)
         df['next_low'] = df['low'].shift(-1)
         df['next_close'] = df['close'].shift(-1)
+        
+        # 清理異常值
+        df['next_high_pct'] = df['next_high_pct'].replace([np.inf, -np.inf], np.nan)
+        df['next_low_pct'] = df['next_low_pct'].replace([np.inf, -np.inf], np.nan)
+        df['next_range_pct'] = df['next_range_pct'].replace([np.inf, -np.inf], np.nan)
+        
+        # 限制極端值 (最多 10%)
+        df['next_high_pct'] = df['next_high_pct'].clip(-0.10, 0.10)
+        df['next_low_pct'] = df['next_low_pct'].clip(-0.10, 0.10)
         
         return df
     
@@ -55,8 +64,20 @@ class NextBarLabelGenerator:
         if 'next_high_pct' not in df.columns:
             return {}
         
-        # 移除最後一根無效數據
         valid_df = df[df['next_high_pct'].notna()].copy()
+        
+        if len(valid_df) == 0:
+            return {
+                'total_samples': 0,
+                'avg_high_pct': 0,
+                'avg_low_pct': 0,
+                'avg_range_pct': 0,
+                'std_high_pct': 0,
+                'std_low_pct': 0,
+                'std_range_pct': 0,
+                'max_range_pct': 0,
+                'min_range_pct': 0
+            }
         
         stats = {
             'total_samples': len(valid_df),
@@ -70,7 +91,6 @@ class NextBarLabelGenerator:
             'min_range_pct': valid_df['next_range_pct'].min()
         }
         
-        # 計算分位數
         stats['high_pct_quantiles'] = {
             'p10': valid_df['next_high_pct'].quantile(0.1),
             'p50': valid_df['next_high_pct'].quantile(0.5),
@@ -89,16 +109,21 @@ class NextBarLabelGenerator:
                             max_range_pct: float = 0.015) -> pd.DataFrame:
         """
         過濾異常數據
-        
-        Args:
-            max_range_pct: 最大允許區間百分比 (默認1.5%)
         """
         # 移除最後一根無效數據
         df_filtered = df[df['next_high_pct'].notna()].copy()
         
+        if len(df_filtered) == 0:
+            return df_filtered
+        
         # 過濾異常大的波動
         df_filtered = df_filtered[
             df_filtered['next_range_pct'] < max_range_pct
+        ].copy()
+        
+        # 過濾異常小的波動 (太小的波動難以預測)
+        df_filtered = df_filtered[
+            df_filtered['next_range_pct'] > 0.0001
         ].copy()
         
         return df_filtered
