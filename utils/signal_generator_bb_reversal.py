@@ -46,18 +46,38 @@ class BBReversalSignalGenerator:
         elif 'open_time' in df.columns:
             df['open_time'] = pd.to_datetime(df['open_time'])
             
+        # 保存原始索引和時間，以便稍後恢復
+        # 特徵提取可能會改變索引或刪除列
+        original_times = df[['open_time']].copy() if 'open_time' in df.columns else None
+        
         # 1. 計算特徵
         df_features = self.extractor.process(df, create_labels=False)
         
         # 恢復open_time
         if 'open_time' not in df_features.columns:
-            df_features['open_time'] = df.loc[df_features.index, 'open_time']
+            if original_times is not None:
+                # 嘗試通過索引對齊恢復
+                # 假設特徵提取保留了原始索引
+                try:
+                    df_features = df_features.join(original_times, how='left')
+                except Exception:
+                    # 如果join失敗，嘗試直接賦值（如果長度一致）
+                    if len(df_features) == len(original_times):
+                         df_features['open_time'] = original_times['open_time'].values
+                    else:
+                        # 如果長度不一致（例如頭部被切除），嘗試按索引匹配
+                        df_features['open_time'] = df.loc[df_features.index, 'open_time']
+            else:
+                # 如果原始數據就沒有open_time，嘗試從索引恢復（如果是DatetimeIndex）
+                if isinstance(df_features.index, pd.DatetimeIndex):
+                    df_features['open_time'] = df_features.index
         
         # 確保有BB數據
         if 'bb_upper' not in df_features.columns:
             bb = ta.volatility.BollingerBands(df_features['close'], window=self.bb_period, window_dev=self.bb_std)
             df_features['bb_upper'] = bb.bollinger_hband()
             df_features['bb_lower'] = bb.bollinger_lband()
+            df_features['bb_middle'] = bb.bollinger_mavg()
             df_features['bb_width'] = (df_features['bb_upper'] - df_features['bb_lower']) / df_features['bb_middle']
         
         # 計算觸碰
@@ -85,26 +105,20 @@ class BBReversalSignalGenerator:
             is_green = df_features['close'] > df_features['open']
             is_red = df_features['close'] < df_features['open']
             
-            # 2. RSI 過濾 (避免在強烈趨勢中逆勢)
-            # RSI太高不宜做多(但也許適合做空)，RSI太低不宜做空
+            # 2. RSI 過濾
             rsi = df_features['rsi']
             
-            # 3. BB寬度過濾 (過濾極度窄幅盤整，容易爆發突破而非反轉)
-            # 簡單用百分位數或絕對值，這裡暫用 > 0.01 (1%)
+            # 3. BB寬度過濾
             valid_width = df_features['bb_width'] > 0.01
             
             # ====== 生成信號 ======
             
-            # SHORT信號: 
-            # 1. 觸碰上軌 
-            # 2. 模型預測做空(0) 
-            # 3. 收陰線 (證明有壓力) OR 雖然收陽但留長上影線? 暫只用收陰
-            # 4. RSI > 50 (確保不是在超賣區做空)
+            # SHORT信號
             short_mask = (
                 touch_upper & 
                 (y_pred == 0) & 
                 (y_prob[:, 0] > 0.6) &  # 概率 > 60%
-                is_red &                # 必須收陰線 (確認反轉開始)
+                is_red &                # 必須收陰線
                 (rsi > 50) &            # RSI相對高位
                 valid_width
             )
@@ -112,16 +126,12 @@ class BBReversalSignalGenerator:
             df_features.loc[short_mask, 'signal'] = -1
             df_features.loc[short_mask, 'reversal_prob'] = y_prob[short_mask, 0]
             
-            # LONG信號:
-            # 1. 觸碰下軌
-            # 2. 模型預測做多(1)
-            # 3. 收陽線 (證明有支撐)
-            # 4. RSI < 50 (確保不是在超買區做多)
+            # LONG信號
             long_mask = (
                 touch_lower & 
                 (y_pred == 1) & 
                 (y_prob[:, 1] > 0.6) &  # 概率 > 60%
-                is_green &              # 必須收陽線 (確認反轉開始)
+                is_green &              # 必須收陽線
                 (rsi < 50) &            # RSI相對低位
                 valid_width
             )
