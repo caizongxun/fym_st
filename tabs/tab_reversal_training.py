@@ -4,11 +4,17 @@ import numpy as np
 from datetime import datetime, timedelta
 import joblib
 import os
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
 from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix, precision_recall_curve, make_scorer
 import xgboost as xgb
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+
+try:
+    import optuna
+    OPTUNA_AVAILABLE = True
+except ImportError:
+    OPTUNA_AVAILABLE = False
 
 from data.binance_loader import BinanceDataLoader
 from data.huggingface_loader import HuggingFaceKlineLoader
@@ -17,7 +23,6 @@ from ui.selectors import symbol_selector
 def render_reversal_training_tab(loader):
     st.header("步驟 2: BB 反轉模型訓練")
     
-    # 訓練模式選擇
     training_mode = st.radio(
         "訓練模式",
         ["手動設定超參數", "超參數搜索 (網格搜索)", "超參數搜索 (貝葉斯優化)"],
@@ -48,7 +53,6 @@ def render_manual_training(loader):
     
     with col2:
         lookback_period = st.number_input("歷史波動期數", 5, 50, 20, key="train_lookback")
-    
     with col3:
         volatility_multiplier = st.number_input("波動倍數", 1.0, 5.0, 2.0, 0.5, key="train_multiplier")
     
@@ -138,21 +142,19 @@ def render_grid_search_training(loader):
         st.info(f"將測試 {3*2*2*2*2} = 48 種組合")
     else:
         param_grid = {
-            'max_depth': [3, 4, 5, 6, 7, 8],
-            'learning_rate': [0.01, 0.05, 0.1, 0.2],
+            'max_depth': [4, 5, 6, 7],
+            'learning_rate': [0.05, 0.1],
             'n_estimators': [100, 150, 200],
-            'min_child_weight': [1, 2, 3, 5],
+            'min_child_weight': [1, 2, 3],
             'gamma': [0, 0.1, 0.2],
-            'subsample': [0.7, 0.8, 0.9],
-            'colsample_bytree': [0.7, 0.8, 0.9]
+            'subsample': [0.7, 0.8],
+            'colsample_bytree': [0.8]
         }
-        st.warning(f"將測試 {6*4*3*4*3*3*3} = 7,776 種組合 (非常耗時!)")
-        st.info("建議使用 RandomizedSearchCV 減少時間")
+        st.info(f"將測試 {4*2*3*3*3*2} = 432 種組合")
     
     optimization_target = st.selectbox(
         "優化目標",
-        ["F1 Score (平衡)", "Recall (召回率)", "Precision (精確率)", "AUC"],
-        help="選擇想要最大化的指標"
+        ["F1 Score (平衡)", "Recall (召回率)", "Precision (精確率)", "AUC"]
     )
     
     if st.button("開始網格搜索", key="start_grid_search", type="primary"):
@@ -160,9 +162,14 @@ def render_grid_search_training(loader):
                               volatility_multiplier, test_size, param_grid, optimization_target)
 
 def render_bayesian_training(loader):
+    if not OPTUNA_AVAILABLE:
+        st.error("需要安裝 Optuna 套件!")
+        st.code("pip install optuna")
+        return
+    
     st.info("""
-    **貝葉斯優化**: 智能搜索最佳超參數
-    - 優點: 比網格搜索快很多 (3-5分鐘)
+    **貝葉斯優化 (Optuna)**: 智能搜索最佳超參數
+    - 優點: 比網格搜索快很多
     - 缺點: 可能不是全局最佳解
     """)
     
@@ -192,18 +199,18 @@ def render_bayesian_training(loader):
     
     st.subheader("搜索設定")
     
-    n_iterations = st.slider("迭代次數", 20, 100, 50, 10, help="更多次數 = 更好的結果但更長時間")
+    n_trials = st.slider("試驗次數 (trials)", 20, 100, 50, 10, help="更多次數 = 更好的結果")
     
     optimization_target = st.selectbox(
         "優化目標",
         ["F1 Score (平衡)", "Recall (召回率)", "Precision (精確率)", "AUC"]
     )
     
-    st.info(f"將執行 {n_iterations} 次訓練, 預計 {n_iterations * 0.1:.0f}-{n_iterations * 0.15:.0f} 分鐘")
+    st.info(f"將執行 {n_trials} 次試驗, 預計 {n_trials * 0.05:.0f}-{n_trials * 0.1:.0f} 分鐘")
     
     if st.button("開始貝葉斯優化", key="start_bayes", type="primary"):
         train_with_bayesian_optimization(loader, symbol, train_days, bb_period, bb_std, lookback_period,
-                                        volatility_multiplier, test_size, n_iterations, optimization_target)
+                                        volatility_multiplier, test_size, n_trials, optimization_target)
 
 # ========== 訓練函數 ==========
 
@@ -243,18 +250,16 @@ def train_manual_model(loader, symbol, train_days, bb_period, bb_std, lookback_p
 
 def train_with_grid_search(loader, symbol, train_days, bb_period, bb_std, lookback_period,
                           volatility_multiplier, test_size, param_grid, optimization_target):
-    with st.spinner(f"正在執行網格搜索... 這可能需要 5-15 分鐘"):
+    with st.spinner(f"正在執行網格搜索..."):
         try:
             df = load_and_prepare_data(loader, symbol, train_days, bb_period, bb_std, lookback_period, volatility_multiplier)
             
-            # 上軌模型搜索
             st.write("正在搜索上軌模型最佳參數...")
             upper_best = grid_search_model(
                 df[df['touch_upper']].copy(), 'label_upper_reversal',
                 test_size, param_grid, optimization_target
             )
             
-            # 下軌模型搜索
             st.write("正在搜索下軌模型最佳參數...")
             lower_best = grid_search_model(
                 df[df['touch_lower']].copy(), 'label_lower_reversal',
@@ -262,7 +267,6 @@ def train_with_grid_search(loader, symbol, train_days, bb_period, bb_std, lookba
             )
             
             st.success("網格搜索完成!")
-            
             display_grid_search_results(upper_best, lower_best)
             
         except Exception as e:
@@ -271,9 +275,30 @@ def train_with_grid_search(loader, symbol, train_days, bb_period, bb_std, lookba
             st.code(traceback.format_exc())
 
 def train_with_bayesian_optimization(loader, symbol, train_days, bb_period, bb_std, lookback_period,
-                                    volatility_multiplier, test_size, n_iterations, optimization_target):
-    st.warning("貝葉斯優化需要 scikit-optimize 套件, 這個功能還在開發中")
-    st.info("此功能將在下個版本提供")
+                                    volatility_multiplier, test_size, n_trials, optimization_target):
+    with st.spinner(f"正在執行貝葉斯優化..."):
+        try:
+            df = load_and_prepare_data(loader, symbol, train_days, bb_period, bb_std, lookback_period, volatility_multiplier)
+            
+            st.write("正在優化上軌模型參數...")
+            upper_best = bayesian_optimize_model(
+                df[df['touch_upper']].copy(), 'label_upper_reversal',
+                test_size, n_trials, optimization_target
+            )
+            
+            st.write("正在優化下軌模型參數...")
+            lower_best = bayesian_optimize_model(
+                df[df['touch_lower']].copy(), 'label_lower_reversal',
+                test_size, n_trials, optimization_target
+            )
+            
+            st.success("貝葉斯優化完成!")
+            display_bayesian_results(upper_best, lower_best)
+            
+        except Exception as e:
+            st.error(f"優化失敗: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
 
 # ========== 輔助函數 ==========
 
@@ -290,50 +315,19 @@ def load_and_prepare_data(loader, symbol, train_days, bb_period, bb_std, lookbac
     return df
 
 def grid_search_model(df, label_col, test_size, param_grid, optimization_target):
-    feature_cols = [
-        'bb_position', 'dist_to_upper_pct', 'dist_to_lower_pct',
-        'bb_width_pct', 'bb_width_ratio', 'volatility_ratio',
-        'rsi', 'volume_ratio',
-        'body_size_pct', 'upper_wick_pct', 'lower_wick_pct',
-        'touch_count_5', 'avg_historical_volatility', 'volatility_threshold'
-    ]
-    
+    feature_cols = get_feature_cols()
     df_clean = df[feature_cols + [label_col]].dropna()
-    X = df_clean[feature_cols]
-    y = df_clean[label_col]
+    X, y = df_clean[feature_cols], df_clean[label_col]
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, stratify=y)
     
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=42, stratify=y
-    )
-    
-    # 選擇評分指標
-    if optimization_target == "F1 Score (平衡)":
-        scoring = 'f1'
-    elif optimization_target == "Recall (召回率)":
-        scoring = 'recall'
-    elif optimization_target == "Precision (精確率)":
-        scoring = 'precision'
-    else:
-        scoring = 'roc_auc'
-    
-    # 執行網格搜索
+    scoring = get_scoring_metric(optimization_target)
     model = xgb.XGBClassifier(objective='binary:logistic', eval_metric='auc', random_state=42)
-    
-    grid_search = GridSearchCV(
-        model, param_grid, 
-        scoring=scoring, 
-        cv=3, 
-        n_jobs=-1, 
-        verbose=1
-    )
-    
+    grid_search = GridSearchCV(model, param_grid, scoring=scoring, cv=3, n_jobs=-1, verbose=1)
     grid_search.fit(X_train, y_train)
     
-    # 評估最佳模型
     best_model = grid_search.best_estimator_
     y_pred_proba = best_model.predict_proba(X_test)[:, 1]
     y_pred = best_model.predict(X_test)
-    
     cm = confusion_matrix(y_test, y_pred)
     tp, fp, fn, tn = cm[1,1], cm[0,1], cm[1,0], cm[0,0]
     
@@ -341,14 +335,82 @@ def grid_search_model(df, label_col, test_size, param_grid, optimization_target)
         'best_params': grid_search.best_params_,
         'best_score': grid_search.best_score_,
         'model': best_model,
-        'metrics': {
-            'accuracy': (y_pred == y_test).mean() * 100,
-            'auc': roc_auc_score(y_test, y_pred_proba),
-            'precision': (tp / (tp + fp) * 100) if (tp + fp) > 0 else 0,
-            'recall': (tp / (tp + fn) * 100) if (tp + fn) > 0 else 0,
-            'f1': (2 * tp / (2 * tp + fp + fn)) if (2 * tp + fp + fn) > 0 else 0,
-            'confusion_matrix': cm
+        'metrics': calculate_metrics(y_test, y_pred, y_pred_proba, cm)
+    }
+
+def bayesian_optimize_model(df, label_col, test_size, n_trials, optimization_target):
+    feature_cols = get_feature_cols()
+    df_clean = df[feature_cols + [label_col]].dropna()
+    X, y = df_clean[feature_cols], df_clean[label_col]
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, stratify=y)
+    
+    def objective(trial):
+        params = {
+            'max_depth': trial.suggest_int('max_depth', 3, 10),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+            'n_estimators': trial.suggest_int('n_estimators', 50, 300, step=50),
+            'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
+            'gamma': trial.suggest_float('gamma', 0.0, 0.5),
+            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+            'objective': 'binary:logistic',
+            'eval_metric': 'auc',
+            'random_state': 42
         }
+        
+        model = xgb.XGBClassifier(**params)
+        score = cross_val_score(model, X_train, y_train, cv=3, scoring=get_scoring_metric(optimization_target), n_jobs=-1).mean()
+        return score
+    
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=True)
+    
+    best_params = study.best_params
+    best_model = xgb.XGBClassifier(**best_params, objective='binary:logistic', eval_metric='auc', random_state=42)
+    best_model.fit(X_train, y_train)
+    
+    y_pred_proba = best_model.predict_proba(X_test)[:, 1]
+    y_pred = best_model.predict(X_test)
+    cm = confusion_matrix(y_test, y_pred)
+    
+    return {
+        'best_params': best_params,
+        'best_score': study.best_value,
+        'model': best_model,
+        'metrics': calculate_metrics(y_test, y_pred, y_pred_proba, cm),
+        'study': study
+    }
+
+def get_feature_cols():
+    return [
+        'bb_position', 'dist_to_upper_pct', 'dist_to_lower_pct',
+        'bb_width_pct', 'bb_width_ratio', 'volatility_ratio',
+        'rsi', 'volume_ratio',
+        'body_size_pct', 'upper_wick_pct', 'lower_wick_pct',
+        'touch_count_5', 'avg_historical_volatility', 'volatility_threshold'
+    ]
+
+def get_scoring_metric(optimization_target):
+    if optimization_target == "F1 Score (平衡)":
+        return 'f1'
+    elif optimization_target == "Recall (召回率)":
+        return 'recall'
+    elif optimization_target == "Precision (精確率)":
+        return 'precision'
+    else:
+        return 'roc_auc'
+
+def calculate_metrics(y_test, y_pred, y_pred_proba, cm):
+    tp, fp, fn, tn = cm[1,1], cm[0,1], cm[1,0], cm[0,0]
+    return {
+        'accuracy': (y_pred == y_test).mean() * 100,
+        'auc': roc_auc_score(y_test, y_pred_proba),
+        'precision': (tp / (tp + fp) * 100) if (tp + fp) > 0 else 0,
+        'recall': (tp / (tp + fn) * 100) if (tp + fn) > 0 else 0,
+        'f1': (2 * tp / (2 * tp + fp + fn)) if (2 * tp + fp + fn) > 0 else 0,
+        'confusion_matrix': cm,
+        'report': classification_report(y_test, y_pred, zero_division=0)
     }
 
 def display_grid_search_results(upper_best, lower_best):
@@ -367,6 +429,35 @@ def display_grid_search_results(upper_best, lower_best):
         st.metric("CV Score", f"{lower_best['best_score']:.3f}")
         st.write("**測試集表現**:")
         display_detailed_metrics(lower_best['metrics'])
+
+def display_bayesian_results(upper_best, lower_best):
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("上軌最佳參數")
+        st.json(upper_best['best_params'])
+        st.metric("Best Score", f"{upper_best['best_score']:.3f}")
+        st.write("**測試集表現**:")
+        display_detailed_metrics(upper_best['metrics'])
+        
+        with st.expander("優化歷史"):
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(y=[t.value for t in upper_best['study'].trials], mode='lines+markers'))
+            fig.update_layout(title="優化進度", xaxis_title="Trial", yaxis_title="Score")
+            st.plotly_chart(fig, use_container_width=True)
+    
+    with col2:
+        st.subheader("下軌最佳參數")
+        st.json(lower_best['best_params'])
+        st.metric("Best Score", f"{lower_best['best_score']:.3f}")
+        st.write("**測試集表現**:")
+        display_detailed_metrics(lower_best['metrics'])
+        
+        with st.expander("優化歷史"):
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(y=[t.value for t in lower_best['study'].trials], mode='lines+markers'))
+            fig.update_layout(title="優化進度", xaxis_title="Trial", yaxis_title="Score")
+            st.plotly_chart(fig, use_container_width=True)
 
 # ========== 保留原有函數 ==========
 
@@ -408,13 +499,7 @@ def extract_simple_features(df, bb_period):
     return df
 
 def train_model_with_threshold(df, label_col, test_size, xgb_params, prob_threshold):
-    feature_cols = [
-        'bb_position', 'dist_to_upper_pct', 'dist_to_lower_pct',
-        'bb_width_pct', 'bb_width_ratio', 'volatility_ratio',
-        'rsi', 'volume_ratio',
-        'body_size_pct', 'upper_wick_pct', 'lower_wick_pct',
-        'touch_count_5', 'avg_historical_volatility', 'volatility_threshold'
-    ]
+    feature_cols = get_feature_cols()
     df_clean = df[feature_cols + [label_col]].dropna()
     X, y = df_clean[feature_cols], df_clean[label_col]
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42, stratify=y)
@@ -430,20 +515,11 @@ def train_model_with_threshold(df, label_col, test_size, xgb_params, prob_thresh
     y_pred_proba = model.predict_proba(X_test)[:, 1]
     y_pred = (y_pred_proba >= prob_threshold).astype(int)
     cm = confusion_matrix(y_test, y_pred)
-    tp, fp, fn, tn = cm[1,1], cm[0,1], cm[1,0], cm[0,0]
     precision, recall, thresholds = precision_recall_curve(y_test, y_pred_proba)
     importance = pd.DataFrame({'feature': feature_cols, 'importance': model.feature_importances_}).sort_values('importance', ascending=False)
     return {
         'model': model,
-        'metrics': {
-            'accuracy': (y_pred == y_test).mean() * 100,
-            'auc': roc_auc_score(y_test, y_pred_proba),
-            'precision': (tp / (tp + fp) * 100) if (tp + fp) > 0 else 0,
-            'recall': (tp / (tp + fn) * 100) if (tp + fn) > 0 else 0,
-            'f1': (2 * tp / (2 * tp + fp + fn)) if (2 * tp + fp + fn) > 0 else 0,
-            'confusion_matrix': cm,
-            'report': classification_report(y_test, y_pred, zero_division=0)
-        },
+        'metrics': calculate_metrics(y_test, y_pred, y_pred_proba, cm),
         'importance': importance,
         'pr_curve': {'precision': precision, 'recall': recall, 'thresholds': thresholds}
     }
