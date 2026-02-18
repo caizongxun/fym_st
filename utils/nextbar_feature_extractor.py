@@ -20,32 +20,29 @@ class NextBarFeatureExtractor:
         df = df.copy()
         
         # ====== 1. 歷史K棒統計特徵 ======
-        # 過去N根K棒的振幅統計
         df['range'] = df['high'] - df['low']
-        df['range_pct'] = df['range'] / df['close']
+        df['range'] = df['range'].replace(0, 1e-10)  # 避免零除
+        df['range_pct'] = df['range'] / df['close'].replace(0, 1e-10)
         
         for period in [5, 10, 20]:
-            # 平均振幅
             df[f'avg_range_{period}'] = df['range'].rolling(period).mean()
             df[f'avg_range_pct_{period}'] = df['range_pct'].rolling(period).mean()
-            
-            # 振幅標準差
             df[f'std_range_{period}'] = df['range'].rolling(period).std()
             
-            # 當前振幅 vs 歷史振幅
-            df[f'range_ratio_{period}'] = df['range'] / df[f'avg_range_{period}']
+            # 避免零除
+            avg_range = df[f'avg_range_{period}'].replace(0, 1e-10)
+            df[f'range_ratio_{period}'] = df['range'] / avg_range
         
         # ====== 2. K棒內部結構 ======
         df['body'] = abs(df['close'] - df['open'])
-        df['body_pct'] = df['body'] / df['close']
+        df['body_pct'] = df['body'] / df['close'].replace(0, 1e-10)
         df['upper_shadow'] = df['high'] - df[['close', 'open']].max(axis=1)
         df['lower_shadow'] = df[['close', 'open']].min(axis=1) - df['low']
         
-        df['upper_shadow_pct'] = df['upper_shadow'] / df['range']
-        df['lower_shadow_pct'] = df['lower_shadow'] / df['range']
-        df['body_ratio'] = df['body'] / (df['range'] + 1e-10)
+        df['upper_shadow_pct'] = df['upper_shadow'] / df['range'].replace(0, 1e-10)
+        df['lower_shadow_pct'] = df['lower_shadow'] / df['range'].replace(0, 1e-10)
+        df['body_ratio'] = df['body'] / df['range'].replace(0, 1e-10)
         
-        # 過去平均上下影線
         for period in [5, 10, 20]:
             df[f'avg_upper_shadow_{period}'] = df['upper_shadow'].rolling(period).mean()
             df[f'avg_lower_shadow_{period}'] = df['lower_shadow'].rolling(period).mean()
@@ -54,11 +51,10 @@ class NextBarFeatureExtractor:
         df['atr'] = ta.volatility.average_true_range(
             df['high'], df['low'], df['close'], window=self.atr_period
         )
-        df['atr_pct'] = df['atr'] / df['close']
+        df['atr_pct'] = df['atr'] / df['close'].replace(0, 1e-10)
         df['atr_ma_20'] = df['atr'].rolling(20).mean()
-        df['atr_ratio'] = df['atr'] / df['atr_ma_20']
+        df['atr_ratio'] = df['atr'] / df['atr_ma_20'].replace(0, 1e-10)
         
-        # ATR 變化率
         df['atr_change'] = df['atr'].pct_change(1)
         df['atr_change_3'] = df['atr'].pct_change(3)
         
@@ -66,47 +62,44 @@ class NextBarFeatureExtractor:
         for period in [10, 20, 50]:
             df[f'high_{period}'] = df['high'].rolling(period).max()
             df[f'low_{period}'] = df['low'].rolling(period).min()
+            
+            range_period = (df[f'high_{period}'] - df[f'low_{period}']).replace(0, 1e-10)
             df[f'price_position_{period}'] = (
-                (df['close'] - df[f'low_{period}']) / 
-                (df[f'high_{period}'] - df[f'low_{period}'] + 1e-10)
+                (df['close'] - df[f'low_{period}']) / range_period
             )
         
-        # 距離近期高低點
-        df['dist_to_high_20'] = (df['high_20'] - df['close']) / df['close']
-        df['dist_to_low_20'] = (df['close'] - df['low_20']) / df['close']
+        df['dist_to_high_20'] = (df['high_20'] - df['close']) / df['close'].replace(0, 1e-10)
+        df['dist_to_low_20'] = (df['close'] - df['low_20']) / df['close'].replace(0, 1e-10)
         
         # ====== 5. 成交量特徵 ======
         df['volume_ma_20'] = df['volume'].rolling(20).mean()
-        df['volume_ratio'] = df['volume'] / df['volume_ma_20']
+        df['volume_ratio'] = df['volume'] / df['volume_ma_20'].replace(0, 1e-10)
         df['volume_std_20'] = df['volume'].rolling(20).std()
         
-        # 成交量與振幅關係
         df['volume_range_ratio'] = df['volume_ratio'] * df['range_ratio_20']
         
         # ====== 6. 動量特徵 ======
         for period in [3, 5, 10]:
             df[f'momentum_{period}'] = df['close'].pct_change(period)
         
-        # 短期動量加速度
         df['momentum_acceleration'] = df['momentum_3'] - df['momentum_5']
         
         # ====== 7. 波動率狀態 ======
-        # Bollinger Bands
         bb = ta.volatility.BollingerBands(df['close'], window=20, window_dev=2.0)
         df['bb_upper'] = bb.bollinger_hband()
         df['bb_middle'] = bb.bollinger_mavg()
         df['bb_lower'] = bb.bollinger_lband()
-        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
-        df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-10)
+        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle'].replace(0, 1e-10)
         
-        # BB寬度變化
+        bb_range = (df['bb_upper'] - df['bb_lower']).replace(0, 1e-10)
+        df['bb_position'] = (df['close'] - df['bb_lower']) / bb_range
+        
         df['bb_width_change'] = df['bb_width'].pct_change(1)
         
         # ====== 8. 指標特徵 ======
         df['rsi'] = ta.momentum.rsi(df['close'], window=14)
         df['rsi_change'] = df['rsi'].diff(3)
         
-        # MACD
         macd = ta.trend.MACD(df['close'])
         df['macd'] = macd.macd()
         df['macd_signal'] = macd.macd_signal()
@@ -124,12 +117,10 @@ class NextBarFeatureExtractor:
             df['is_whole_hour'] = (df['minute'] % 60 < 15).astype(int)
         
         # ====== 10. 近期K棒型態特徵 ======
-        # 前一根K棒的特徵
         df['prev_range'] = df['range'].shift(1)
         df['prev_body_ratio'] = df['body_ratio'].shift(1)
         df['prev_direction'] = (df['close'].shift(1) > df['open'].shift(1)).astype(int)
         
-        # 連續方向
         df['consecutive_up'] = 0
         df['consecutive_down'] = 0
         for i in range(1, 6):
@@ -137,14 +128,26 @@ class NextBarFeatureExtractor:
             df['consecutive_down'] += (df['close'].shift(i) < df['open'].shift(i)).astype(int)
         
         # ====== 11. 預測目標輔助特徵 ======
-        # 歷史high/low相對於close的百分比
-        df['historical_high_pct'] = (df['high'] - df['close']) / df['close']
-        df['historical_low_pct'] = (df['low'] - df['close']) / df['close']
+        df['historical_high_pct'] = (df['high'] - df['close']) / df['close'].replace(0, 1e-10)
+        df['historical_low_pct'] = (df['low'] - df['close']) / df['close'].replace(0, 1e-10)
         
-        # 過去平均上下振幅
         for period in [5, 10, 20]:
             df[f'avg_high_pct_{period}'] = df['historical_high_pct'].rolling(period).mean()
             df[f'avg_low_pct_{period}'] = df['historical_low_pct'].rolling(period).mean()
+        
+        # ====== 清理異常值 ======
+        # 替換 inf 和 -inf
+        df = df.replace([np.inf, -np.inf], np.nan)
+        
+        # 填充 NaN (使用前向填充，然後零填充)
+        df = df.fillna(method='ffill').fillna(0)
+        
+        # 限制極端值 (避免數值過大)
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        for col in numeric_cols:
+            if col not in ['open', 'high', 'low', 'close', 'volume']:
+                # 限制在 -100 到 100 之間
+                df[col] = df[col].clip(-100, 100)
         
         return df
     
