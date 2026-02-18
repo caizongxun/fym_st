@@ -167,10 +167,10 @@ with tabs[0]:
     
     with col2:
         st.subheader("參數設定")
-        bb_period = st.number_input("BB周期", min_value=10, max_value=50, value=20, key="bb_period")
-        bb_std = st.number_input("BB標準差", min_value=1.0, max_value=3.0, value=2.0, step=0.5, key="bb_std")
-        touch_threshold = st.slider("觸碰閾值 (%)", min_value=0.0, max_value=0.5, value=0.1, step=0.05, key="touch_threshold") / 100
-        min_reversal = st.slider("最小反轉幅度 (%)", min_value=0.1, max_value=1.0, value=0.5, step=0.1, key="min_reversal") / 100
+        bb_period_viz = st.number_input("BB周期", min_value=10, max_value=50, value=20, key="bb_period_viz")
+        bb_std_viz = st.number_input("BB標準差", min_value=1.0, max_value=3.0, value=2.0, step=0.5, key="bb_std_viz")
+        touch_threshold_viz = st.slider("觸碰閾值 (%)", min_value=0.0, max_value=0.5, value=0.1, step=0.05, key="touch_threshold_viz") / 100
+        min_reversal_viz = st.slider("最小反轉幅度 (%)", min_value=0.1, max_value=1.0, value=0.5, step=0.1, key="min_reversal_viz") / 100
     
     if st.button("生成BB反轉點圖表", key="gen_bb_viz", type="primary"):
         with st.spinner(f"載入 {viz_symbol} 數據..."):
@@ -179,11 +179,11 @@ with tabs[0]:
                 df = df.tail(viz_candles)
                 
                 detector = BBReversalDetector(
-                    bb_period=bb_period,
-                    bb_std=bb_std,
-                    touch_threshold=touch_threshold,
+                    bb_period=bb_period_viz,
+                    bb_std=bb_std_viz,
+                    touch_threshold=touch_threshold_viz,
                     reversal_confirm_candles=5,
-                    min_reversal_pct=min_reversal,
+                    min_reversal_pct=min_reversal_viz,
                     trend_filter_enabled=True,
                     trend_lookback=10,
                     require_middle_return=True
@@ -244,20 +244,30 @@ with tabs[1]:
     - 下軌反轉 -> 做多 (1)
     """)
     
-    train_symbols = symbol_selector("bb_train", multi=False)
-    train_symbol = train_symbols[0]
+    col1, col2 = st.columns(2)
     
-    train_candles = st.number_input(
-        "訓練K棒數量",
-        min_value=10000,
-        max_value=50000,
-        value=20000,
-        step=5000,
-        key="train_candles",
-        help="建議至少20000根以獲取足夠的有效反轉點"
-    )
+    with col1:
+        train_symbols = symbol_selector("bb_train", multi=False)
+        train_symbol = train_symbols[0]
+        
+        train_candles = st.number_input(
+            "訓練K棒數量",
+            min_value=10000,
+            max_value=50000,
+            value=20000,
+            step=5000,
+            key="train_candles",
+            help="建議至少20000根以獲取足夠的有效反轉點"
+        )
     
-    st.caption(f"預估訓練時間: 約1-2分鐘")
+    with col2:
+        st.subheader("反轉檢測參數")
+        bb_period_train = st.number_input("BB周期", min_value=10, max_value=50, value=20, key="bb_period_train")
+        bb_std_train = st.number_input("BB標準差", min_value=1.0, max_value=3.0, value=2.0, step=0.5, key="bb_std_train")
+        touch_threshold_train = st.slider("觸碰閾值 (%)", min_value=0.0, max_value=0.5, value=0.1, step=0.05, key="touch_threshold_train") / 100
+        min_reversal_train = st.slider("最小反轉幅度 (%)", min_value=0.1, max_value=1.0, value=0.5, step=0.1, key="min_reversal_train") / 100
+    
+    st.caption(f"預估訓練時間: 約1-2分鐘 | 參數: BB({bb_period_train},{bb_std_train}) | 觸碰:{touch_threshold_train*100:.2f}% | 反轉:{min_reversal_train*100:.1f}%")
     
     if st.button("開始訓練BB反轉模型", key="train_bb_btn", type="primary"):
         with st.spinner(f"正在訓練 {train_symbol} BB反轉模型..."):
@@ -268,11 +278,23 @@ with tabs[1]:
                 
                 st.info(f"載入 {len(df)} 根K棒")
                 
-                # 特徵提取
+                # 特徵提取 - 使用用戶設定的參數
                 extractor = BBReversalFeatureExtractor(
-                    bb_period=20,
-                    bb_std=2.0,
+                    bb_period=bb_period_train,
+                    bb_std=bb_std_train,
                     rsi_period=14
+                )
+                
+                # 更新detector參數
+                extractor.detector = BBReversalDetector(
+                    bb_period=bb_period_train,
+                    bb_std=bb_std_train,
+                    touch_threshold=touch_threshold_train,
+                    reversal_confirm_candles=5,
+                    min_reversal_pct=min_reversal_train,
+                    trend_filter_enabled=True,
+                    trend_lookback=10,
+                    require_middle_return=True
                 )
                 
                 df_processed = extractor.process(df, create_labels=True)
@@ -284,6 +306,12 @@ with tabs[1]:
                 st.info(f"檢測到 {reversal_stats['total_reversals']} 個有效反轉點")
                 st.info(f"上軌反轉: {reversal_stats['upper_reversals']} | 下軌反轉: {reversal_stats['lower_reversals']}")
                 st.info(f"拒絕無效觸碰: {reversal_stats['total_rejected']}")
+                
+                # 顯示拒絕原因
+                if 'rejection_reasons' in reversal_stats and reversal_stats['rejection_reasons']:
+                    st.write("拒絕原因統計:")
+                    for reason, count in reversal_stats['rejection_reasons'].items():
+                        st.text(f"  - {reason}: {count}")
                 
                 if reversal_stats['total_reversals'] < 50:
                     st.error(f"反轉點數量太少: {reversal_stats['total_reversals']}, 建議增加訓練數據或降低最小反轉幅度")
@@ -303,7 +331,7 @@ with tabs[1]:
                 st.info(f"模型保存至: models/saved/{train_symbol}_bb_reversal_lgb.pkl")
                 
                 # 顯示指標
-                col1, col2 = st.columns(2)
+                col1, col2, col3 = st.columns(3)
                 with col1:
                     accuracy = metrics['accuracy']
                     if accuracy >= 0.70:
@@ -315,6 +343,9 @@ with tabs[1]:
                 
                 with col2:
                     st.metric("訓練樣本", len(X))
+                
+                with col3:
+                    st.metric("有效反轉點", reversal_stats['total_reversals'])
                 
                 # 特徵重要性
                 importance = trainer.get_feature_importance(extractor.get_feature_columns(), top_n=15)
