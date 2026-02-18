@@ -27,6 +27,7 @@ class ScalpingModelTrainer:
         self.model = None
         self.feature_extractor = ScalpingFeatureExtractor()
         self.label_generator = ScalpingLabelGenerator()
+        self.actual_feature_columns = []  # 實際可用的特徵
         
         # LightGBM 參數 (二分類)
         self.lgb_params = {
@@ -89,9 +90,15 @@ class ScalpingModelTrainer:
         if len(df_train) < 100:
             raise ValueError(f"可訓練樣本太少: {len(df_train)}")
         
+        # 動態檢測可用特徵
+        all_possible_features = self.feature_extractor.get_all_possible_features()
+        available_features = [f for f in all_possible_features if f in df_train.columns]
+        self.actual_feature_columns = available_features
+        
+        print(f"可用特徵數: {len(self.actual_feature_columns)}")
+        
         # 提取X, y
-        feature_cols = self.feature_extractor.get_feature_columns()
-        X = df_train[feature_cols].fillna(0)
+        X = df_train[self.actual_feature_columns].fillna(0)
         y = df_train['label']
         
         # 分割訓練/驗證集
@@ -99,12 +106,10 @@ class ScalpingModelTrainer:
             X, y, test_size=test_size, random_state=42, stratify=y
         )
         
-        print(f"
-訓練集: {len(X_train)} | 驗證集: {len(X_test)}")
+        print(f"\n訓練集: {len(X_train)} | 驗證集: {len(X_test)}")
         
         # 訓練 LightGBM
-        print("
-開始訓練 LightGBM...")
+        print("\n開始訓練 LightGBM...")
         self.model = lgb.LGBMClassifier(**self.lgb_params, n_estimators=200)
         self.model.fit(
             X_train, y_train,
@@ -119,18 +124,16 @@ class ScalpingModelTrainer:
         train_acc = accuracy_score(y_train, y_pred_train)
         test_acc = accuracy_score(y_test, y_pred_test)
         
-        print(f"
-訓練集準確率: {train_acc:.2%}")
+        print(f"\n訓練集準確率: {train_acc:.2%}")
         print(f"驗證集準確率: {test_acc:.2%}")
-        print(f"
-分類報告:\n{classification_report(y_test, y_pred_test, target_names=['SHORT', 'LONG'])}")
+        print(f"\n分類報告:\n{classification_report(y_test, y_pred_test, target_names=['SHORT', 'LONG'])}")
         
         metrics = {
             'train_accuracy': train_acc,
             'test_accuracy': test_acc,
             'train_samples': len(X_train),
             'test_samples': len(X_test),
-            'feature_importance': self.get_feature_importance(feature_cols)
+            'feature_importance': self.get_feature_importance(self.actual_feature_columns)
         }
         
         return metrics
@@ -164,7 +167,7 @@ class ScalpingModelTrainer:
         # 保存模型和配置
         model_package = {
             'model': self.model,
-            'feature_columns': self.feature_extractor.get_feature_columns(),
+            'feature_columns': self.actual_feature_columns,  # 使用實際特徵
             'target_pct': self.label_generator.target_pct,
             'lookforward': self.label_generator.lookforward
         }
