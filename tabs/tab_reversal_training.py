@@ -8,7 +8,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix
 import xgboost as xgb
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 from data.binance_loader import BinanceDataLoader
 from data.huggingface_loader import HuggingFaceKlineLoader
@@ -18,11 +17,13 @@ def render_reversal_training_tab(loader):
     st.header("步驟 2: BB 反轉模型訓練")
     
     st.info("""
-    **優化策略**:
-    1. 增加多時間框架特徵 (5m, 1h 趨勢)
-    2. 增加動量特徵 (價格動量, 成交量動量)
-    3. 調整模型超參數
-    4. 使用 class_weight 處理樣本不平衡
+    **精簡策略**: 只用最相關的特徵
+    - BB 位置和寬度
+    - 波動率比值
+    - RSI
+    - 成交量
+    - K 棒形態
+    - 連續碰觸次數
     """)
     
     # 參數設定
@@ -69,11 +70,11 @@ def render_reversal_training_tab(loader):
     with st.expander("進階設定: XGBoost 超參數"):
         col1, col2, col3 = st.columns(3)
         with col1:
-            max_depth = st.slider("max_depth", 3, 10, 6, key="max_depth")
-            n_estimators = st.slider("n_estimators", 50, 300, 150, 50, key="n_estimators")
+            max_depth = st.slider("max_depth", 3, 10, 5, key="max_depth", help="樹深度,降低可防止過擬合")
+            n_estimators = st.slider("n_estimators", 50, 300, 100, 50, key="n_estimators")
         with col2:
             learning_rate = st.select_slider("learning_rate", [0.01, 0.05, 0.1, 0.2], 0.1, key="lr")
-            min_child_weight = st.slider("min_child_weight", 1, 10, 3, key="min_child")
+            min_child_weight = st.slider("min_child_weight", 1, 10, 1, key="min_child", help="增加可提高召回率")
         with col3:
             subsample = st.slider("subsample", 0.5, 1.0, 0.8, 0.1, key="subsample")
             colsample_bytree = st.slider("colsample_bytree", 0.5, 1.0, 0.8, 0.1, key="colsample")
@@ -105,9 +106,9 @@ def render_reversal_training_tab(loader):
                     st.warning("標籤數量過少! 建議降低波動倍數或增加訓練天數")
                     return
                 
-                # 3. 提取增強特徵
-                st.write("步驟 3/5: 提取增強特徵...")
-                df = extract_enhanced_features(df, bb_period)
+                # 3. 提取精簡特徵
+                st.write("步驟 3/5: 提取精簡特徵...")
+                df = extract_simple_features(df, bb_period)
                 
                 # 4. 訓練上軌模型
                 st.write("步驟 4/5: 訓練上軌反轉模型...")
@@ -191,65 +192,60 @@ def generate_labels(df, bb_period, bb_std, lookback_period, volatility_multiplie
     
     return df
 
-def extract_enhanced_features(df, bb_period):
-    # 基本 BB 特徵
+def extract_simple_features(df, bb_period):
+    """只提取最相關的特徵"""
+    # BB 位置特徵 (最重要)
+    df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
     df['dist_to_upper_pct'] = (df['bb_upper'] - df['close']) / df['close'] * 100
     df['dist_to_lower_pct'] = (df['close'] - df['bb_lower']) / df['close'] * 100
-    df['dist_to_mid_pct'] = (df['close'] - df['bb_mid']) / df['close'] * 100
+    
+    # BB 寬度 (波動率)
     df['bb_width_pct'] = (df['bb_upper'] - df['bb_lower']) / df['bb_mid'] * 100
-    df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
+    df['bb_width_ratio'] = df['bb_width_pct'] / df['bb_width_pct'].rolling(50).mean()
     
-    # 波動率特徵
+    # 當前波動率比值
     df['volatility_ratio'] = df['price_range'] / df['avg_historical_volatility']
-    df['bb_squeeze'] = df['bb_width_pct'] / df['bb_width_pct'].rolling(50).mean()
     
-    # RSI
+    # RSI (超買超賣)
     delta = df['close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     df['rsi'] = 100 - (100 / (1 + rs))
-    df['rsi_ma'] = df['rsi'].rolling(window=5).mean()
-    df['rsi_distance'] = df['rsi'] - df['rsi_ma']
     
-    # 成交量特徵
+    # 成交量異常
     df['volume_ratio'] = df['volume'] / df['volume'].rolling(window=20).mean()
-    df['volume_ma5'] = df['volume'].rolling(window=5).mean()
-    df['volume_trend'] = df['volume_ma5'] / df['volume'].rolling(window=20).mean()
     
-    # K 棒特徵
-    df['body_size'] = abs(df['close'] - df['open']) / df['open'] * 100
-    df['upper_shadow'] = (df['high'] - df[['open', 'close']].max(axis=1)) / df['open'] * 100
-    df['lower_shadow'] = (df[['open', 'close']].min(axis=1) - df['low']) / df['open'] * 100
-    df['candle_ratio'] = df['body_size'] / (df['body_size'] + df['upper_shadow'] + df['lower_shadow'])
+    # K 棒形態
+    df['body_size_pct'] = abs(df['close'] - df['open']) / df['open'] * 100
+    df['upper_wick_pct'] = (df['high'] - df[['open', 'close']].max(axis=1)) / df['open'] * 100
+    df['lower_wick_pct'] = (df[['open', 'close']].min(axis=1) - df['low']) / df['open'] * 100
     
-    # 價格動量
-    df['price_momentum_3'] = df['close'].pct_change(3) * 100
-    df['price_momentum_5'] = df['close'].pct_change(5) * 100
-    df['price_acceleration'] = df['price_momentum_3'] - df['price_momentum_5']
-    
-    # EMA 趨勢
-    df['ema_fast'] = df['close'].ewm(span=12).mean()
-    df['ema_slow'] = df['close'].ewm(span=26).mean()
-    df['ema_diff'] = (df['ema_fast'] - df['ema_slow']) / df['ema_slow'] * 100
-    
-    # 連續碰觸軌道次數
-    df['consecutive_touch_upper'] = df['touch_upper'].rolling(5).sum()
-    df['consecutive_touch_lower'] = df['touch_lower'].rolling(5).sum()
+    # 連續碰觸 (重要!)
+    df['touch_count_5'] = df['touch_upper'].rolling(5).sum() + df['touch_lower'].rolling(5).sum()
     
     return df
 
 def train_model(df, label_col, test_size, xgb_params):
+    """訓練模型 - 精簡特徵版"""
     feature_cols = [
-        'dist_to_upper_pct', 'dist_to_lower_pct', 'dist_to_mid_pct',
-        'bb_width_pct', 'bb_position', 'volatility_ratio', 'bb_squeeze',
-        'rsi', 'rsi_ma', 'rsi_distance',
-        'volume_ratio', 'volume_trend',
-        'body_size', 'upper_shadow', 'lower_shadow', 'candle_ratio',
-        'price_momentum_3', 'price_momentum_5', 'price_acceleration',
-        'ema_diff', 'consecutive_touch_upper', 'consecutive_touch_lower',
+        # BB 位置 (3)
+        'bb_position', 'dist_to_upper_pct', 'dist_to_lower_pct',
+        # BB 寬度 (2)
+        'bb_width_pct', 'bb_width_ratio',
+        # 波動率 (1)
+        'volatility_ratio',
+        # RSI (1)
+        'rsi',
+        # 成交量 (1)
+        'volume_ratio',
+        # K 棒形態 (3)
+        'body_size_pct', 'upper_wick_pct', 'lower_wick_pct',
+        # 連續碰觸 (1)
+        'touch_count_5',
+        # 歷史波動 (2)
         'avg_historical_volatility', 'volatility_threshold'
-    ]
+    ]  # 總共 14 個特徵
     
     df_clean = df[feature_cols + [label_col]].dropna()
     X = df_clean[feature_cols]
@@ -317,12 +313,12 @@ def display_metrics(metrics):
 
 def plot_feature_importance(importance, title):
     fig = go.Figure(go.Bar(
-        x=importance['importance'].head(15),
-        y=importance['feature'].head(15),
+        x=importance['importance'],
+        y=importance['feature'],
         orientation='h'
     ))
     fig.update_layout(
-        title=f"{title}模型 - Top 15 特徵重要性",
+        title=f"{title}模型 - 特徵重要性",
         height=400,
         xaxis_title="重要性",
         yaxis_title="特徵"
