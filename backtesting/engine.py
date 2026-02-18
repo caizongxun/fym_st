@@ -9,9 +9,10 @@ TAIPEI_TZ = timezone(timedelta(hours=8))
 
 class BacktestEngine:
     """
-    v3: Support dynamic TP/SL from dataframe
-    - When tp_atr_mult=0 and sl_atr_mult=0, use tp_price/sl_price from df
-    - Otherwise use ATR-based TP/SL as before
+    v4: Real-world Simulation (Slippage & Latency)
+    - Adds slippage_pct parameter to simulate execution price slippage
+    - Applies slippage to both entry and exit prices
+    - Distinguishes Maker/Taker fees more strictly
     """
     
     def __init__(self, 
@@ -24,6 +25,7 @@ class BacktestEngine:
                  max_positions: int = 1,
                  maker_fee: float = 0.0002,
                  taker_fee: float = 0.0006,
+                 slippage_pct: float = 0.0005, # Default 0.05% slippage
                  debug: bool = False):
         self.initial_capital = initial_capital
         self.leverage = leverage
@@ -34,6 +36,7 @@ class BacktestEngine:
         self.max_positions = max_positions
         self.maker_fee = maker_fee
         self.taker_fee = taker_fee
+        self.slippage_pct = slippage_pct
         self.debug = debug
         
         # Dynamic TP/SL mode
@@ -54,36 +57,54 @@ class BacktestEngine:
         position_value = base_capital * self.leverage
         return position_value
     
-    def open_or_flip_position(self, symbol: str, direction: str, entry_price: float, 
+    def apply_slippage(self, price: float, direction: str, is_entry: bool) -> float:
+        """
+        Apply slippage to price based on direction and action
+        Buy (Long Entry / Short Exit): Price increases
+        Sell (Short Entry / Long Exit): Price decreases
+        """
+        slippage = price * self.slippage_pct
+        
+        if is_entry:
+            if direction == 'LONG':
+                return price + slippage # Buy higher
+            else:
+                return price - slippage # Sell lower
+        else:
+            if direction == 'LONG':
+                return price - slippage # Sell lower (Exit Long)
+            else:
+                return price + slippage # Buy higher (Exit Short)
+
+    def open_or_flip_position(self, symbol: str, direction: str, raw_entry_price: float, 
                              timestamp: datetime, signal_data: dict, atr: float, 
                              trend_direction: int, trend_strength: float,
                              reversal_prob: float, trend_filter: str,
                              tp_price: float = None, sl_price: float = None) -> bool:
         if self.equity <= 0:
-            if self.debug:
-                print(f"[SKIP] Equity <= 0: {self.equity}")
             return False
+            
+        # Apply slippage to entry price
+        entry_price = self.apply_slippage(raw_entry_price, direction, is_entry=True)
             
         if symbol in self.open_positions:
             old_pos = self.open_positions[symbol]
             if old_pos['direction'] != direction:
-                self.close_position(symbol, entry_price, timestamp, 'REVERSAL_FLIP', 
+                # Close existing position first
+                self.close_position(symbol, raw_entry_price, timestamp, 'REVERSAL_FLIP', 
                                    trend_direction, trend_strength, reversal_prob, trend_filter)
             else:
-                if self.debug:
-                    print(f"[SKIP] Position already exists: {old_pos['direction']}")
                 return False
         
         position_value = self.calculate_position_size()
         required_margin = position_value / self.leverage
         
         if required_margin > self.equity:
-            if self.debug:
-                print(f"[SKIP] Insufficient margin: required={required_margin:.2f}, equity={self.equity:.2f}")
             return False
         
         quantity = position_value / entry_price
         margin = position_value / self.leverage
+        # Entry is usually Taker order
         entry_fee = position_value * self.taker_fee
         
         # Use dynamic TP/SL if provided, otherwise calculate from ATR
@@ -98,9 +119,9 @@ class BacktestEngine:
                 final_tp = entry_price - (atr * self.tp_atr_mult)
                 final_sl = entry_price + (atr * self.sl_atr_mult)
         
-        self.open_positions[symbol] = {
-            'direction': direction,
+        self.open_positions[symbol] = {\n            'direction': direction,
             'entry_price': entry_price,
+            'raw_entry_price': raw_entry_price, # Store original price for reference
             'quantity': quantity,
             'position_value': position_value,
             'margin': margin,
@@ -118,9 +139,6 @@ class BacktestEngine:
         
         self.equity -= entry_fee
         
-        if self.debug:
-            print(f"[OPEN] {direction} @ {entry_price:.2f}, TP={final_tp:.2f}, SL={final_sl:.2f}, ATR={atr:.2f}")
-        
         return True
     
     def check_tp_sl_intrabar(self, symbol: str, high: float, low: float, close: float, timestamp: datetime) -> Optional[Tuple[str, float]]:
@@ -129,6 +147,7 @@ class BacktestEngine:
         
         pos = self.open_positions[symbol]
         
+        # Check SL first (usually touched first in volatility)
         if pos['direction'] == 'LONG':
             if low <= pos['sl_price']:
                 return ('SL', pos['sl_price'])
@@ -142,7 +161,7 @@ class BacktestEngine:
         
         return None
     
-    def close_position(self, symbol: str, exit_price: float, timestamp: datetime, 
+    def close_position(self, symbol: str, raw_exit_price: float, timestamp: datetime, 
                       exit_reason: str, trend_direction: int, trend_strength: float,
                       reversal_prob: float, trend_filter: str) -> Optional[Dict]:
         if symbol not in self.open_positions:
@@ -150,8 +169,22 @@ class BacktestEngine:
         
         pos = self.open_positions[symbol]
         
+        # Apply slippage to exit price (except for Limit Orders like TP)
+        # TP is usually a Limit Order (Maker), so we might not apply slippage or use Maker fee
+        # SL is usually a Stop Market (Taker), so apply slippage and Taker fee
+        
+        is_limit_exit = (exit_reason == 'TP')
+        
+        if is_limit_exit:
+            exit_price = raw_exit_price # Limit order fills at price
+            fee_rate = self.maker_fee
+        else:
+            # SL, Reversal, Manual Close -> Market Order -> Slippage
+            exit_price = self.apply_slippage(raw_exit_price, pos['direction'], is_entry=False)
+            fee_rate = self.taker_fee
+            
         exit_value = pos['quantity'] * exit_price
-        exit_fee = exit_value * self.taker_fee
+        exit_fee = exit_value * fee_rate
         
         if pos['direction'] == 'LONG':
             pnl = (exit_price - pos['entry_price']) * pos['quantity'] - pos['entry_fee'] - exit_fee
@@ -159,9 +192,6 @@ class BacktestEngine:
             pnl = (pos['entry_price'] - exit_price) * pos['quantity'] - pos['entry_fee'] - exit_fee
         
         self.equity += pnl
-        
-        if self.debug:
-            print(f"[CLOSE] {pos['direction']} @ {exit_price:.2f}, PNL={pnl:.2f}, Reason={exit_reason}")
         
         exit_reason_map = {
             'TP': '止盈',
@@ -228,13 +258,11 @@ class BacktestEngine:
             all_data.append(df_copy)
         
         combined_df = pd.concat(all_data, ignore_index=True)
+        # Ensure open_time exists
+        if 'open_time' not in combined_df.columns and 'time' in combined_df.columns:
+            combined_df['open_time'] = pd.to_datetime(combined_df['time'])
+            
         combined_df = combined_df.sort_values('open_time').reset_index(drop=True)
-        
-        if self.debug:
-            print(f"\n=== BACKTEST START ===")
-            print(f"Dynamic TP/SL mode: {self.use_dynamic_tpsl}")
-            print(f"Total rows: {len(combined_df)}")
-            print(f"Signals detected: {(combined_df['signal'] != 0).sum()}")
         
         for symbol in signals_dict.keys():
             symbol_mask = combined_df['symbol'] == symbol
@@ -274,11 +302,15 @@ class BacktestEngine:
                 signal_tp = pending.get('tp_price', None)
                 signal_sl = pending.get('sl_price', None)
                 
+                # Execute at next_open (simulated)
+                # In real backtest loop, 'current_open' IS the next_open from signal perspective
+                # because we iterate row by row. The signal was generated at previous row.
+                # So we use current_open as entry price.
+                
                 result = self.open_or_flip_position(
                     symbol, direction, current_open, timestamp, 
                     signal_data, signal_atr, signal_trend, 
-                    signal_strength, signal_reversal, signal_filter,
-                    tp_price=signal_tp, sl_price=signal_sl
+                    signal_strength, signal_reversal, signal_filter,\n                    tp_price=signal_tp, sl_price=signal_sl
                 )
                 if result:
                     entry_count += 1
@@ -298,15 +330,11 @@ class BacktestEngine:
             
             if 'signal' in row and row['signal'] != 0 and not pd.isna(next_open):
                 signal_count += 1
-                direction = 'LONG' if row['signal'] == 1 else 'SHORT'
-                
-                if self.debug and signal_count <= 3:
-                    print(f"\n[SIGNAL #{signal_count}] idx={idx}, time={timestamp}, direction={direction}")
-                    print(f"  TP={tp_price:.2f}, SL={sl_price:.2f}" if tp_price else f"  ATR={atr:.2f}")
-                
+                direction = 'LONG' if row['signal'] == 1 else 'SHORT'\n                
                 if symbol in self.open_positions:
                     pos = self.open_positions[symbol]
                     if pos['direction'] != direction:
+                        # Close current at Close Price (Market Order)
                         self.close_position(symbol, current_close, timestamp, 'REVERSAL_FLIP', 
                                            trend_direction, trend_strength, reversal_prob, trend_filter)
                         self.pending_signals[symbol] = {
@@ -338,12 +366,6 @@ class BacktestEngine:
                 'equity': self.equity,
                 'open_positions': len(self.open_positions)
             })
-        
-        if self.debug:
-            print(f"\n=== BACKTEST END ===")
-            print(f"Total signals detected: {signal_count}")
-            print(f"Total entries executed: {entry_count}")
-            print(f"Total trades completed: {len(self.trades)}")
         
         for symbol in list(self.open_positions.keys()):
             last_row = combined_df[combined_df['symbol'] == symbol].iloc[-1]
@@ -426,8 +448,7 @@ class BacktestEngine:
         equity_df = pd.DataFrame(self.equity_curve)
         mode_text = '固定倉位' if self.position_mode == 'fixed' else '複利模式'
         
-        fig = make_subplots(rows=2, cols=1, 
-                           shared_xaxes=True,
+        fig = make_subplots(rows=2, cols=1, \n                           shared_xaxes=True,
                            vertical_spacing=0.05,
                            row_heights=[0.7, 0.3],
                            subplot_titles=(f'權益曲線 ({mode_text})', '回撤 %'))
@@ -456,9 +477,5 @@ class BacktestEngine:
         
         fig.update_layout(height=600, showlegend=True, hovermode='x unified')
         
-        return fig
-    
-    def get_trades_dataframe(self) -> pd.DataFrame:
-        if not self.trades:
-            return pd.DataFrame()
-        return pd.DataFrame(self.trades)
+        return fig\n    
+    def get_trades_dataframe(self) -> pd.DataFrame:\n        if not self.trades:\n            return pd.DataFrame()\n        return pd.DataFrame(self.trades)
