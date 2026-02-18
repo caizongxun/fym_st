@@ -8,12 +8,12 @@ class ScalpingFeatureExtractor:
     15m 剝頭皮特徵提取器
     
     融合多維度技術指標:
-    - 趋勢: EMA, MACD, ADX
+    - 趨勢: EMA, MACD, ADX
     - 動能: RSI, Stochastic, Williams %R
     - 波動率: ATR, BB, Keltner
     - 量價: Volume, OBV
     - 市場結構: Support/Resistance, K線形態
-    - 時間: Hour, Minute
+    - 時間: Hour, Minute (可選)
     """
     
     def __init__(self,
@@ -37,7 +37,17 @@ class ScalpingFeatureExtractor:
         """
         df = df.copy()
         
-        # ====== 1. 趋勢特徵 ======
+        # 確保時間欄位存在
+        has_time = False
+        if 'open_time' not in df.columns:
+            if 'time' in df.columns:
+                df['open_time'] = pd.to_datetime(df['time'])
+                has_time = True
+        else:
+            df['open_time'] = pd.to_datetime(df['open_time'])
+            has_time = True
+        
+        # ====== 1. 趨勢特徵 ======
         df['ema_short'] = ta.trend.ema_indicator(df['close'], window=self.ema_short)
         df['ema_long'] = ta.trend.ema_indicator(df['close'], window=self.ema_long)
         df['ema_diff'] = df['ema_short'] - df['ema_long']
@@ -51,7 +61,7 @@ class ScalpingFeatureExtractor:
         df['macd_diff'] = macd.macd_diff()
         df['macd_diff_change'] = df['macd_diff'].diff()
         
-        # ADX (趋勢強度)
+        # ADX (趨勢強度)
         adx = ta.trend.ADXIndicator(df['high'], df['low'], df['close'], window=14)
         df['adx'] = adx.adx()
         df['adx_pos'] = adx.adx_pos()
@@ -132,9 +142,8 @@ class ScalpingFeatureExtractor:
         df['dist_to_resistance'] = (df['resistance_50'] - df['close']) / df['close']
         df['dist_to_support'] = (df['close'] - df['support_50']) / df['close']
         
-        # ====== 6. 時間特徵 ======
-        if 'open_time' in df.columns:
-            df['open_time'] = pd.to_datetime(df['open_time'])
+        # ====== 6. 時間特徵 (可選) ======
+        if has_time:
             df['hour'] = df['open_time'].dt.hour
             df['minute'] = df['open_time'].dt.minute
             df['is_whole_hour'] = (df['minute'] % 60 < 15).astype(int) # 整點前15分鐘
@@ -151,7 +160,7 @@ class ScalpingFeatureExtractor:
         返回特徵列名稱 (用於模型輸入)
         """
         features = [
-            # 趋勢
+            # 趨勢
             'ema_diff_pct', 'ema_slope', 'macd_diff', 'macd_diff_change',
             'adx', 'adx_pos', 'adx_neg',
             
@@ -168,13 +177,20 @@ class ScalpingFeatureExtractor:
             # 市場結構
             'candle_body_ratio', 'is_green', 'is_red',
             'consecutive_green', 'consecutive_red',
-            'dist_to_resistance', 'dist_to_support',
-            
-            # 時間
-            'hour', 'is_whole_hour',
-            'asian_session', 'european_session', 'american_session'
+            'dist_to_resistance', 'dist_to_support'
         ]
+        
+        # 時間特徵 (如果存在)
+        # 這些會在訓練時動態檢查
         return features
+    
+    def get_all_possible_features(self) -> list:
+        """
+        返回所有可能的特徵 (包含時間特徵)
+        """
+        base_features = self.get_feature_columns()
+        time_features = ['hour', 'is_whole_hour', 'asian_session', 'european_session', 'american_session']
+        return base_features + time_features
 
 if __name__ == '__main__':
     print("Scalping Feature Extractor")
