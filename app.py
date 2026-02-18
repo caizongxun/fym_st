@@ -39,12 +39,13 @@ st.sidebar.success("""
 - 確認有效反轉
 - 智能標記反轉點
 - LightGBM訓練
+- OOS驗證
 
 ✨ 特點:
 - 只學習有效反轉
 - 過濾假突破
 - 走勢自動判斷
-- 高準確率預測
+- 泛化能力測試
 """)
 
 def calculate_atr(df_signals):
@@ -141,7 +142,7 @@ def symbol_selector(key_prefix: str, multi: bool = False, default_symbols: list 
                 key=f"{key_prefix}_binance_single"
             ).strip().upper()]
 
-tabs = st.tabs(["BB反轉視覺化", "BB反轉訓練"])
+tabs = st.tabs(["BB反轉視覺化", "BB反轉訓練(OOS)"])
 
 with tabs[0]:
     st.header("BB反轉點視覺化")
@@ -230,14 +231,14 @@ with tabs[0]:
                 st.code(traceback.format_exc())
 
 with tabs[1]:
-    st.header("BB反轉點模型訓練")
+    st.header("BB反轉點模型訓練 (OOS驗證)")
     
     st.success("""
-    **訓練原理**:
-    1. 使用BB反轉檢測器築選有效反轉點
-    2. 過濾走勢中的假突破
-    3. 確認價格回到中軌附近
-    4. 只學習真正有效的反轉
+    **OOS (Out-of-Sample) 驗證流程**:
+    1. 載入全部數據
+    2. 最後30天作OOS測試集
+    3. OOS之前的20000根K棒作訓練集
+    4. 訓練模型後在OOS上驗證泛化能力
     
     **標籤定義**:
     - 上軌反轉 -> 做空 (0)
@@ -257,7 +258,17 @@ with tabs[1]:
             value=20000,
             step=5000,
             key="train_candles",
-            help="建議至少20000根以獲取足夠的有效反轉點"
+            help="OOS之前的K棒數量用於訓練"
+        )
+        
+        oos_days = st.number_input(
+            "OOS測試天數",
+            min_value=7,
+            max_value=60,
+            value=30,
+            step=7,
+            key="oos_days",
+            help="最後N天作為OOS測試集"
         )
     
     with col2:
@@ -267,25 +278,32 @@ with tabs[1]:
         touch_threshold_train = st.slider("觸碰閾值 (%)", min_value=0.0, max_value=0.5, value=0.1, step=0.05, key="touch_threshold_train") / 100
         min_reversal_train = st.slider("最小反轉幅度 (%)", min_value=0.1, max_value=1.0, value=0.5, step=0.1, key="min_reversal_train") / 100
     
-    st.caption(f"預估訓練時間: 約1-2分鐘 | 參數: BB({bb_period_train},{bb_std_train}) | 觸碰:{touch_threshold_train*100:.2f}% | 反轉:{min_reversal_train*100:.1f}%")
+    oos_candles = oos_days * 96
+    st.caption(f"訓練: {train_candles}根 | OOS: {oos_candles}根({oos_days}天) | BB({bb_period_train},{bb_std_train}) | 觸碰:{touch_threshold_train*100:.2f}% | 反轉:{min_reversal_train*100:.1f}%")
     
-    if st.button("開始訓練BB反轉模型", key="train_bb_btn", type="primary"):
-        with st.spinner(f"正在訓練 {train_symbol} BB反轉模型..."):
+    if st.button("開始OOS訓練+驗證", key="train_bb_oos_btn", type="primary"):
+        with st.spinner(f"正在訓練 {train_symbol} BB反轉模型 (OOS模式)..."):
             try:
-                # 載入數據
-                df = loader.load_klines(train_symbol, '15m')
-                df = df.tail(train_candles)
+                # 載入全部數據
+                df_all = loader.load_klines(train_symbol, '15m')
+                st.info(f"總共載入 {len(df_all)} 根K棒")
                 
-                st.info(f"載入 {len(df)} 根K棒")
+                # 分割OOS
+                df_oos = df_all.tail(oos_candles).copy()
+                df_train_full = df_all.iloc[:-oos_candles].copy()
+                df_train = df_train_full.tail(train_candles).copy()
                 
-                # 特徵提取 - 使用用戶設定的參數
+                st.info(f"📊 數據分割: 訓練集={len(df_train)}根 | OOS={len(df_oos)}根({oos_days}天)")
+                
+                # ====== 訓練階段 ======
+                st.subheader("🎯 階段 1: 訓練集處理")
+                
                 extractor = BBReversalFeatureExtractor(
                     bb_period=bb_period_train,
                     bb_std=bb_std_train,
                     rsi_period=14
                 )
                 
-                # 更新detector參數
                 extractor.detector = BBReversalDetector(
                     bb_period=bb_period_train,
                     bb_std=bb_std_train,
@@ -297,66 +315,126 @@ with tabs[1]:
                     require_middle_return=True
                 )
                 
-                df_processed = extractor.process(df, create_labels=True)
+                df_train_processed = extractor.process(df_train, create_labels=True)
+                train_stats = extractor.get_reversal_statistics()
                 
-                # 獲取反轉點統計
-                reversal_stats = extractor.get_reversal_statistics()
+                st.info(f"✅ 訓練集反轉點: {train_stats['total_reversals']} (上:{train_stats['upper_reversals']}, 下:{train_stats['lower_reversals']})")
+                st.info(f"❌ 拒絕: {train_stats['total_rejected']}")
                 
-                st.info(f"特徵工程完成: {len(df_processed)} 有效樣本")
-                st.info(f"檢測到 {reversal_stats['total_reversals']} 個有效反轉點")
-                st.info(f"上軌反轉: {reversal_stats['upper_reversals']} | 下軌反轉: {reversal_stats['lower_reversals']}")
-                st.info(f"拒絕無效觸碰: {reversal_stats['total_rejected']}")
-                
-                # 顯示拒絕原因
-                if 'rejection_reasons' in reversal_stats and reversal_stats['rejection_reasons']:
-                    st.write("拒絕原因統計:")
-                    for reason, count in reversal_stats['rejection_reasons'].items():
-                        st.text(f"  - {reason}: {count}")
-                
-                if reversal_stats['total_reversals'] < 50:
-                    st.error(f"反轉點數量太少: {reversal_stats['total_reversals']}, 建議增加訓練數據或降低最小反轉幅度")
+                if train_stats['total_reversals'] < 50:
+                    st.error(f"訓練集反轉點太少: {train_stats['total_reversals']}")
                     st.stop()
                 
-                # 獲取訓練數據
-                X, y = extractor.get_training_data(df_processed)
-                
-                st.info(f"訓練樣本: {len(X)} (做多:{(y==1).sum()}, 做空:{(y==0).sum()})")
+                X_train, y_train = extractor.get_training_data(df_train_processed)
+                st.info(f"🎯 訓練樣本: {len(X_train)} (做多:{(y_train==1).sum()}, 做空:{(y_train==0).sum()})")
                 
                 # 訓練模型
                 trainer = BBReversalModelTrainer(model_dir='models/saved')
-                metrics = trainer.train(X, y)
-                trainer.save_model(prefix=train_symbol)
                 
-                st.success(f"{train_symbol} BB反轉模型訓練完成!")
-                st.info(f"模型保存至: models/saved/{train_symbol}_bb_reversal_lgb.pkl")
+                # 手動分割以避免stratify錯誤
+                from sklearn.model_selection import train_test_split
+                X_t, X_v, y_t, y_v = train_test_split(
+                    X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
+                )
                 
-                # 顯示指標
+                st.info(f"📊 分割: 訓練={len(X_t)} | 驗證={len(X_v)}")
+                
+                # 訓練
+                trainer.model = trainer.model or __import__('lightgbm').LGBMClassifier(**trainer.lgb_params)
+                trainer.model.fit(
+                    X_t, y_t,
+                    eval_set=[(X_v, y_v)],
+                    callbacks=[__import__('lightgbm').early_stopping(stopping_rounds=50, verbose=False)]
+                )
+                
+                # 訓練集準確率
+                from sklearn.metrics import accuracy_score
+                y_pred_train = trainer.model.predict(X_v)
+                train_accuracy = accuracy_score(y_v, y_pred_train)
+                
+                st.success(f"✅ 訓練集準確率: {train_accuracy:.2%}")
+                
+                # ====== OOS測試階段 ======
+                st.subheader("🔬 階段 2: OOS測試集驗證")
+                
+                # 處理OOS數據
+                extractor_oos = BBReversalFeatureExtractor(
+                    bb_period=bb_period_train,
+                    bb_std=bb_std_train,
+                    rsi_period=14
+                )
+                
+                extractor_oos.detector = BBReversalDetector(
+                    bb_period=bb_period_train,
+                    bb_std=bb_std_train,
+                    touch_threshold=touch_threshold_train,
+                    reversal_confirm_candles=5,
+                    min_reversal_pct=min_reversal_train,
+                    trend_filter_enabled=True,
+                    trend_lookback=10,
+                    require_middle_return=True
+                )
+                
+                df_oos_processed = extractor_oos.process(df_oos, create_labels=True)
+                oos_stats = extractor_oos.get_reversal_statistics()
+                
+                st.info(f"✅ OOS反轉點: {oos_stats['total_reversals']} (上:{oos_stats['upper_reversals']}, 下:{oos_stats['lower_reversals']})")
+                st.info(f"❌ 拒絕: {oos_stats['total_rejected']}")
+                
+                if oos_stats['total_reversals'] < 10:
+                    st.warning(f"OOS反轉點太少: {oos_stats['total_reversals']}, 結果可能不穩定")
+                
+                X_oos, y_oos = extractor_oos.get_training_data(df_oos_processed)
+                st.info(f"🎯 OOS樣本: {len(X_oos)} (做多:{(y_oos==1).sum()}, 做空:{(y_oos==0).sum()})")
+                
+                # OOS預測
+                y_pred_oos = trainer.model.predict(X_oos)
+                oos_accuracy = accuracy_score(y_oos, y_pred_oos)
+                
+                # ====== 結果展示 ======
+                st.subheader("🏆 訓練結果")
+                
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    accuracy = metrics['accuracy']
-                    if accuracy >= 0.70:
-                        st.success(f"準確率: {accuracy:.2%}")
-                    elif accuracy >= 0.60:
-                        st.info(f"準確率: {accuracy:.2%}")
+                    if train_accuracy >= 0.70:
+                        st.success(f"訓練集準確率\n{train_accuracy:.2%}")
                     else:
-                        st.warning(f"準確率: {accuracy:.2%}")
+                        st.info(f"訓練集準確率\n{train_accuracy:.2%}")
                 
                 with col2:
-                    st.metric("訓練樣本", len(X))
+                    if oos_accuracy >= 0.60:
+                        st.success(f"OOS準確率\n{oos_accuracy:.2%}")
+                    elif oos_accuracy >= 0.50:
+                        st.info(f"OOS準確率\n{oos_accuracy:.2%}")
+                    else:
+                        st.warning(f"OOS準確率\n{oos_accuracy:.2%}")
                 
                 with col3:
-                    st.metric("有效反轉點", reversal_stats['total_reversals'])
+                    gap = train_accuracy - oos_accuracy
+                    if gap < 0.10:
+                        st.success(f"泛化差距\n{gap:.2%}")
+                    elif gap < 0.20:
+                        st.info(f"泛化差距\n{gap:.2%}")
+                    else:
+                        st.warning(f"泛化差距\n{gap:.2%}")
+                
+                # 保存模型
+                trainer.save_model(prefix=f"{train_symbol}_oos")
+                st.success(f"✅ 模型已保存: models/saved/{train_symbol}_oos_bb_reversal_lgb.pkl")
                 
                 # 特徵重要性
                 importance = trainer.get_feature_importance(extractor.get_feature_columns(), top_n=15)
                 st.subheader("Top 15 重要特徵")
                 st.dataframe(importance, use_container_width=True)
                 
-                if accuracy < 0.60:
-                    st.warning("建議: 準確率偏低，請增加訓練數據或調整參數")
-                elif accuracy >= 0.70:
+                # 評估建議
+                if oos_accuracy >= 0.60 and gap < 0.15:
                     st.balloons()
-                    st.success("準確率優異! 可以開始回測")
+                    st.success("✅ 模型表現優異且泛化良好! 可以進行回測")
+                elif oos_accuracy >= 0.55:
+                    st.info("💡 OOS表現尚可, 建議回測驗證實際表現")
+                else:
+                    st.warning("⚠️ OOS表現不佳, 建議調整參數或增加訓練數據")
                 
             except Exception as e:
                 st.error(f"訓練失敗: {str(e)}")
