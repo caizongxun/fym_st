@@ -9,7 +9,8 @@ from tabs import (
     render_bb_backtest_tab,
     render_scalping_training_tab,
     render_scalping_backtest_tab,
-    render_nextbar_training_tab
+    render_nextbar_training_tab,
+    render_nextbar_backtest_tab
 )
 
 # 頁面配置
@@ -43,7 +44,8 @@ tabs = st.tabs([
     "BB模型回測",
     "剝頭皮訓練",
     "剝頭皮回測",
-    "下一根K棒預測"
+    "下一根K棒訓練",
+    "下一根K棒回測"
 ])
 
 # 渲染各 Tab
@@ -64,3 +66,6 @@ with tabs[4]:
 
 with tabs[5]:
     render_nextbar_training_tab(loader)
+
+with tabs[6]:
+    render_nextbar_backtest_tab(loader)
