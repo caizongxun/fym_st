@@ -80,7 +80,7 @@ def render_nextbar_backtest_tab(loader):
             max_value=0.5,
             value=0.1,
             step=0.05,
-            key="nextbar_entry_offset",
+            key="nextbar_bt_entry_offset",
             help="在預測價位留的空間"
         ) / 100
         
@@ -90,7 +90,7 @@ def render_nextbar_backtest_tab(loader):
             max_value=0.5,
             value=0.2,
             step=0.05,
-            key="nextbar_sl_buffer",
+            key="nextbar_bt_sl_buffer",
             help="止損距離預測邊界的額外空間"
         ) / 100
         
@@ -102,7 +102,7 @@ def render_nextbar_backtest_tab(loader):
                 max_value=1.0,
                 value=0.2,
                 step=0.1,
-                key="nextbar_min_range"
+                key="nextbar_bt_min_range"
             ) / 100
         
         with col_b:
@@ -112,7 +112,7 @@ def render_nextbar_backtest_tab(loader):
                 max_value=2.0,
                 value=0.8,
                 step=0.1,
-                key="nextbar_max_range"
+                key="nextbar_bt_max_range"
             ) / 100
         
         initial_capital = st.number_input(
@@ -121,7 +121,7 @@ def render_nextbar_backtest_tab(loader):
             max_value=100000,
             value=10000,
             step=1000,
-            key="nextbar_capital"
+            key="nextbar_bt_capital"
         )
     
     st.caption(
