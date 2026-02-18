@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import sys
 from io import StringIO
+import os
 
 from data.binance_loader import BinanceDataLoader
 from data.huggingface_loader import HuggingFaceKlineLoader
@@ -13,9 +14,10 @@ from utils.bb_reversal_detector import BBReversalDetector
 from utils.bb_reversal_features import BBReversalFeatureExtractor
 from models.train_bb_reversal_model import BBReversalModelTrainer
 from backtesting.engine import BacktestEngine
+from utils.signal_generator_bb_reversal import BBReversalSignalGenerator
 
 st.set_page_config(page_title="AI 加密貨幣交易儀表板", layout="wide")
-st.title("🚀 AI 加密貨幣交易儀表板 - BB反轉系統")
+st.title("AI 加密貨幣交易儀表板 - BB反轉系統")
 
 st.sidebar.title("設定")
 data_source = st.sidebar.radio(
@@ -31,31 +33,21 @@ else:
     loader = BinanceDataLoader()
     st.sidebar.info("使用Binance即時資料")
 
-st.sidebar.success("""
-**BB反轉系統**
-
-🎯 核心功能:
-- 過濾走勢中觸碰
-- 確認有效反轉
-- 智能標記反轉點
-- LightGBM訓練
-- OOS驗證
-
-✨ 特點:
-- 只學習有效反轉
-- 過濾假突破
-- 走勢自動判斷
-- 泛化能力測試
-""")
-
-def calculate_atr(df_signals):
-    high_low = df_signals['high'] - df_signals['low']
-    high_close = abs(df_signals['high'] - df_signals['close'].shift(1))
-    low_close = abs(df_signals['low'] - df_signals['close'].shift(1))
-    true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    atr = true_range.rolling(window=14).mean()
-    atr = atr.bfill().fillna(df_signals['close'] * 0.02)
-    return atr
+def display_metrics(metrics):
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("交易次數", metrics.get('total_trades', 0))
+        st.metric("勝率", f"{metrics.get('win_rate', 0):.2f}%")
+    with col2:
+        st.metric("最終權益", f"${metrics.get('final_equity', 0):.2f}")
+        st.metric("總回報", f"{metrics.get('total_return_pct', 0):.2f}%")
+    with col3:
+        st.metric("獲利因子", f"{metrics.get('profit_factor', 0):.2f}")
+        st.metric("夏普比率", f"{metrics.get('sharpe_ratio', 0):.2f}")
+    with col4:
+        st.metric("最大回撤", f"{metrics.get('max_drawdown_pct', 0):.2f}%")
+        avg_duration = metrics.get('avg_duration_min', 0)
+        st.metric("平均持倉(分)", f"{avg_duration:.0f}" if avg_duration else "N/A")
 
 def symbol_selector(key_prefix: str, multi: bool = False, default_symbols: list = None):
     if data_source == "HuggingFace (38幣)":
@@ -142,7 +134,7 @@ def symbol_selector(key_prefix: str, multi: bool = False, default_symbols: list 
                 key=f"{key_prefix}_binance_single"
             ).strip().upper()]
 
-tabs = st.tabs(["BB反轉視覺化", "BB反轉訓練(OOS)"])
+tabs = st.tabs(["BB反轉視覺化", "BB反轉訓練(OOS)", "BB模型回測"])
 
 with tabs[0]:
     st.header("BB反轉點視覺化")
@@ -286,17 +278,16 @@ with tabs[1]:
             try:
                 # 載入全部數據
                 df_all = loader.load_klines(train_symbol, '15m')
-                st.info(f"總共載入 {len(df_all)} 根K棒")
                 
                 # 分割OOS
                 df_oos = df_all.tail(oos_candles).copy()
                 df_train_full = df_all.iloc[:-oos_candles].copy()
                 df_train = df_train_full.tail(train_candles).copy()
                 
-                st.info(f"📊 數據分割: 訓練集={len(df_train)}根 | OOS={len(df_oos)}根({oos_days}天)")
+                st.info(f"數據分割: 訓練集={len(df_train)}根 | OOS={len(df_oos)}根({oos_days}天)")
                 
                 # ====== 訓練階段 ======
-                st.subheader("🎯 階段 1: 訓練集處理")
+                st.subheader("階段 1: 訓練集處理")
                 
                 extractor = BBReversalFeatureExtractor(
                     bb_period=bb_period_train,
@@ -318,28 +309,24 @@ with tabs[1]:
                 df_train_processed = extractor.process(df_train, create_labels=True)
                 train_stats = extractor.get_reversal_statistics()
                 
-                st.info(f"✅ 訓練集反轉點: {train_stats['total_reversals']} (上:{train_stats['upper_reversals']}, 下:{train_stats['lower_reversals']})")
-                st.info(f"❌ 拒絕: {train_stats['total_rejected']}")
+                st.info(f"訓練集反轉點: {train_stats['total_reversals']} (上:{train_stats['upper_reversals']}, 下:{train_stats['lower_reversals']})")
                 
                 if train_stats['total_reversals'] < 50:
                     st.error(f"訓練集反轉點太少: {train_stats['total_reversals']}")
                     st.stop()
                 
                 X_train, y_train = extractor.get_training_data(df_train_processed)
-                st.info(f"🎯 訓練樣本: {len(X_train)} (做多:{(y_train==1).sum()}, 做空:{(y_train==0).sum()})")
+                st.info(f"訓練樣本: {len(X_train)} (做多:{(y_train==1).sum()}, 做空:{(y_train==0).sum()})")
                 
                 # 訓練模型
                 trainer = BBReversalModelTrainer(model_dir='models/saved')
                 
-                # 手動分割以避免stratify錯誤
+                # 手動分割
                 from sklearn.model_selection import train_test_split
                 X_t, X_v, y_t, y_v = train_test_split(
                     X_train, y_train, test_size=0.2, random_state=42, stratify=y_train
                 )
                 
-                st.info(f"📊 分割: 訓練={len(X_t)} | 驗證={len(X_v)}")
-                
-                # 訓練
                 trainer.model = trainer.model or __import__('lightgbm').LGBMClassifier(**trainer.lgb_params)
                 trainer.model.fit(
                     X_t, y_t,
@@ -352,12 +339,11 @@ with tabs[1]:
                 y_pred_train = trainer.model.predict(X_v)
                 train_accuracy = accuracy_score(y_v, y_pred_train)
                 
-                st.success(f"✅ 訓練集準確率: {train_accuracy:.2%}")
+                st.success(f"訓練集準確率: {train_accuracy:.2%}")
                 
                 # ====== OOS測試階段 ======
-                st.subheader("🔬 階段 2: OOS測試集驗證")
+                st.subheader("階段 2: OOS測試集驗證")
                 
-                # 處理OOS數據
                 extractor_oos = BBReversalFeatureExtractor(
                     bb_period=bb_period_train,
                     bb_std=bb_std_train,
@@ -378,65 +364,121 @@ with tabs[1]:
                 df_oos_processed = extractor_oos.process(df_oos, create_labels=True)
                 oos_stats = extractor_oos.get_reversal_statistics()
                 
-                st.info(f"✅ OOS反轉點: {oos_stats['total_reversals']} (上:{oos_stats['upper_reversals']}, 下:{oos_stats['lower_reversals']})")
-                st.info(f"❌ 拒絕: {oos_stats['total_rejected']}")
+                st.info(f"OOS反轉點: {oos_stats['total_reversals']} (上:{oos_stats['upper_reversals']}, 下:{oos_stats['lower_reversals']})")
                 
                 if oos_stats['total_reversals'] < 10:
-                    st.warning(f"OOS反轉點太少: {oos_stats['total_reversals']}, 結果可能不穩定")
+                    st.warning(f"OOS反轉點太少: {oos_stats['total_reversals']}")
                 
                 X_oos, y_oos = extractor_oos.get_training_data(df_oos_processed)
-                st.info(f"🎯 OOS樣本: {len(X_oos)} (做多:{(y_oos==1).sum()}, 做空:{(y_oos==0).sum()})")
                 
                 # OOS預測
                 y_pred_oos = trainer.model.predict(X_oos)
                 oos_accuracy = accuracy_score(y_oos, y_pred_oos)
                 
                 # ====== 結果展示 ======
-                st.subheader("🏆 訓練結果")
-                
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    if train_accuracy >= 0.70:
-                        st.success(f"訓練集準確率\n{train_accuracy:.2%}")
-                    else:
-                        st.info(f"訓練集準確率\n{train_accuracy:.2%}")
-                
+                    st.metric("訓練集準確率", f"{train_accuracy:.2%}")
                 with col2:
-                    if oos_accuracy >= 0.60:
-                        st.success(f"OOS準確率\n{oos_accuracy:.2%}")
-                    elif oos_accuracy >= 0.50:
-                        st.info(f"OOS準確率\n{oos_accuracy:.2%}")
-                    else:
-                        st.warning(f"OOS準確率\n{oos_accuracy:.2%}")
-                
+                    st.metric("OOS準確率", f"{oos_accuracy:.2%}")
                 with col3:
                     gap = train_accuracy - oos_accuracy
-                    if gap < 0.10:
-                        st.success(f"泛化差距\n{gap:.2%}")
-                    elif gap < 0.20:
-                        st.info(f"泛化差距\n{gap:.2%}")
-                    else:
-                        st.warning(f"泛化差距\n{gap:.2%}")
+                    st.metric("泛化差距", f"{gap:.2%}")
                 
                 # 保存模型
                 trainer.save_model(prefix=f"{train_symbol}_oos")
-                st.success(f"✅ 模型已保存: models/saved/{train_symbol}_oos_bb_reversal_lgb.pkl")
+                st.success(f"模型已保存: models/saved/{train_symbol}_oos_bb_reversal_lgb.pkl")
                 
-                # 特徵重要性
-                importance = trainer.get_feature_importance(extractor.get_feature_columns(), top_n=15)
-                st.subheader("Top 15 重要特徵")
-                st.dataframe(importance, use_container_width=True)
-                
-                # 評估建議
                 if oos_accuracy >= 0.60 and gap < 0.15:
                     st.balloons()
-                    st.success("✅ 模型表現優異且泛化良好! 可以進行回測")
-                elif oos_accuracy >= 0.55:
-                    st.info("💡 OOS表現尚可, 建議回測驗證實際表現")
-                else:
-                    st.warning("⚠️ OOS表現不佳, 建議調整參數或增加訓練數據")
+                    st.success("模型表現優異且泛化良好! 可以進行回測")
                 
             except Exception as e:
                 st.error(f"訓練失敗: {str(e)}")
                 import traceback
                 st.code(traceback.format_exc())
+
+with tabs[2]:
+    st.header("BB模型回測")
+    
+    st.info("""
+    **回測邏輯**:
+    1. 載入訓練好的模型 ({SYMBOL}_oos_bb_reversal_lgb.pkl)
+    2. 檢測BB觸碰 (上軌/下軌)
+    3. 模型預測信號 (0=做空, 1=做多)
+    4. 規則過濾:
+       - 觸碰上軌 + 預測做空 -> 進場做空
+       - 觸碰下軌 + 預測做多 -> 進場做多
+    5. 下一根K線開盤價進場
+    6. 動態ATR止盈止損
+    """)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        backtest_symbol = st.selectbox("回測幣種", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], key="bt_symbol")
+        backtest_days = st.slider("回測天數", 30, 365, 90, key="bt_days")
+    
+    with col2:
+        st.subheader("風險管理")
+        initial_capital = st.number_input("初始資金", 100, 10000, 1000, key="bt_capital")
+        leverage = st.number_input("槓桿倍數", 1, 50, 5, key="bt_leverage")
+        tp_mult = st.number_input("ATR止盈倍數", 1.0, 5.0, 2.0, key="bt_tp")
+        sl_mult = st.number_input("ATR止損倍數", 1.0, 5.0, 1.5, key="bt_sl")
+    
+    if st.button("開始回測", type="primary"):
+        model_path = f"models/saved/{backtest_symbol}_oos_bb_reversal_lgb.pkl"
+        if not os.path.exists(model_path):
+            st.error(f"找不到模型文件: {model_path}，請先進行訓練")
+        else:
+            with st.spinner(f"正在回測 {backtest_symbol}..."):
+                try:
+                    # 載入數據
+                    df = loader.load_klines(backtest_symbol, '15m')
+                    df = df.tail(backtest_days * 96)
+                    
+                    # 生成信號
+                    # 使用與訓練時相同的參數 (這裡假設用戶記得參數，或者我們應該保存參數)
+                    # 這裡先使用預設值，理想情況下應從模型配置載入
+                    generator = BBReversalSignalGenerator(
+                        model_path=model_path,
+                        bb_period=bb_period_train,  # 使用OOS頁面設定的參數
+                        bb_std=bb_std_train,
+                        touch_threshold=touch_threshold_train
+                    )
+                    
+                    df_signals = generator.generate_signals(df)
+                    
+                    # 準備回測數據
+                    # BacktestEngine需要 'signal' 列 (1=Long, -1=Short, 0=None)
+                    # 已經由generator生成
+                    
+                    # 執行回測
+                    engine = BacktestEngine(
+                        initial_capital=initial_capital,
+                        leverage=leverage,
+                        tp_atr_mult=tp_mult,
+                        sl_atr_mult=sl_mult
+                    )
+                    
+                    signals_dict = {backtest_symbol: df_signals}
+                    metrics = engine.run_backtest(signals_dict)
+                    
+                    st.subheader("回測結果")
+                    display_metrics(metrics)
+                    
+                    # 繪製權益曲線
+                    fig = engine.plot_equity_curve()
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # 交易明細
+                    trades_df = engine.get_trades_dataframe()
+                    if not trades_df.empty:
+                        st.subheader("交易明細")
+                        st.dataframe(trades_df, use_container_width=True)
+                    else:
+                        st.warning("沒有產生任何交易")
+                        
+                except Exception as e:
+                    st.error(f"回測錯誤: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
