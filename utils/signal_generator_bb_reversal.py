@@ -43,9 +43,22 @@ class BBReversalSignalGenerator:
         """
         df = df.copy()
         
+        # 確保時間列名統一為 'open_time'
+        if 'time' in df.columns and 'open_time' not in df.columns:
+            df['open_time'] = pd.to_datetime(df['time'])
+        elif 'open_time' in df.columns:
+            df['open_time'] = pd.to_datetime(df['open_time'])
+            
         # 1. 計算特徵 (與訓練時一致)
         # process會計算所有技術指標
         df_features = self.extractor.process(df, create_labels=False)
+        
+        # 確保open_time在結果中
+        if 'open_time' not in df_features.columns:
+            # 如果特徵提取過程中丟失了open_time，嘗試從原始df恢復
+            # 注意: process可能會刪除NaN行，導致行數減少
+            # 這裡我們重新賦值，假設索引是對齊的
+            df_features['open_time'] = df.loc[df_features.index, 'open_time']
         
         # 2. 檢測觸碰候選點 (使用簡單規則)
         # 這裡我們需要重新計算BB，因為extractor.process可能過濾了數據
@@ -75,26 +88,30 @@ class BBReversalSignalGenerator:
         # 4. 模型預測
         # 我們對所有數據進行預測，然後過濾
         # LightGBM預測速度很快
-        y_pred = self.model.predict(X)
-        y_prob = self.model.predict_proba(X)
-        
-        # 5. 生成信號
-        df_features['signal'] = 0
-        df_features['reversal_prob'] = 0.0
-        
-        # 邏輯匹配
-        # 模型輸出: 0 = 做空 (Upper Reversal), 1 = 做多 (Lower Reversal)
-        
-        # SHORT信號: 觸碰上軌 + 模型預測做空(0)
-        # 我們可以加一個概率閾值，例如 > 0.6 確信度
-        short_mask = touch_upper & (y_pred == 0)
-        df_features.loc[short_mask, 'signal'] = -1
-        df_features.loc[short_mask, 'reversal_prob'] = y_prob[short_mask, 0]  # Class 0 prob
-        
-        # LONG信號: 觸碰下軌 + 模型預測做多(1)
-        long_mask = touch_lower & (y_pred == 1)
-        df_features.loc[long_mask, 'signal'] = 1
-        df_features.loc[long_mask, 'reversal_prob'] = y_prob[long_mask, 1]  # Class 1 prob
+        if len(X) > 0:
+            y_pred = self.model.predict(X)
+            y_prob = self.model.predict_proba(X)
+            
+            # 5. 生成信號
+            df_features['signal'] = 0
+            df_features['reversal_prob'] = 0.0
+            
+            # 邏輯匹配
+            # 模型輸出: 0 = 做空 (Upper Reversal), 1 = 做多 (Lower Reversal)
+            
+            # SHORT信號: 觸碰上軌 + 模型預測做空(0)
+            # 我們可以加一個概率閾值，例如 > 0.6 確信度
+            short_mask = touch_upper & (y_pred == 0)
+            df_features.loc[short_mask, 'signal'] = -1
+            df_features.loc[short_mask, 'reversal_prob'] = y_prob[short_mask, 0]  # Class 0 prob
+            
+            # LONG信號: 觸碰下軌 + 模型預測做多(1)
+            long_mask = touch_lower & (y_pred == 1)
+            df_features.loc[long_mask, 'signal'] = 1
+            df_features.loc[long_mask, 'reversal_prob'] = y_prob[long_mask, 1]  # Class 1 prob
+        else:
+            df_features['signal'] = 0
+            df_features['reversal_prob'] = 0.0
         
         # 6. 設置止盈止損 (可選，這裡使用ATR)
         # BacktestEngine會處理，但我們可以在這裡提供建議值
