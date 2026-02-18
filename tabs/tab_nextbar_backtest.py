@@ -24,7 +24,7 @@ def render_nextbar_backtest_tab(loader):
     3. 在預測 high 附近掛做空限價單 (Maker 0.02%)
     4. 成交後:
        - 止盈 = 另一邊預測價
-       - 止損 = 預測邊界 - 0.2%
+       - 止損 = 預測邊界 - 緩衝
     """)
     
     col1, col2 = st.columns(2)
@@ -78,7 +78,7 @@ def render_nextbar_backtest_tab(loader):
             "掛單偏移 (%)",
             min_value=0.0,
             max_value=0.5,
-            value=0.1,
+            value=0.15,
             step=0.05,
             key="nextbar_bt_entry_offset",
             help="在預測價位留的空間"
@@ -88,7 +88,7 @@ def render_nextbar_backtest_tab(loader):
             "止損緩衝 (%)",
             min_value=0.0,
             max_value=0.5,
-            value=0.2,
+            value=0.3,
             step=0.05,
             key="nextbar_bt_sl_buffer",
             help="止損距離預測邊界的額外空間"
@@ -100,7 +100,7 @@ def render_nextbar_backtest_tab(loader):
                 "最小區間 (%)",
                 min_value=0.1,
                 max_value=1.0,
-                value=0.2,
+                value=0.3,
                 step=0.1,
                 key="nextbar_bt_min_range"
             ) / 100
@@ -110,7 +110,7 @@ def render_nextbar_backtest_tab(loader):
                 "最大區間 (%)",
                 min_value=0.5,
                 max_value=2.0,
-                value=0.8,
+                value=1.0,
                 step=0.1,
                 key="nextbar_bt_max_range"
             ) / 100
@@ -235,9 +235,9 @@ def render_nextbar_backtest_tab(loader):
                         f"盈虧因子 {results['profit_factor']:.2f} 偏低"
                     )
                     st.write("建議:")
-                    st.write("1. 調整掛單偏移和止損緩衝")
-                    st.write("2. 過濾更大或更小的預測區間")
-                    st.write("3. 重新訓練模型")
+                    st.write("● 調高止損緩衝 (0.3-0.4%)，增加盈虧比")
+                    st.write("● 提高最小區間 (0.3-0.5%)，過濾噪音")
+                    st.write("● 降低最大區間 (0.7-1.0%)，避免劇烈波動")
                 
                 # 權益曲線
                 if len(results['equity_df']) > 0:
