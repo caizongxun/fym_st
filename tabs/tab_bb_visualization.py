@@ -15,11 +15,11 @@ def render_bb_visualization_tab(loader):
     st.header("步驟 1: BB 反轉標籤視覺化")
     
     st.info("""
-    **標籤定義**: 
-    - 上軌反轉 (做空機會): 價格碰到上軌後,未來 5 根 K 棒內下跌 > 0.3%
-    - 下軌反轉 (做多機會): 價格碰到下軌後,未來 5 根 K 棒內上漲 > 0.3%
+    **標籤定義 (相對波動)**: 
+    - 上軌反轉: 碰上軌後,未來下跌幅度 > 前 N 根平均波動的 X 倍
+    - 下軌反轉: 碰下軌後,未來上漲幅度 > 前 N 根平均波動的 X 倍
     
-    這些標記點就是模型要學習的正確反轉信號
+    這樣可以過濾趨勢中的正常波動,只保留真正的反轉點
     """)
     
     col1, col2 = st.columns([1, 1])
@@ -37,11 +37,23 @@ def render_bb_visualization_tab(loader):
     with col2:
         bb_period = st.number_input("BB 週期", 10, 50, 20, key="bb_period")
         bb_std = st.number_input("BB 標準差", 1.0, 3.0, 2.0, 0.1, key="bb_std")
-        reversal_threshold = st.number_input(
-            "反轉閾值 (%)", 
-            0.1, 1.0, 0.3, 0.1, 
-            key="reversal_threshold",
-            help="未來 5 根 K 棒內價格變動超過此閾值才算反轉"
+        
+    col3, col4 = st.columns([1, 1])
+    
+    with col3:
+        lookback_period = st.number_input(
+            "歷史波動期數 (N)",
+            5, 50, 20,
+            key="lookback_period",
+            help="計算前 N 根 K 棒的平均波動"
+        )
+    
+    with col4:
+        volatility_multiplier = st.number_input(
+            "波動倍數 (X)",
+            1.0, 5.0, 2.0, 0.5,
+            key="volatility_multiplier",
+            help="未來反轉幅度需 > 歷史波動的 X 倍"
         )
     
     if st.button("載入數據", key="load_bb_data", type="primary"):
@@ -62,27 +74,34 @@ def render_bb_visualization_tab(loader):
                 df['bb_upper'] = df['bb_mid'] + bb_std * df['bb_std']
                 df['bb_lower'] = df['bb_mid'] - bb_std * df['bb_std']
                 
-                # 定義碰觸上下軌 (距離 < 0.1%)
+                # 計算歷史平均波動率 (ATR 概念)
+                df['price_range'] = df['high'] - df['low']
+                df['avg_historical_volatility'] = df['price_range'].rolling(window=lookback_period).mean()
+                df['volatility_threshold'] = df['avg_historical_volatility'] * volatility_multiplier
+                
+                # 定義碰觸上下軌
                 df['touch_upper'] = df['high'] >= df['bb_upper'] * 0.999
                 df['touch_lower'] = df['low'] <= df['bb_lower'] * 1.001
                 
-                # 計算未來 5 根 K 棒的價格變化
+                # 計算未來 5 根 K 棒的價格變化 (絕對值)
                 df['future_5bar_min'] = df['low'].shift(-5).rolling(window=5, min_periods=1).min()
                 df['future_5bar_max'] = df['high'].shift(-5).rolling(window=5, min_periods=1).max()
                 
-                # 定義反轉標籤
-                reversal_pct = reversal_threshold / 100
+                # 計算未來反轉幅度 (絕對值)
+                df['future_drop'] = df['high'] - df['future_5bar_min']
+                df['future_rise'] = df['future_5bar_max'] - df['low']
                 
-                # 上軌反轉標籤 (做空機會)
+                # 定義反轉標籤 (相對波動)
+                # 上軌反轉: 未來下跌 > 歷史平均波動 * 倍數
                 df['label_upper_reversal'] = (
                     df['touch_upper'] & 
-                    ((df['high'] - df['future_5bar_min']) / df['high'] > reversal_pct)
+                    (df['future_drop'] > df['volatility_threshold'])
                 )
                 
-                # 下軌反轉標籤 (做多機會)
+                # 下軌反轉: 未來上漲 > 歷史平均波動 * 倍數
                 df['label_lower_reversal'] = (
                     df['touch_lower'] & 
-                    ((df['future_5bar_max'] - df['low']) / df['low'] > reversal_pct)
+                    (df['future_rise'] > df['volatility_threshold'])
                 )
                 
                 # 統計
@@ -123,7 +142,7 @@ def render_bb_visualization_tab(loader):
                     name='BB 下軌'
                 ))
                 
-                # 標記上軌反轉點 (模型要學習的做空信號)
+                # 標記上軌反轉點
                 upper_reversal_points = df[df['label_upper_reversal']]
                 if len(upper_reversal_points) > 0:
                     fig.add_trace(go.Scatter(
@@ -136,13 +155,13 @@ def render_bb_visualization_tab(loader):
                             color='red',
                             line=dict(color='darkred', width=2)
                         ),
-                        name=f'上軌反轉 (做空) - {len(upper_reversal_points)}個',
-                        text=[f"反轉點<br>時間: {idx}<br>價格: {row['high']:.2f}" 
+                        name=f'上軌反轉 ({len(upper_reversal_points)})',
+                        text=[f"反轉點<br>時間: {idx}<br>價格: {row['high']:.2f}<br>未來下跌: {row['future_drop']:.2f}<br>波動閾值: {row['volatility_threshold']:.2f}" 
                               for idx, row in upper_reversal_points.iterrows()],
                         hoverinfo='text'
                     ))
                 
-                # 標記下軌反轉點 (模型要學習的做多信號)
+                # 標記下軌反轉點
                 lower_reversal_points = df[df['label_lower_reversal']]
                 if len(lower_reversal_points) > 0:
                     fig.add_trace(go.Scatter(
@@ -155,14 +174,14 @@ def render_bb_visualization_tab(loader):
                             color='green',
                             line=dict(color='darkgreen', width=2)
                         ),
-                        name=f'下軌反轉 (做多) - {len(lower_reversal_points)}個',
-                        text=[f"反轉點<br>時間: {idx}<br>價格: {row['low']:.2f}" 
+                        name=f'下軌反轉 ({len(lower_reversal_points)})',
+                        text=[f"反轉點<br>時間: {idx}<br>價格: {row['low']:.2f}<br>未來上漲: {row['future_rise']:.2f}<br>波動閾值: {row['volatility_threshold']:.2f}" 
                               for idx, row in lower_reversal_points.iterrows()],
                         hoverinfo='text'
                     ))
                 
                 fig.update_layout(
-                    title=f"{symbol} BB 反轉標籤視覺化 (15分鐘)",
+                    title=f"{symbol} BB 反轉標籤 (相對波動法)",
                     xaxis_title="時間",
                     yaxis_title="價格",
                     height=700,
@@ -185,8 +204,7 @@ def render_bb_visualization_tab(loader):
                     st.metric(
                         "上軌反轉標籤", 
                         upper_reversals,
-                        delta=f"{upper_reversal_rate:.1f}%",
-                        help="紅色三角形 - 模型要學習預測的做空信號"
+                        delta=f"{upper_reversal_rate:.1f}%"
                     )
                 
                 with col3:
@@ -197,8 +215,25 @@ def render_bb_visualization_tab(loader):
                     st.metric(
                         "下軌反轉標籤", 
                         lower_reversals,
-                        delta=f"{lower_reversal_rate:.1f}%",
-                        help="綠色三角形 - 模型要學習預測的做多信號"
+                        delta=f"{lower_reversal_rate:.1f}%"
+                    )
+                
+                # 波動分析
+                st.subheader("波動分析")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    avg_volatility = df['avg_historical_volatility'].mean()
+                    st.metric(
+                        f"平均歷史波動 ({lookback_period}根)",
+                        f"{avg_volatility:.2f}"
+                    )
+                
+                with col2:
+                    avg_threshold = df['volatility_threshold'].mean()
+                    st.metric(
+                        f"平均反轉閾值 ({volatility_multiplier}x)",
+                        f"{avg_threshold:.2f}"
                     )
                 
                 # 詳細數據表
@@ -210,12 +245,10 @@ def render_bb_visualization_tab(loader):
                     if len(upper_reversal_points) > 0:
                         st.write("上軌反轉點 (做空信號)")
                         upper_display = upper_reversal_points[[
-                            'open', 'high', 'low', 'close', 'bb_upper'
+                            'high', 'bb_upper', 'future_drop', 'volatility_threshold'
                         ]].copy()
-                        upper_display['反轉幅度%'] = (
-                            (upper_display['high'] - df.loc[upper_reversal_points.index, 'future_5bar_min']) / 
-                            upper_display['high'] * 100
-                        ).round(2)
+                        upper_display.columns = ['價格', 'BB上軌', '未來下跌', '波動閾值']
+                        upper_display['倍數'] = (upper_display['未來下跌'] / upper_display['波動閾值']).round(2)
                         st.dataframe(upper_display.tail(10), use_container_width=True)
                     else:
                         st.info("無上軌反轉點")
@@ -224,19 +257,17 @@ def render_bb_visualization_tab(loader):
                     if len(lower_reversal_points) > 0:
                         st.write("下軌反轉點 (做多信號)")
                         lower_display = lower_reversal_points[[
-                            'open', 'high', 'low', 'close', 'bb_lower'
+                            'low', 'bb_lower', 'future_rise', 'volatility_threshold'
                         ]].copy()
-                        lower_display['反轉幅度%'] = (
-                            (df.loc[lower_reversal_points.index, 'future_5bar_max'] - lower_display['low']) / 
-                            lower_display['low'] * 100
-                        ).round(2)
+                        lower_display.columns = ['價格', 'BB下軌', '未來上漲', '波動閾值']
+                        lower_display['倍數'] = (lower_display['未來上漲'] / lower_display['波動閾值']).round(2)
                         st.dataframe(lower_display.tail(10), use_container_width=True)
                     else:
                         st.info("無下軌反轉點")
                 
                 st.success(
                     f"標籤生成完成! 共 {upper_reversals + lower_reversals} 個反轉點\n"
-                    f"下一步: Tab 2 訓練模型預測這些反轉點"
+                    f"使用相對波動法,過濾了趨勢中的正常波動"
                 )
                 
             except Exception as e:
