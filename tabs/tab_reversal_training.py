@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import joblib
 import os
 from sklearn.model_selection import train_test_split, GridSearchCV, cross_val_score
-from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix, precision_recall_curve, make_scorer
+from sklearn.metrics import classification_report, roc_auc_score, confusion_matrix, precision_recall_curve, make_scorer, f1_score
 import xgboost as xgb
 import plotly.graph_objects as go
 
@@ -36,7 +36,7 @@ def render_reversal_training_tab(loader):
         render_bayesian_training(loader)
 
 def render_manual_training(loader):
-    st.info("手動調整所有超參數並訓練模型")
+    st.info("手動調整所有超參數並訓練模型 - 最靈活且可控")
     
     st.subheader("訓練參數")
     col1, col2, col3 = st.columns(3)
@@ -84,10 +84,7 @@ def render_manual_training(loader):
                           min_child_weight, gamma, scale_pos_weight_multiplier, probability_threshold)
 
 def render_grid_search_training(loader):
-    st.warning("""
-    **重要**: 網格搜索只優化 XGBoost 超參數，不包含機率閾值和 scale_pos_weight。
-    如果需要提高召回率，建議使用手動訓練模式並調整機率閾值。
-    """)
+    st.warning("網格搜索會測試多種參數組合，但需要 5-15 分鐘")
     
     st.subheader("訓練參數")
     col1, col2, col3 = st.columns(3)
@@ -119,14 +116,14 @@ def render_grid_search_training(loader):
     
     if search_type == "快速搜索":
         param_grid = {
-            'max_depth': [4, 6, 8],
+            'max_depth': [5, 6, 7],
             'learning_rate': [0.05, 0.1],
-            'n_estimators': [100, 200],
+            'n_estimators': [150, 200],
             'min_child_weight': [1, 2],
             'gamma': [0, 0.1],
             'subsample': [0.8],
             'colsample_bytree': [0.8],
-            'scale_pos_weight': [1.5, 2.0, 2.5]
+            'scale_pos_weight': [1.3, 1.5, 1.8]
         }
         st.info(f"將測試 {3*2*2*2*2*3} = 144 種組合")
     else:
@@ -138,18 +135,18 @@ def render_grid_search_training(loader):
             'gamma': [0, 0.1],
             'subsample': [0.7, 0.8],
             'colsample_bytree': [0.8],
-            'scale_pos_weight': [1.5, 2.0, 2.5]
+            'scale_pos_weight': [1.2, 1.5, 1.8]
         }
         st.info(f"將測試 {4*2*2*3*2*2*3} = 576 種組合")
     
     optimization_target = st.selectbox(
         "優化目標",
-        ["Recall (召回率)", "F1 Score (平衡)", "Precision (精確率)", "AUC"]
+        ["F1 Score (平衡, 推薦)", "Recall (召回率)", "Precision (精確率)", "AUC"]
     )
     
     probability_threshold = st.slider(
         "機率閾值 (搜索後使用)",
-        0.25, 0.65, 0.35, 0.05,
+        0.30, 0.60, 0.45, 0.05,
         key="grid_prob_threshold",
         help="搜索完成後用此閾值評估模型"
     )
@@ -165,8 +162,8 @@ def render_bayesian_training(loader):
         return
     
     st.info("""
-    **貝葉斯優化 (Optuna)**: 智能搜索最佳超參數
-    - 同時優化 XGBoost 參數和 scale_pos_weight
+    **貝葉斯優化**: 智能搜索最佳超參數
+    - 推薦使用 F1 Score 作為優化目標
     - 比網格搜索快很多
     """)
     
@@ -200,13 +197,14 @@ def render_bayesian_training(loader):
     
     optimization_target = st.selectbox(
         "優化目標",
-        ["Recall (召回率)", "F1 Score (平衡)", "Precision (精確率)", "AUC"]
+        ["F1 Score (平衡, 推薦)", "Recall (召回率)", "AUC", "Precision (精確率)"]
     )
     
     probability_threshold = st.slider(
         "機率閾值 (搜索後使用)",
-        0.25, 0.65, 0.35, 0.05,
-        key="bayes_prob_threshold"
+        0.30, 0.60, 0.45, 0.05,
+        key="bayes_prob_threshold",
+        help="建議 0.40-0.50 預防過度優化"
     )
     
     st.info(f"將執行 {n_trials} 次試驗")
@@ -300,14 +298,14 @@ def bayesian_optimize_model(df, label_col, test_size, n_trials, optimization_tar
     
     def objective(trial):
         params = {
-            'max_depth': trial.suggest_int('max_depth', 3, 10),
-            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
-            'n_estimators': trial.suggest_int('n_estimators', 50, 300, step=50),
-            'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
-            'gamma': trial.suggest_float('gamma', 0.0, 0.5),
-            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
-            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
-            'scale_pos_weight': trial.suggest_float('scale_pos_weight', 1.0, 3.0),
+            'max_depth': trial.suggest_int('max_depth', 4, 8),
+            'learning_rate': trial.suggest_float('learning_rate', 0.03, 0.15),
+            'n_estimators': trial.suggest_int('n_estimators', 100, 250, step=50),
+            'min_child_weight': trial.suggest_int('min_child_weight', 1, 5),
+            'gamma': trial.suggest_float('gamma', 0.0, 0.3),
+            'subsample': trial.suggest_float('subsample', 0.7, 0.9),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.7, 0.9),
+            'scale_pos_weight': trial.suggest_float('scale_pos_weight', 1.2, 2.0),
             'objective': 'binary:logistic', 'eval_metric': 'auc', 'random_state': 42
         }
         model = xgb.XGBClassifier(**params)
@@ -329,9 +327,9 @@ def get_feature_cols():
     return ['bb_position', 'dist_to_upper_pct', 'dist_to_lower_pct', 'bb_width_pct', 'bb_width_ratio', 'volatility_ratio', 'rsi', 'volume_ratio', 'body_size_pct', 'upper_wick_pct', 'lower_wick_pct', 'touch_count_5', 'avg_historical_volatility', 'volatility_threshold']
 
 def get_scoring_metric(optimization_target):
-    if optimization_target == "F1 Score (平衡)": return 'f1'
-    elif optimization_target == "Recall (召回率)": return 'recall'
-    elif optimization_target == "Precision (精確率)": return 'precision'
+    if "F1" in optimization_target: return 'f1'
+    elif "Recall" in optimization_target: return 'recall'
+    elif "Precision" in optimization_target: return 'precision'
     else: return 'roc_auc'
 
 def calculate_metrics(y_test, y_pred, y_pred_proba, cm):
@@ -345,13 +343,11 @@ def display_search_results(upper_best, lower_best, title):
         st.write("**上軌最佳參數**")
         st.json(upper_best['best_params'])
         st.metric("CV Score", f"{upper_best['best_score']:.3f}")
-        st.write("**測試集表現**:")
         display_detailed_metrics(upper_best['metrics'])
     with col2:
         st.write("**下軌最佳參數**")
         st.json(lower_best['best_params'])
         st.metric("CV Score", f"{lower_best['best_score']:.3f}")
-        st.write("**測試集表現**:")
         display_detailed_metrics(lower_best['metrics'])
 
 def display_bayesian_results(upper_best, lower_best):
@@ -360,7 +356,6 @@ def display_bayesian_results(upper_best, lower_best):
         st.subheader("上軌最佳參數")
         st.json(upper_best['best_params'])
         st.metric("Best Score", f"{upper_best['best_score']:.3f}")
-        st.write("**測試集表現**:")
         display_detailed_metrics(upper_best['metrics'])
         with st.expander("優化歷史"):
             fig = go.Figure()
@@ -371,7 +366,6 @@ def display_bayesian_results(upper_best, lower_best):
         st.subheader("下軌最佳參數")
         st.json(lower_best['best_params'])
         st.metric("Best Score", f"{lower_best['best_score']:.3f}")
-        st.write("**測試集表現**:")
         display_detailed_metrics(lower_best['metrics'])
         with st.expander("優化歷史"):
             fig = go.Figure()
@@ -379,7 +373,7 @@ def display_bayesian_results(upper_best, lower_best):
             fig.update_layout(title="優化進度", xaxis_title="Trial", yaxis_title="Score")
             st.plotly_chart(fig, use_container_width=True)
 
-# 保留原有函數的簡化版本
+# 保留原有函數
 def generate_labels(df, bb_period, bb_std, lookback_period, volatility_multiplier):
     df['bb_mid'] = df['close'].rolling(window=bb_period).mean()
     df['bb_std'] = df['close'].rolling(window=bb_period).std()
