@@ -10,22 +10,30 @@ class BBReversalDetector:
     
     定義有效觸碰反轉:
     1. 價格觸碰或突破上軌/下軌
-    2. 隨後N根K線內出現反向運動
-    3. 反向運動幅度達到閾值
+    2. 過濾走勢中的觸碰 (假突破)
+    3. 隨後N根K線內出現有效反向運動
+    4. 反向幅度達到閾值
+    5. 價格確實回到BB中軌附近 (確認反轉)
     """
     
     def __init__(self, 
                  bb_period: int = 20,
                  bb_std: float = 2.0,
                  touch_threshold: float = 0.001,  # 觸碰閾值 0.1%
-                 reversal_confirm_candles: int = 3,  # 確認反轉的K線數
-                 min_reversal_pct: float = 0.003):   # 最小反轉幅度 0.3%
+                 reversal_confirm_candles: int = 5,  # 確認反轉的K線數
+                 min_reversal_pct: float = 0.005,  # 最小反轉幅度 0.5%
+                 trend_filter_enabled: bool = True,  # 啟用走勢過濾
+                 trend_lookback: int = 10,  # 走勢判斷周期
+                 require_middle_return: bool = True):  # 要求回到中軌
         
         self.bb_period = bb_period
         self.bb_std = bb_std
         self.touch_threshold = touch_threshold
         self.reversal_confirm_candles = reversal_confirm_candles
         self.min_reversal_pct = min_reversal_pct
+        self.trend_filter_enabled = trend_filter_enabled
+        self.trend_lookback = trend_lookback
+        self.require_middle_return = require_middle_return
     
     def calculate_bb(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
@@ -41,7 +49,38 @@ class BBReversalDetector:
         df['bb_lower'] = bb.bollinger_lband()
         df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
         
+        # 計算價格在BB中的位置 (0-1, 0.5表示中軌)
+        df['bb_position'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'])
+        
         return df
+    
+    def detect_trend(self, df: pd.DataFrame, idx: int) -> str:
+        """
+        檢測當前走勢
+        
+        返回: 'uptrend', 'downtrend', 'sideways'
+        """
+        if idx < self.trend_lookback:
+            return 'sideways'
+        
+        # 取前 N 根K線的收盤價
+        lookback_slice = df.iloc[idx-self.trend_lookback:idx]
+        closes = lookback_slice['close'].values
+        
+        # 簡單線性回歸判斷走勢
+        x = np.arange(len(closes))
+        slope = np.polyfit(x, closes, 1)[0]
+        
+        # 標準化斜率 (relative to price)
+        normalized_slope = slope / closes.mean()
+        
+        # 走勢判斷閾值
+        if normalized_slope > 0.002:  # 上漨超過0.2%
+            return 'uptrend'
+        elif normalized_slope < -0.002:  # 下跌超過0.2%
+            return 'downtrend'
+        else:
+            return 'sideways'
     
     def detect_touch_points(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -61,57 +100,101 @@ class BBReversalDetector:
         df['break_upper'] = df['close'] > df['bb_upper']
         df['break_lower'] = df['close'] < df['bb_lower']
         
+        # 檢測走勢
+        if self.trend_filter_enabled:
+            df['trend'] = [self.detect_trend(df, i) for i in range(len(df))]
+        else:
+            df['trend'] = 'sideways'
+        
         return df
     
     def check_reversal(self, df: pd.DataFrame, idx: int, touch_type: str) -> dict:
         """
-        檢查在idx位置觸碰後是否發生反轉
+        檢查在idx位置觸碰後是否發生有效反轉
         
         touch_type: 'upper' 或 'lower'
         """
         if idx >= len(df) - self.reversal_confirm_candles:
-            return {'is_reversal': False}
+            return {'is_reversal': False, 'reason': 'not_enough_data'}
         
         touch_price = df.iloc[idx]['close']
+        trend = df.iloc[idx]['trend']
+        bb_middle = df.iloc[idx]['bb_middle']
+        
+        # 走勢過濾: 過濾走勢中的觸碰
+        if self.trend_filter_enabled:
+            if touch_type == 'upper' and trend == 'uptrend':
+                return {'is_reversal': False, 'reason': 'in_uptrend'}
+            if touch_type == 'lower' and trend == 'downtrend':
+                return {'is_reversal': False, 'reason': 'in_downtrend'}
         
         # 檢查後續N根K線
         future_slice = df.iloc[idx+1:idx+1+self.reversal_confirm_candles]
         
         if touch_type == 'upper':
             # 觸碰上軌後,應該向下反轉
-            # 找最低點
             min_price = future_slice['low'].min()
             reversal_pct = (touch_price - min_price) / touch_price
             
-            # 檢查是否有效反轉
+            # 檢查是否回到中軌附近
+            returned_to_middle = False
+            if self.require_middle_return:
+                # 檢查是否有任何K線收盤價低於BB中軌的1.5倍標準差
+                upper_middle_threshold = bb_middle + (df.iloc[idx]['bb_upper'] - bb_middle) * 0.3
+                returned_to_middle = (future_slice['close'] < upper_middle_threshold).any()
+                
+                if not returned_to_middle:
+                    return {'is_reversal': False, 'reason': 'no_return_to_middle'}
+            
+            # 檢查反轉是否有效
             if reversal_pct >= self.min_reversal_pct:
+                # 確認不是繼續上漨 (檢查最高點不應太高)
+                max_price = future_slice['high'].max()
+                if max_price > touch_price * 1.005:  # 如果繼續上漨超過0.5%
+                    return {'is_reversal': False, 'reason': 'continued_uptrend'}
+                
                 return {
                     'is_reversal': True,
                     'reversal_type': 'down',
                     'reversal_pct': reversal_pct,
                     'touch_price': touch_price,
                     'target_price': min_price,
-                    'reversal_candles': len(future_slice[future_slice['low'] == min_price])
+                    'reversal_candles': len(future_slice[future_slice['low'] == min_price]),
+                    'returned_to_middle': returned_to_middle
                 }
         
         elif touch_type == 'lower':
             # 觸碰下軌後,應該向上反轉
-            # 找最高點
             max_price = future_slice['high'].max()
             reversal_pct = (max_price - touch_price) / touch_price
             
-            # 檢查是否有效反轉
+            # 檢查是否回到中軌附近
+            returned_to_middle = False
+            if self.require_middle_return:
+                lower_middle_threshold = bb_middle - (bb_middle - df.iloc[idx]['bb_lower']) * 0.3
+                returned_to_middle = (future_slice['close'] > lower_middle_threshold).any()
+                
+                if not returned_to_middle:
+                    return {'is_reversal': False, 'reason': 'no_return_to_middle'}
+            
+            # 檢查反轉是否有效
             if reversal_pct >= self.min_reversal_pct:
+                # 確認不是繼續下跌
+                min_price = future_slice['low'].min()
+                if min_price < touch_price * 0.995:  # 如果繼續下跌超過0.5%
+                    return {'is_reversal': False, 'reason': 'continued_downtrend'}
+                
                 return {
                     'is_reversal': True,
                     'reversal_type': 'up',
                     'reversal_pct': reversal_pct,
                     'touch_price': touch_price,
                     'target_price': max_price,
-                    'reversal_candles': len(future_slice[future_slice['high'] == max_price])
+                    'reversal_candles': len(future_slice[future_slice['high'] == max_price]),
+                    'returned_to_middle': returned_to_middle
                 }
         
-        return {'is_reversal': False}
+        return {'is_reversal': False, 'reason': 'insufficient_reversal'}
     
     def detect_reversals(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -124,8 +207,10 @@ class BBReversalDetector:
         df['reversal_point'] = ''
         df['reversal_valid'] = False
         df['reversal_pct'] = 0.0
+        df['reversal_reason'] = ''
         
         reversals = []
+        rejected_touches = []
         
         for idx in range(len(df) - self.reversal_confirm_candles):
             row = df.iloc[idx]
@@ -143,6 +228,13 @@ class BBReversalDetector:
                         'type': 'upper',
                         **reversal_info
                     })
+                else:
+                    rejected_touches.append({
+                        'index': idx,
+                        'time': row.get('open_time', idx),
+                        'type': 'upper',
+                        'reason': reversal_info.get('reason', 'unknown')
+                    })
             
             # 檢查下軌觸碰
             if row['touch_lower'] or row['break_lower']:
@@ -157,8 +249,16 @@ class BBReversalDetector:
                         'type': 'lower',
                         **reversal_info
                     })
+                else:
+                    rejected_touches.append({
+                        'index': idx,
+                        'time': row.get('open_time', idx),
+                        'type': 'lower',
+                        'reason': reversal_info.get('reason', 'unknown')
+                    })
         
         self.reversals = reversals
+        self.rejected_touches = rejected_touches
         return df
     
     def plot_reversals(self, df: pd.DataFrame, n_candles: int = 200, title: str = 'BB反轉點檢測'):
@@ -169,11 +269,11 @@ class BBReversalDetector:
         df_plot = df.tail(n_candles).copy()
         
         fig = make_subplots(
-            rows=2, cols=1,
+            rows=3, cols=1,
             shared_xaxes=True,
             vertical_spacing=0.03,
-            row_heights=[0.7, 0.3],
-            subplot_titles=(title, 'BB寬度')
+            row_heights=[0.6, 0.2, 0.2],
+            subplot_titles=(title, 'BB寬度', 'BB位置')
         )
         
         # K線圖
@@ -230,7 +330,7 @@ class BBReversalDetector:
             fig.add_trace(
                 go.Scatter(
                     x=upper_reversals.index,
-                    y=upper_reversals['high'] * 1.002,  # 稍微往上偏移
+                    y=upper_reversals['high'] * 1.002,
                     mode='markers',
                     name='上軌反轉',
                     marker=dict(
@@ -251,7 +351,7 @@ class BBReversalDetector:
             fig.add_trace(
                 go.Scatter(
                     x=lower_reversals.index,
-                    y=lower_reversals['low'] * 0.998,  # 稍微往下偏移
+                    y=lower_reversals['low'] * 0.998,
                     mode='markers',
                     name='下軌反轉',
                     marker=dict(
@@ -277,12 +377,27 @@ class BBReversalDetector:
             row=2, col=1
         )
         
-        fig.update_xaxes(title_text='時間', row=2, col=1)
-        fig.update_yaxes(title_text='價格', row=1, col=1)
-        fig.update_yaxes(title_text='BB寬度 (%)', row=2, col=1)
+        # BB位置 (0-1)
+        fig.add_trace(
+            go.Scatter(
+                x=df_plot.index,
+                y=df_plot['bb_position'],
+                name='BB位置',
+                line=dict(color='orange', width=1)
+            ),
+            row=3, col=1
+        )
+        
+        # 添加中線
+        fig.add_hline(y=0.5, line_dash="dash", line_color="gray", opacity=0.5, row=3, col=1)
+        
+        fig.update_xaxes(title_text="時間", row=3, col=1)
+        fig.update_yaxes(title_text="價格", row=1, col=1)
+        fig.update_yaxes(title_text="BB寬度 (%)", row=2, col=1)
+        fig.update_yaxes(title_text="BB位置", row=3, col=1)
         
         fig.update_layout(
-            height=800,
+            height=900,
             showlegend=True,
             hovermode='x unified',
             xaxis_rangeslider_visible=False
@@ -300,6 +415,12 @@ class BBReversalDetector:
         upper_reversals = [r for r in self.reversals if r['type'] == 'upper']
         lower_reversals = [r for r in self.reversals if r['type'] == 'lower']
         
+        # 統計拒絕原因
+        rejection_reasons = {}
+        for touch in self.rejected_touches:
+            reason = touch['reason']
+            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+        
         stats = {
             'total_reversals': len(self.reversals),
             'upper_reversals': len(upper_reversals),
@@ -307,6 +428,8 @@ class BBReversalDetector:
             'avg_reversal_pct': np.mean([r['reversal_pct'] for r in self.reversals]) if self.reversals else 0,
             'avg_upper_reversal_pct': np.mean([r['reversal_pct'] for r in upper_reversals]) if upper_reversals else 0,
             'avg_lower_reversal_pct': np.mean([r['reversal_pct'] for r in lower_reversals]) if lower_reversals else 0,
+            'total_rejected': len(self.rejected_touches),
+            'rejection_reasons': rejection_reasons
         }
         
         # 計算觸碰成功率
@@ -320,37 +443,5 @@ class BBReversalDetector:
 
 
 if __name__ == '__main__':
-    print("BB反轉點檢測器測試")
+    print("BB反轉點檢測器測試 - 增強版")
     print("="*60)
-    
-    # 測試數據
-    dates = pd.date_range('2024-01-01', periods=500, freq='15min')
-    np.random.seed(42)
-    
-    base_price = 50000
-    prices = base_price + np.random.randn(500).cumsum() * 100
-    
-    df = pd.DataFrame({
-        'open_time': dates,
-        'open': prices,
-        'high': prices + np.random.rand(500) * 100,
-        'low': prices - np.random.rand(500) * 100,
-        'close': prices + np.random.randn(500) * 50,
-        'volume': np.random.randint(1000, 5000, 500)
-    })
-    
-    detector = BBReversalDetector(
-        bb_period=20,
-        bb_std=2.0,
-        touch_threshold=0.001,
-        reversal_confirm_candles=3,
-        min_reversal_pct=0.003
-    )
-    
-    df_result = detector.detect_reversals(df)
-    
-    stats = detector.get_statistics(df_result)
-    print(f"總反轉點: {stats['total_reversals']}")
-    print(f"上軌反轉: {stats['upper_reversals']} (成功率: {stats['upper_success_rate']:.1f}%)")
-    print(f"下軌反轉: {stats['lower_reversals']} (成功率: {stats['lower_success_rate']:.1f}%)")
-    print(f"平均反轉幅度: {stats['avg_reversal_pct']:.2%}")
