@@ -2,43 +2,68 @@ import streamlit as st
 from data.binance_loader import BinanceDataLoader
 from data.huggingface_loader import HuggingFaceKlineLoader
 from tabs.tab_strategy_a import render_strategy_a_tab
+from tabs.tab_strategy_b import render_strategy_b_tab
 
 st.set_page_config(
-    page_title="策略A: ML驅動交易系統",
+    page_title="多策略交易系統",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("策略 A - ML驅動的區間震盪交易系統")
-st.caption("目標: 無RSI限制的智能交易策略 | Tick級別回測 | 一鍵執行")
+st.title("多策略交易系統")
+st.caption("策略A: SMC | 策略B: SSL Hybrid + AI | Tick級別回測")
 
 st.sidebar.title("系統設定")
 
-st.sidebar.markdown("""
-### 策略A 核心優勢
+# 策略選擇
+strategy_choice = st.sidebar.radio(
+    "選擇策略",
+    ["A: SMC (Smart Money)", "B: SSL Hybrid + AI"],
+    help="A: 機構交易逻輯\nB: SSL指標 + AI過濾"
+)
 
-**1. 智能進場**
-- 無固定RSI限制
-- AI模型動態學習
-- 20+智能特徵
+st.sidebar.markdown("---")
 
-**2. 雙模型架構**
-- 做多模型獨立預測
-- 做空模型獨立預測
-- 更精準的信號
+# 策略說明
+if strategy_choice.startswith("A"):
+    st.sidebar.markdown("""
+### 策略A: SMC v2
 
-**3. Tick級別回測**
-- 模擬真實盤中波動
-- 每根K線100個tick
-- 真實反映止損觸發
+**Smart Money Concepts**:
+- Order Block (機構訂單區)
+- Fair Value Gap (價格缺口)
+- Market Structure (趨勢結構)
+- Liquidity Zones (流動性區)
 
-**4. 自適應止損**
-- 基於ATR動態調整
-- 適應市場波動
-- 更好的風險控制
+**改進**:
+- 簡化進場条件
+- 動態ATR止損
+- 3:1風報比
+- 只做趨勢交易
 
 ---
-""")
+    """)
+else:
+    st.sidebar.markdown("""
+### 策略B: SSL Hybrid + AI
+
+**SSL指標系統**:
+- Baseline: 趨勢方向
+- SSL1/2: 主確認信號
+- Exit: 出場信號
+
+**AI過濾**:
+- XGBoost分類器
+- 過濾震盪假信號
+- 只保留高品質信號
+
+**優勢**:
+- 結合經典指標
+- AI智能過濾
+- 適合趨勢市場
+
+---
+    """)
 
 data_source = st.sidebar.radio(
     "資料源",
@@ -57,24 +82,24 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("""
 ### 使用流程
 
-1. **選擇幣種** - 選擇要交易的幣種
-2. **設定參數** - 調整訓練/交易參數
-3. **一鍵執行** - 點擊按鈕自動完成
-4. **查看結果** - 分析績效指標
+1. **選擇策略** - A或B
+2. **選擇幣種** - 要交易的幣種
+3. **調整參數** - 根據喜好
+4. **執行回測** - 點擊按鈕
+5. **查看結果** - 分析績效
 
-**一鍵執行內容**:
-- [+] 載入資料
-- [+] 訓練ML模型
-- [+] 生成交易信號
-- [+] Tick級別回測
-- [+] 顯示結果
+**自動完成**:
+- 載入數據
+- 生成信號
+- Tick級別回測
+- 顯示結果
 """)
 
 st.sidebar.markdown("---")
 
 # symbol_selector helper function
 def symbol_selector(key_prefix: str, multi: bool = False, default_symbols: list = None):
-    """Helper function for symbol selection"""
+    """幫助函數: 幣種選擇"""
     if isinstance(loader, HuggingFaceKlineLoader):
         symbol_groups = HuggingFaceKlineLoader.get_symbol_groups()
         
@@ -159,20 +184,23 @@ def symbol_selector(key_prefix: str, multi: bool = False, default_symbols: list 
                 key=f"{key_prefix}_binance_single"
             ).strip().upper()]
 
-# Main content
-render_strategy_a_tab(loader, symbol_selector)
+# 渲染策略
+if strategy_choice.startswith("A"):
+    render_strategy_a_tab(loader, symbol_selector)
+else:
+    render_strategy_b_tab(loader, symbol_selector)
 
 st.sidebar.markdown("---")
 st.sidebar.info("""
 ### 預期表現
 
-**相比傳統策略**:
-- 交易次數: +200%
-- 報酬率: +300%
-- 回測準確度: +50%
-
-**典型結果** (3x槓桿):
-- 勝率: 55-65%
-- 報酬率: 12-20%
+**策略A (SMC)**:
+- 勝率: 45-55%
 - 盈虧比: 1.5-2.5
+- 適合: 趨勢市場
+
+**策略B (SSL+AI)**:
+- 勝率: 50-60%
+- 盈虧比: 1.5-2.0
+- 適合: 所有市況
 """)
