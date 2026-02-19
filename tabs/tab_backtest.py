@@ -27,12 +27,32 @@ def render_backtest_tab(loader):
     if not model_file:
         return
     
-    model_package = joblib.load(os.path.join('models/saved', model_file))
-    st.success(f"已載入模型: {model_file}")
-    
-    # 顯示模型參數
-    with st.expander("模型參數"):
-        st.json(model_package['params'])
+    try:
+        model_package = joblib.load(os.path.join('models/saved', model_file))
+        
+        # 檢查模型格式
+        if not isinstance(model_package, dict):
+            st.error("模型格式錯誤! 請重新訓練並保存模型")
+            return
+        
+        if 'upper_model' not in model_package or 'lower_model' not in model_package:
+            st.error("模型檔案不完整! 請重新訓練")
+            return
+        
+        if 'params' not in model_package:
+            st.error("模型缺少參數資訊! 請重新訓練")
+            return
+        
+        st.success(f"已載入模型: {model_file}")
+        
+        # 顯示模型參數
+        with st.expander("模型參數"):
+            st.json(model_package['params'])
+        
+    except Exception as e:
+        st.error(f"載入模型失敗: {str(e)}")
+        st.warning("請確保使用最新版本訓練的模型")
+        return
     
     # 回測參數
     st.subheader("回測參數")
@@ -130,14 +150,13 @@ def run_backtest(loader, symbol, test_days, model_package,
 def load_backtest_data(loader, symbol, test_days):
     if isinstance(loader, BinanceDataLoader):
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=test_days + 10)  # 多加10天用於特徵計算
+        start_date = end_date - timedelta(days=test_days + 10)
         df = loader.load_historical_data(symbol, '15m', start_date, end_date)
     else:
         df = loader.load_klines(symbol, '15m').tail((test_days + 10) * 96)
     return df
 
 def prepare_backtest_data(df, params):
-    """準備回測資料 - 與訓練時完全一致"""
     bb_period = params['bb_period']
     bb_std = params['bb_std']
     lookback_candles = params.get('lookback_candles', 20)
@@ -152,19 +171,18 @@ def prepare_backtest_data(df, params):
     df['price_range'] = df['high'] - df['low']
     df['historical_volatility'] = df['price_range'].rolling(window=lookback_candles).mean()
     
-    # 觸碰檢測 (使用前一根的 BB)
+    # 觸碰檢測
     df['bb_upper_prev'] = df['bb_upper'].shift(1)
     df['bb_lower_prev'] = df['bb_lower'].shift(1)
     df['touch_upper'] = df['high'] >= df['bb_upper_prev'] * 0.999
     df['touch_lower'] = df['low'] <= df['bb_lower_prev'] * 1.001
     
-    # 特徵 (使用 shift)
+    # 特徵
     df = extract_features_for_backtest(df, bb_period)
     
     return df
 
 def extract_features_for_backtest(df, bb_period):
-    """提取特徵 - 與訓練時完全一致"""
     df['bb_position'] = (
         (df['close'].shift(1) - df['bb_lower'].shift(1)) / 
         (df['bb_upper'].shift(1) - df['bb_lower'].shift(1))
@@ -189,7 +207,6 @@ def extract_features_for_backtest(df, bb_period):
         df['historical_volatility'].shift(1)
     )
     
-    # RSI
     delta = df['close'].diff()
     gain = delta.where(delta > 0, 0).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -197,13 +214,11 @@ def extract_features_for_backtest(df, bb_period):
     df['rsi'] = 100 - (100 / (1 + rs))
     df['rsi'] = df['rsi'].shift(1)
     
-    # 成交量
     df['volume_ratio'] = (
         df['volume'].shift(1) / 
         df['volume'].rolling(window=20).mean().shift(1)
     )
     
-    # K 線形態
     df['body_size_pct'] = (
         abs(df['close'].shift(1) - df['open'].shift(1)) / 
         df['open'].shift(1) * 100
@@ -229,15 +244,6 @@ def extract_features_for_backtest(df, bb_period):
 def backtest_strategy(df, model_package, initial_capital, position_size_pct,
                      execution_mode, stop_loss_pct, take_profit_pct,
                      fee_rate, slippage):
-    """
-    回測策略 - 模擬實際交易流程
-    
-    流程:
-    1. K[T] 開盤: 預測一次
-    2. 檢查 K[T] 是否觸碰
-    3. 觸碰時決定是否交易
-    4. 成交價格根據 execution_mode
-    """
     upper_model = model_package['upper_model']
     lower_model = model_package['lower_model']
     prob_threshold = model_package['params']['probability_threshold']
@@ -250,27 +256,24 @@ def backtest_strategy(df, model_package, initial_capital, position_size_pct,
         'touch_count_5'
     ]
     
-    # 初始化
     capital = initial_capital
     position = None
     trades = []
     equity_curve = []
     
-    # 回測迴圈
     df_clean = df.dropna(subset=feature_cols)
     
     for i in range(len(df_clean)):
         row = df_clean.iloc[i]
         current_time = row.name
         
-        # 1. K[T] 開盤時預測
+        # 1. 預測
         features = row[feature_cols].values.reshape(1, -1)
         upper_prob = upper_model.predict_proba(features)[0, 1]
         lower_prob = lower_model.predict_proba(features)[0, 1]
         
-        # 2. 檢查是否有持倉
+        # 2. 檢查持倉
         if position is not None:
-            # 檢查止損/止盈
             exit_signal, exit_price, exit_reason = check_exit(
                 position, row, stop_loss_pct, take_profit_pct
             )
@@ -294,9 +297,8 @@ def backtest_strategy(df, model_package, initial_capital, position_size_pct,
                 
                 position = None
         
-        # 3. 檢查開倉機會
+        # 3. 檢查開倉
         if position is None:
-            # 上軌觸碰 - 做空
             if row['touch_upper'] and upper_prob >= prob_threshold:
                 entry_price = get_entry_price(
                     row, 'upper', execution_mode, df_clean, i
@@ -309,7 +311,6 @@ def backtest_strategy(df, model_package, initial_capital, position_size_pct,
                         upper_prob
                     )
             
-            # 下軌觸碰 - 做多
             elif row['touch_lower'] and lower_prob >= prob_threshold:
                 entry_price = get_entry_price(
                     row, 'lower', execution_mode, df_clean, i
@@ -359,31 +360,22 @@ def backtest_strategy(df, model_package, initial_capital, position_size_pct,
     }
 
 def get_entry_price(row, direction, execution_mode, df, current_idx):
-    """
-    取得成交價格
-    
-    保守模式: 使用觸碰價格
-    實際模式: 使用下根 K 棒開盤價
-    """
     if '保守' in execution_mode:
-        # 使用觸碰價格
         if direction == 'upper':
-            return row['bb_upper_prev']  # 上軌觸碰價
+            return row['bb_upper_prev']
         else:
-            return row['bb_lower_prev']  # 下軌觸碰價
+            return row['bb_lower_prev']
     else:
-        # 使用下根 K 棒開盤價
         if current_idx + 1 < len(df):
             next_row = df.iloc[current_idx + 1]
             return next_row['open']
         else:
-            return None  # 沒有下根 K 棒
+            return None
 
 def open_position(direction, entry_price, entry_time, capital, position_size_pct,
                  fee_rate, slippage, probability):
     position_value = capital * (position_size_pct / 100)
     
-    # 考慮滑點
     if direction == 'LONG':
         adjusted_price = entry_price * (1 + slippage / 100)
     else:
@@ -406,13 +398,11 @@ def check_exit(position, row, stop_loss_pct, take_profit_pct):
     direction = position['direction']
     
     if direction == 'LONG':
-        # 做多: 止損 = 低於進場價, 止盈 = 高於進場價
         if row['low'] <= entry_price * (1 - stop_loss_pct / 100):
             return True, entry_price * (1 - stop_loss_pct / 100), 'STOP_LOSS'
         elif row['high'] >= entry_price * (1 + take_profit_pct / 100):
             return True, entry_price * (1 + take_profit_pct / 100), 'TAKE_PROFIT'
     else:
-        # 做空: 止損 = 高於進場價, 止盈 = 低於進場價
         if row['high'] >= entry_price * (1 + stop_loss_pct / 100):
             return True, entry_price * (1 + stop_loss_pct / 100), 'STOP_LOSS'
         elif row['low'] <= entry_price * (1 - take_profit_pct / 100):
@@ -425,19 +415,16 @@ def close_position(position, exit_price, fee_rate, slippage):
     quantity = position['quantity']
     direction = position['direction']
     
-    # 考慮滑點
     if direction == 'LONG':
         adjusted_exit = exit_price * (1 - slippage / 100)
     else:
         adjusted_exit = exit_price * (1 + slippage / 100)
     
-    # 計算損益
     if direction == 'LONG':
         pnl = quantity * (adjusted_exit - entry_price)
     else:
         pnl = quantity * (entry_price - adjusted_exit)
     
-    # 扣除手續費
     exit_fee = quantity * adjusted_exit * (fee_rate / 100)
     pnl -= (position['entry_fee'] + exit_fee)
     
@@ -461,7 +448,6 @@ def display_backtest_results(results, df):
     trades_df = results['trades']
     equity_df = results['equity_curve']
     
-    # 總體統計
     st.subheader("總體統計")
     col1, col2, col3, col4 = st.columns(4)
     
@@ -494,7 +480,6 @@ def display_backtest_results(results, df):
         with col4:
             st.metric("平均虧損", f"${avg_loss:.2f}")
         
-        # 權益曲線
         st.subheader("權益曲線")
         fig = go.Figure()
         fig.add_trace(go.Scatter(
@@ -506,7 +491,6 @@ def display_backtest_results(results, df):
         fig.update_layout(height=400)
         st.plotly_chart(fig, use_container_width=True)
         
-        # 交易記錄
         st.subheader("交易記錄")
         st.dataframe(trades_df, use_container_width=True)
     else:
