@@ -1,4 +1,4 @@
-"""策略A: ML + BB均值回歸 - 高頻版"""
+"""策略A: ML + BB混合止盈 - 穩健版"""
 
 import streamlit as st
 import pandas as pd
@@ -12,15 +12,15 @@ from data.binance_loader import BinanceDataLoader
 
 
 def render_strategy_a_tab(loader, symbol_selector):
-    st.header("策略 A: BB均值回歸 (高頻版)")
+    st.header("策略 A: 混合止盈策略")
     
     st.info("""
-    **策略原理**:
+    **混合止盈策略**:
     
-    進場: BB上/下軌附近 + ML確認 + 盤整市場
-    止盈: BB中軌 (均值回歸)
-    止損: 1.3 ATR (緊止損)
-    優勢: 高頻率 + 強制盈虧比 > 1.4
+    進場: BB邊緣 + ML高機率 + 盤整
+    止盈: BB中軌 OR 2.5x風險 (取較遠者)
+    止損: 1.2 ATR
+    優勢: 確保高盈虧比 + 動態仓位
     """)
     
     st.markdown("---")
@@ -31,38 +31,45 @@ def render_strategy_a_tab(loader, symbol_selector):
         st.markdown("**數據**")
         symbol_list = symbol_selector("strategy_a", multi=False)
         symbol = symbol_list[0]
-        train_days = st.slider("訓練天數", 60, 180, 90, key="train")
-        test_days = st.slider("回測天數", 7, 60, 30, key="test")
+        train_days = st.slider("訓練", 60, 180, 90, key="train")
+        test_days = st.slider("回測", 7, 60, 30, key="test")
     
     with col2:
-        st.markdown("**交易設定**")
-        capital = st.number_input("資金 (USDT)", 1000.0, 100000.0, 10000.0, 1000.0, key="cap")
-        leverage = st.slider("槓桿倍數", 3, 12, 8, key="lev", help="高頻+高槓桿")
-        threshold = st.slider("信心度閾值", 0.25, 0.65, 0.38, 0.02, key="th", help="降低=更多交易")
+        st.markdown("**交易**")
+        capital = st.number_input("資金", 1000.0, 100000.0, 10000.0, 1000.0, key="cap")
+        leverage = st.slider("槓桿", 3, 10, 6, key="lev")
+        threshold = st.slider("信心度", 0.3, 0.7, 0.42, 0.02, key="th")
     
     with col3:
-        st.markdown("**技術參數**")
-        bb_period = st.number_input("BB週期", 10, 50, 20, key="bb")
-        adx_threshold = st.slider("ADX閾值", 20, 40, 30, key="adx", help="提高=更寬鬆盤整")
-        sl_atr = st.slider("止損 ATR", 0.8, 2.0, 1.3, 0.1, key="sl", help="緊止損")
+        st.markdown("**參數**")
+        bb_period = st.number_input("BB", 10, 50, 20, key="bb")
+        adx_max = st.slider("ADX", 20, 40, 28, key="adx")
+        sl_atr = st.slider("止損", 0.8, 2.0, 1.2, 0.1, key="sl")
     
     with st.expander("進階設定"):
-        bb_entry_pct = st.slider("進場BB範圍%", 0.5, 2.0, 1.5, 0.1, key="bb_pct", 
-                                 help="允許在BB帶這個範圍內進場")
-        min_profit_factor = st.slider("最低盈虧比", 1.2, 2.0, 1.4, 0.1, key="min_pf",
-                                      help="預期盈虧比低於此值放棄交易")
-        min_distance_pct = st.slider("最小到中軌距離%", 0.3, 1.5, 0.5, 0.1, key="min_dist",
-                                     help="確保有足夠獲利空間")
+        col_a1, col_a2 = st.columns(2)
+        with col_a1:
+            st.markdown("**止盈設定**")
+            tp_multiplier = st.slider("止盈倍數", 1.5, 4.0, 2.5, 0.1, key="tp_mult",
+                                     help="止盈 = 止損 * 此倍數")
+            use_bb_mid = st.checkbox("使用BB中軌", value=True, key="use_mid",
+                                    help="如果BB中軌更遠則使用")
+        
+        with col_a2:
+            st.markdown("**仓位管理**")
+            use_position_sizing = st.checkbox("動態仓位", value=True, key="pos_size",
+                                             help="根據機率調整仓位")
+            base_size = st.slider("基礎仓位%", 30, 100, 60, 10, key="base") if use_position_sizing else 100
+            max_size = st.slider("最大仓位%", 50, 100, 100, 10, key="max") if use_position_sizing else 100
     
     st.markdown("---")
     
-    if st.button("開始執行", type="primary", use_container_width=True):
+    if st.button("執行回測", type="primary", use_container_width=True):
         prog = st.progress(0)
         stat = st.empty()
         
         try:
-            # Load data
-            stat.text("1/4: 載入數據...")
+            stat.text("1/4: 載入...")
             prog.progress(10)
             
             if isinstance(loader, BinanceDataLoader):
@@ -77,29 +84,19 @@ def render_strategy_a_tab(loader, symbol_selector):
             df_train = df_all.iloc[:split].copy()
             df_test = df_all.iloc[split:].copy()
             
-            st.success(f"載入: {len(df_train)}+{len(df_test)}根")
+            st.success(f"{len(df_train)}+{len(df_test)}")
             prog.progress(20)
             
-            # Train
-            stat.text("2/4: 訓練ML模型...")
-            strategy = MLRangeBoundStrategy(
-                bb_period=bb_period,
-                bb_std=2.0,
-                adx_period=14,
-                adx_threshold=adx_threshold
-            )
+            stat.text("2/4: 訓練...")
+            strategy = MLRangeBoundStrategy(bb_period=bb_period, bb_std=2.0, adx_period=14, adx_threshold=adx_max)
             stats = strategy.train(df_train, forward_bars=10)
-            
-            st.success(f"訓練完成: 做多{stats['long_samples']} 做空{stats['short_samples']}")
+            st.success(f"L:{stats['long_samples']} S:{stats['short_samples']}")
             prog.progress(50)
             
-            # Generate signals
-            stat.text("3/4: 生成交易信號...")
+            stat.text("3/4: 信號...")
             df_test = strategy.add_indicators(df_test)
             
             signals = []
-            rejected_low_pf = 0
-            rejected_low_dist = 0
             
             for i in range(50, len(df_test)):
                 lp, sp = strategy.predict(df_test, i)
@@ -108,158 +105,157 @@ def render_strategy_a_tab(loader, symbol_selector):
                 sig = 0
                 sl = np.nan
                 tp = np.nan
+                pos_size = 1.0
                 
-                # 更寬鬆的進場範圍
-                near_lower = r['close'] <= r['bb_lower'] * (1 + bb_entry_pct / 100)
-                near_upper = r['close'] >= r['bb_upper'] * (1 - bb_entry_pct / 100)
-                ranging = r['adx'] < adx_threshold
-                
-                # 到中軌距離
-                dist_to_mid_pct = abs(r['close'] - r['bb_mid']) / r['close'] * 100
+                near_lower = r['close'] <= r['bb_lower'] * 1.015
+                near_upper = r['close'] >= r['bb_upper'] * 0.985
+                ranging = r['adx'] < adx_max
                 
                 if lp > threshold and near_lower and ranging:
-                    if dist_to_mid_pct > min_distance_pct:
-                        entry = r['close']
-                        atr = r['atr']
-                        sl = entry - sl_atr * atr
-                        tp = r['bb_mid']
-                        
-                        risk = sl_atr * atr
-                        reward = tp - entry
-                        pf = reward / risk
-                        
-                        if pf >= min_profit_factor:
-                            sig = 1
-                        else:
-                            rejected_low_pf += 1
+                    sig = 1
+                    entry = r['close']
+                    atr = r['atr']
+                    
+                    # 止損
+                    sl = entry - sl_atr * atr
+                    risk = sl_atr * atr
+                    
+                    # 止盈: 取較遠者
+                    tp_fixed = entry + risk * tp_multiplier
+                    tp_bb = r['bb_mid']
+                    
+                    if use_bb_mid:
+                        tp = max(tp_fixed, tp_bb)  # 取較遠者
                     else:
-                        rejected_low_dist += 1
+                        tp = tp_fixed
+                    
+                    # 確認盈虧比
+                    actual_reward = tp - entry
+                    actual_pf = actual_reward / risk
+                    
+                    if actual_pf < 1.8:  # 強制最低 1.8
+                        sig = 0
+                    
+                    # 動態仓位
+                    if sig != 0 and use_position_sizing:
+                        proba_norm = (lp - threshold) / (1.0 - threshold)
+                        pos_pct = base_size + (max_size - base_size) * proba_norm
+                        pos_size = pos_pct / 100.0
                 
                 elif sp > threshold and near_upper and ranging:
-                    if dist_to_mid_pct > min_distance_pct:
-                        entry = r['close']
-                        atr = r['atr']
-                        sl = entry + sl_atr * atr
-                        tp = r['bb_mid']
-                        
-                        risk = sl_atr * atr
-                        reward = entry - tp
-                        pf = reward / risk
-                        
-                        if pf >= min_profit_factor:
-                            sig = -1
-                        else:
-                            rejected_low_pf += 1
+                    sig = -1
+                    entry = r['close']
+                    atr = r['atr']
+                    
+                    sl = entry + sl_atr * atr
+                    risk = sl_atr * atr
+                    
+                    tp_fixed = entry - risk * tp_multiplier
+                    tp_bb = r['bb_mid']
+                    
+                    if use_bb_mid:
+                        tp = min(tp_fixed, tp_bb)
                     else:
-                        rejected_low_dist += 1
+                        tp = tp_fixed
+                    
+                    actual_reward = entry - tp
+                    actual_pf = actual_reward / risk
+                    
+                    if actual_pf < 1.8:
+                        sig = 0
+                    
+                    if sig != 0 and use_position_sizing:
+                        proba_norm = (sp - threshold) / (1.0 - threshold)
+                        pos_pct = base_size + (max_size - base_size) * proba_norm
+                        pos_size = pos_pct / 100.0
                 
                 signals.append({
                     'signal': sig,
                     'stop_loss': sl,
                     'take_profit': tp,
+                    'position_size': pos_size,
                     'long_proba': lp,
                     'short_proba': sp
                 })
             
-            signals = [{'signal': 0, 'stop_loss': np.nan, 'take_profit': np.nan, 'long_proba': 0, 'short_proba': 0}] * 50 + signals
+            signals = [{'signal': 0, 'stop_loss': np.nan, 'take_profit': np.nan, 'position_size': 1.0, 'long_proba': 0, 'short_proba': 0}] * 50 + signals
             df_sig = pd.DataFrame(signals)
             
             cnt = (df_sig['signal'] != 0).sum()
-            
             if cnt == 0:
-                st.warning("未生成任何交易信號")
-                st.info(f"""
-                **被拒絕的交易**:
-                - 盈虧比不足: {rejected_low_pf}
-                - 距離不足: {rejected_low_dist}
-                
-                建議: 降低信心度到 0.35 或 降低最低盈虧比到 1.3
-                """)
+                st.warning("無信號 - 降低信心度到 0.35")
                 return
             
-            st.success(f"生成 {cnt} 個信號 | 拒絕: PF={rejected_low_pf} Dist={rejected_low_dist}")
+            avg_pos = df_sig[df_sig['signal'] != 0]['position_size'].mean() * 100
+            st.success(f"{cnt}信號 | 平均仓位:{avg_pos:.0f}%")
             prog.progress(70)
             
-            # Backtest
-            stat.text("4/4: 執行Tick級別回測...")
+            stat.text("4/4: 回測...")
             engine = TickLevelBacktestEngine(capital, leverage, 0.0006, 0.02, 100)
             metrics = engine.run_backtest(df_test, df_sig)
             
             prog.progress(100)
-            stat.text("完成!")
+            stat.text("完成")
             
-            # Results
             st.markdown("---")
-            st.subheader("回測結果")
+            st.subheader("結果")
             
             c1, c2, c3, c4 = st.columns(4)
             
             pnl = metrics['final_equity'] - capital
-            c1.metric("最終權益", f"${metrics['final_equity']:,.0f}", f"{pnl:+,.0f}")
-            c1.metric("交易次數", metrics['total_trades'])
+            c1.metric("權益", f"${metrics['final_equity']:,.0f}", f"{pnl:+,.0f}")
+            c1.metric("交易", metrics['total_trades'])
             
             ret = metrics['total_return_pct']
             monthly = ret * 30 / test_days
-            c2.metric("總報酬率", f"{ret:.1f}%")
-            c2.metric("月化報酬", f"{monthly:.1f}%", delta=f"vs 100%")
+            c2.metric("總報酬", f"{ret:.1f}%")
+            c2.metric("月化", f"{monthly:.1f}%")
             
             c3.metric("勝率", f"{metrics['win_rate']:.1f}%")
-            c3.metric("盈虧比", f"{metrics['profit_factor']:.2f}")
+            pf = metrics['profit_factor']
+            c3.metric("盈虧比", f"{pf:.2f}", delta="OK" if pf > 1.5 else "LOW")
             
-            c4.metric("最大回撤", f"{metrics['max_drawdown_pct']:.1f}%")
-            c4.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
+            c4.metric("回撤", f"{metrics['max_drawdown_pct']:.1f}%")
+            c4.metric("夏普", f"{metrics['sharpe_ratio']:.2f}")
             
-            # Evaluation
             st.markdown("---")
             
-            if monthly >= 90 and metrics['profit_factor'] >= 1.4:
-                st.success("[目標達成] 月化報酬>90% & 盈虧比>1.4")
+            if monthly >= 80 and pf >= 1.5 and metrics['max_drawdown_pct'] > -35:
+                st.success("[優] 月化>80% 盈虧比>1.5 回撤<35%")
                 st.balloons()
-            elif monthly >= 60:
-                st.success("[良好] 月化報酬>60%")
-            elif monthly >= 30:
-                st.warning("[一般] 月化報酬>30%")
+            elif monthly >= 50:
+                st.success("[良] 月化>50%")
+            elif monthly >= 25:
+                st.warning("[中] 月化>25%")
             else:
-                st.info("[需優化] 月化<30%")
+                st.error("[弱]")
             
-            if metrics['total_trades'] < 50:
-                st.warning(f"交易次數偏少({metrics['total_trades']}), 建議降低信心度或放寬進場範圍")
-            
-            # Charts
             st.markdown("---")
             st.subheader("權益曲線")
             fig = engine.plot_equity_curve()
             st.plotly_chart(fig, use_container_width=True)
             
-            # Trades
             trades = engine.get_trades_dataframe()
             if not trades.empty:
                 st.markdown("---")
-                st.subheader("交易分析")
+                st.subheader("交易")
                 
                 wins = trades[trades['pnl_usdt'] > 0]
                 losses = trades[trades['pnl_usdt'] < 0]
                 
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("獲利交易", len(wins))
-                c2.metric("虧損交易", len(losses))
-                c3.metric("平均獲利", f"${wins['pnl_usdt'].mean():.2f}" if len(wins) > 0 else "$0")
-                c4.metric("平均虧損", f"${losses['pnl_usdt'].mean():.2f}" if len(losses) > 0 else "$0")
+                c1.metric("獲利", len(wins))
+                c2.metric("虧損", len(losses))
+                c3.metric("平均贏", f"${wins['pnl_usdt'].mean():.2f}" if len(wins) > 0 else "$0")
+                c4.metric("平均輸", f"${losses['pnl_usdt'].mean():.2f}" if len(losses) > 0 else "$0")
                 
-                st.markdown("**最近20筆交易**")
-                disp = trades[['entry_time', 'direction', 'entry_price', 'exit_price', 'pnl_usdt', 'exit_reason']].tail(20)
-                st.dataframe(disp, use_container_width=True)
+                st.dataframe(trades[['entry_time', 'direction', 'entry_price', 'exit_price', 'pnl_usdt', 'exit_reason']].tail(20), use_container_width=True)
                 
                 csv = trades.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "CSV下載",
-                    csv,
-                    f"{symbol}_{datetime.now():%Y%m%d_%H%M}.csv",
-                    "text/csv"
-                )
+                st.download_button("CSV", csv, f"{symbol}_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
             
         except Exception as e:
-            st.error(f"執行錯誤: {str(e)}")
+            st.error(f"錯: {e}")
             import traceback
-            with st.expander("查看詳細錯誤"):
+            with st.expander("詳情"):
                 st.code(traceback.format_exc())
