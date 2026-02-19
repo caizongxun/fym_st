@@ -1,0 +1,124 @@
+//@version=5
+indicator("15m BB-SMC Confluence Oscillator [FTM]", shorttitle="BB-SMC Osc", overlay=false)
+
+// ==========================================
+// 1. INPUTS & CONFIGURATION
+// ==========================================
+grp_bb = "Bollinger Bands Settings"
+bb_len = input.int(20, "Length", group=grp_bb)
+bb_mult = input.float(2.0, "Multiplier", group=grp_bb)
+
+grp_regime = "Volatility Regime"
+lb_period = input.int(100, "Lookback for Percentile", group=grp_regime)
+sqz_thresh = input.int(20, "Squeeze Threshold (%)", group=grp_regime)
+exp_thresh = input.int(80, "Expansion Threshold (%)", group=grp_regime)
+
+grp_smc = "SMC Structure"
+pivot_len = input.int(3, "Pivot Lookback (Left/Right)", group=grp_smc)
+
+// ==========================================
+// 2. CALCULATIONS
+// ==========================================
+
+// --- Component A: Volatility Regime ---
+// Standard BB Calc
+basis = ta.sma(close, bb_len)
+dev = ta.stdev(close, bb_len)
+upper = basis + dev * bb_mult
+lower = basis - dev * bb_mult
+
+// Width & Percentile Rank
+bb_width = (upper - lower) / basis
+
+// Calculate Percentile Rank manually
+count_lower = 0.0
+for i = 1 to lb_period
+    if bb_width[i] < bb_width
+        count_lower += 1.0
+width_percentile = (count_lower / lb_period) * 100
+
+// Define Regime States
+is_squeeze = width_percentile < sqz_thresh
+is_expansion = width_percentile > exp_thresh
+
+// --- Component B: Mean Reversion Pressure (Z-Score) ---
+// Z-Score: How many deviations away from mean is the price?
+z_score = (close - basis) / dev
+
+// --- Component C: SMC Micro-Structure ---
+// Identify Pivot Highs/Lows (Note: These lag by 'pivot_len' bars)
+ph = ta.pivothigh(high, pivot_len, pivot_len)
+pl = ta.pivotlow(low, pivot_len, pivot_len)
+
+// Persist the MOST RECENT valid pivot levels to compare current price against
+var float last_ph = na
+var float last_pl = na
+
+if not na(ph)
+    last_ph := ph
+if not na(pl)
+    last_pl := pl
+
+// --- SIGNAL LOGIC (Trigger Events) ---
+
+// 1. Liquidity Sweeps (Turtle Soup)
+// Price pierces the level but closes inside
+bear_sweep = high > last_ph and close < last_ph and not na(last_ph)
+bull_sweep = low < last_pl and close > last_pl and not na(last_pl)
+
+// 2. Valid BOS (Displacement)
+// Price pierces and closes outside
+bull_bos = close > last_ph and not na(last_ph)
+bear_bos = close < last_pl and not na(last_pl)
+
+// ==========================================
+// 3. PLOTTING & VISUALIZATION
+// ==========================================
+
+// A. Z-Score Histogram (The Base)
+// Color logic: Grey if Squeeze (Noise), Bright if Expansion (Action), Dark if Normal
+z_color = is_squeeze ? color.new(color.gray, 50) : 
+          is_expansion ? (z_score > 0 ? color.new(color.teal, 30) : color.new(color.red, 30)) : 
+          color.new(color.blue, 50)
+
+plot(z_score, "Z-Score Pressure", color=z_color, style=plot.style_columns, linewidth=2)
+
+// B. Overbought/Oversold Zones
+h_line_top = hline(2.0, "Overbought (+2)", color=color.gray, linestyle=hline.style_dotted)
+h_line_bot = hline(-2.0, "Oversold (-2)", color=color.gray, linestyle=hline.style_dotted)
+hline(0, "Mean", color=color.white, linestyle=hline.style_solid)
+
+// Fill background for extreme zones
+fill(h_line_top, hline(3.0), color=color.new(color.red, 90), title="Extreme OB Zone")
+fill(h_line_bot, hline(-3.0), color=color.new(color.green, 90), title="Extreme OS Zone")
+
+// C. Signal Markers (Confluence Events)
+
+// Bullish Reversal Confluence: 
+// 1. Oversold (Z < -1.5) 
+// 2. Bullish Sweep (Stop Run)
+bull_signal = bull_sweep and z_score < -1.5
+plotshape(bull_signal, title="Bull Sweep Reversal", style=shape.triangleup, location=location.bottom, color=color.green, size=size.small, offset=0)
+
+// Bearish Reversal Confluence:
+// 1. Overbought (Z > 1.5)
+// 2. Bearish Sweep (Stop Run)
+bear_signal = bear_sweep and z_score > 1.5
+plotshape(bear_signal, title="Bear Sweep Reversal", style=shape.triangledown, location=location.top, color=color.red, size=size.small, offset=0)
+
+// Trend Continuation (Breakout)
+// 1. Not Overextended yet (Z between -2 and 2)
+// 2. Valid BOS
+// 3. Not in deep squeeze (width > 20)
+bull_cont = bull_bos and z_score < 2.0 and z_score > 0 and not is_squeeze
+bear_cont = bear_bos and z_score > -2.0 and z_score < 0 and not is_squeeze
+
+// Only plot continuation if it's a fresh break (simple filter)
+plotshape(bull_cont and not bull_cont[1], title="Bull BOS", style=shape.circle, location=location.absolute, color=color.lime, size=size.tiny, offset=0, text="BOS", textcolor=color.lime)
+plotshape(bear_cont and not bear_cont[1], title="Bear BOS", style=shape.circle, location=location.absolute, color=color.orange, size=size.tiny, offset=0, text="BOS", textcolor=color.orange)
+
+// ==========================================
+// 4. ALERTS
+// ==========================================
+alertcondition(bull_signal, title="Bullish Reversal Sweep", message="FTM 15m: Bullish Sweep + Oversold Detected")
+alertcondition(bear_signal, title="Bearish Reversal Sweep", message="FTM 15m: Bearish Sweep + Overbought Detected")
