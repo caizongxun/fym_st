@@ -33,38 +33,32 @@ class SMCStrategy:
         """識別市場結構 - 高點/低點"""
         df = df.copy()
         
+        # 初始化
+        df['swing_high'] = 0
+        df['swing_low'] = 0
+        
         # 高點 (Swing High)
-        df['swing_high'] = False
         for i in range(5, len(df)-5):
             if df.iloc[i]['high'] == df.iloc[i-5:i+6]['high'].max():
-                df.at[i, 'swing_high'] = True
+                df.iloc[i, df.columns.get_loc('swing_high')] = 1
         
         # 低點 (Swing Low)
-        df['swing_low'] = False
         for i in range(5, len(df)-5):
             if df.iloc[i]['low'] == df.iloc[i-5:i+6]['low'].min():
-                df.at[i, 'swing_low'] = True
+                df.iloc[i, df.columns.get_loc('swing_low')] = 1
         
-        # 趨勢判斷: Higher Highs & Higher Lows = 上升
-        df['trend'] = 0  # 0=中性, 1=上升, -1=下降
+        # 趨勢判斷
+        df['trend'] = 0
         
-        highs = df[df['swing_high']]['high'].values
-        lows = df[df['swing_low']]['low'].values
+        highs_idx = df[df['swing_high'] == 1].index
+        lows_idx = df[df['swing_low'] == 1].index
         
-        if len(highs) >= 2 and len(lows) >= 2:
-            # 簡化: 比較最近倴5個高低點
-            recent_highs = highs[-5:] if len(highs) >= 5 else highs
-            recent_lows = lows[-5:] if len(lows) >= 5 else lows
+        if len(highs_idx) >= 2 and len(lows_idx) >= 2:
+            recent_highs = df.loc[highs_idx[-5:], 'high'].values if len(highs_idx) >= 5 else df.loc[highs_idx, 'high'].values
+            recent_lows = df.loc[lows_idx[-5:], 'low'].values if len(lows_idx) >= 5 else df.loc[lows_idx, 'low'].values
             
-            if len(recent_highs) >= 2:
-                hh = recent_highs[-1] > recent_highs[-2]
-            else:
-                hh = False
-            
-            if len(recent_lows) >= 2:
-                hl = recent_lows[-1] > recent_lows[-2]
-            else:
-                hl = False
+            hh = recent_highs[-1] > recent_highs[-2] if len(recent_highs) >= 2 else False
+            hl = recent_lows[-1] > recent_lows[-2] if len(recent_lows) >= 2 else False
             
             if hh and hl:
                 df['trend'] = 1  # 上升
@@ -74,59 +68,54 @@ class SMCStrategy:
         return df
     
     def identify_order_blocks(self, df):
-        """識別Order Block - 大量後的K線"""
+        """識別Order Block"""
         df = df.copy()
         
-        df['bullish_ob'] = False
-        df['bearish_ob'] = False
+        df['bullish_ob'] = 0
+        df['bearish_ob'] = 0
         
-        # 看空OB: 大量下跌前K線
         for i in range(10, len(df)-1):
-            # 大量下跌
+            # 看空OB
             big_drop = (df.iloc[i+1]['close'] < df.iloc[i]['close'] * 0.995) and \
                        (df.iloc[i+1]['volume'] > df.iloc[i-10:i+1]['volume'].mean() * 1.5)
             
             if big_drop:
-                df.at[i, 'bearish_ob'] = True
+                df.iloc[i, df.columns.get_loc('bearish_ob')] = 1
         
-        # 看多OB: 大量上漨前K線
         for i in range(10, len(df)-1):
-            # 大量上漨
+            # 看多OB
             big_rise = (df.iloc[i+1]['close'] > df.iloc[i]['close'] * 1.005) and \
                       (df.iloc[i+1]['volume'] > df.iloc[i-10:i+1]['volume'].mean() * 1.5)
             
             if big_rise:
-                df.at[i, 'bullish_ob'] = True
+                df.iloc[i, df.columns.get_loc('bullish_ob')] = 1
         
         return df
     
     def identify_fvg(self, df):
-        """識別Fair Value Gap - 3根K線間的缺口"""
+        """識別Fair Value Gap"""
         df = df.copy()
         
-        df['bullish_fvg'] = False
-        df['bearish_fvg'] = False
+        df['bullish_fvg'] = 0
+        df['bearish_fvg'] = 0
         
         for i in range(2, len(df)):
-            # 看多FVG: K1高 < K3低 (中間有gap)
+            # 看多FVG
             if df.iloc[i-2]['high'] < df.iloc[i]['low']:
-                df.at[i-1, 'bullish_fvg'] = True
+                df.iloc[i-1, df.columns.get_loc('bullish_fvg')] = 1
             
-            # 看空FVG: K1低 > K3高
+            # 看空FVG
             if df.iloc[i-2]['low'] > df.iloc[i]['high']:
-                df.at[i-1, 'bearish_fvg'] = True
+                df.iloc[i-1, df.columns.get_loc('bearish_fvg')] = 1
         
         return df
     
     def calculate_liquidity_zones(self, df):
-        """計算流動性區域 - 高低點聚集"""
+        """計算流動性區域"""
         df = df.copy()
         
-        # 近20根的極值
         df['recent_high'] = df['high'].rolling(20).max()
         df['recent_low'] = df['low'].rolling(20).min()
-        
-        # 價格相對位置
         df['price_pct'] = (df['close'] - df['recent_low']) / (df['recent_high'] - df['recent_low'] + 1e-10)
         
         return df
@@ -142,7 +131,6 @@ class SMCStrategy:
         
         for i in range(50, len(df)):
             r = df.iloc[i]
-            prev = df.iloc[i-1]
             
             sig = 0
             reason = ""
@@ -154,19 +142,16 @@ class SMCStrategy:
                 conditions_long.append("UpTrend")
             
             if use_ob:
-                # 查找近10根內的看多OB
-                recent_ob = df.iloc[max(0, i-10):i]['bullish_ob'].any()
+                recent_ob = df.iloc[max(0, i-10):i]['bullish_ob'].sum() > 0
                 if recent_ob:
                     conditions_long.append("BullOB")
             
-            if use_fvg and r['bullish_fvg']:
+            if use_fvg and r['bullish_fvg'] == 1:
                 conditions_long.append("BullFVG")
             
-            # 低位回調
             if r['price_pct'] < 0.4:
                 conditions_long.append("LowZone")
             
-            # 至少滿足2個條件
             if len(conditions_long) >= 2:
                 sig = 1
                 reason = "+".join(conditions_long)
@@ -178,19 +163,18 @@ class SMCStrategy:
                 conditions_short.append("DownTrend")
             
             if use_ob:
-                recent_ob = df.iloc[max(0, i-10):i]['bearish_ob'].any()
+                recent_ob = df.iloc[max(0, i-10):i]['bearish_ob'].sum() > 0
                 if recent_ob:
                     conditions_short.append("BearOB")
             
-            if use_fvg and r['bearish_fvg']:
+            if use_fvg and r['bearish_fvg'] == 1:
                 conditions_short.append("BearFVG")
             
-            # 高位回調
             if r['price_pct'] > 0.6:
                 conditions_short.append("HighZone")
             
             if len(conditions_short) >= 2:
-                if sig == 0:  # 避免衝突
+                if sig == 0:
                     sig = -1
                     reason = "+".join(conditions_short)
             
@@ -294,7 +278,7 @@ def render_strategy_a_tab(loader, symbol_selector):
             cnt = (df_sig['signal'] != 0).sum()
             
             if cnt == 0:
-                st.warning("無SMC信號 - 嘗試調整參數或關閉某些功能")
+                st.warning("無SMC信號 - 嘗試關閉某些功能降低門檻")
                 return
             
             long_cnt = (df_sig['signal'] == 1).sum()
@@ -361,13 +345,7 @@ def render_strategy_a_tab(loader, symbol_selector):
                 c3.metric("平均贏", f"${wins['pnl_usdt'].mean():.2f}" if len(wins)>0 else "$0")
                 c4.metric("平均輸", f"${losses['pnl_usdt'].mean():.2f}" if len(losses)>0 else "$0")
                 
-                # 顯示信號原因
-                if 'reason' in df_sig.columns:
-                    trades_with_reason = trades.copy()
-                    trades_with_reason['reason'] = df_sig.loc[trades['entry_time']]['reason'].values if len(trades) <= len(df_sig) else ["N/A"] * len(trades)
-                    st.dataframe(trades_with_reason[['entry_time', 'direction', 'entry_price', 'exit_price', 'pnl_usdt', 'exit_reason']].tail(30), use_container_width=True)
-                else:
-                    st.dataframe(trades[['entry_time', 'direction', 'entry_price', 'exit_price', 'pnl_usdt', 'exit_reason']].tail(30), use_container_width=True)
+                st.dataframe(trades[['entry_time', 'direction', 'entry_price', 'exit_price', 'pnl_usdt', 'exit_reason']].tail(30), use_container_width=True)
                 
                 csv = trades.to_csv(index=False).encode('utf-8')
                 st.download_button("CSV", csv, f"{symbol}_smc_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
