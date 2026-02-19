@@ -1,1 +1,122 @@
-"""\n區間震盪策略 (Strategy C) - 改良版\n\nCore Logic:\n1. 確認盤整: ADX < 25\n2. 超賣進場: 價格觸及 BB 下軌 + RSI < 30 + 成交量萎縮\n3. 超買進場: 價格觸及 BB 上軌 + RSI > 70 + 成交量萎縮\n4. 出場: 價格回到 BB 中軌 或 ATR 止損\n"""\n\nimport pandas as pd\nimport numpy as np\nfrom typing import Dict\n\n\nclass RangeBoundStrategy:\n    def __init__(\n        self,\n        adx_threshold: float = 25,\n        rsi_oversold: float = 30,\n        rsi_overbought: float = 70,\n        volume_ma_period: int = 20,\n        volume_threshold: float = 0.8,\n        use_atr_stops: bool = True,\n        atr_multiplier: float = 2.0,\n        fixed_stop_pct: float = 0.02,\n        target_rr: float = 2.0\n    ):\n        self.adx_threshold = adx_threshold\n        self.rsi_oversold = rsi_oversold\n        self.rsi_overbought = rsi_overbought\n        self.volume_ma_period = volume_ma_period\n        self.volume_threshold = volume_threshold\n        self.use_atr_stops = use_atr_stops\n        self.atr_multiplier = atr_multiplier\n        self.fixed_stop_pct = fixed_stop_pct\n        self.target_rr = target_rr\n        \n    def add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:\n        """計算所需指標"""\n        df = df.copy()\n        \n        # ATR\n        high_low = df['high'] - df['low']\n        high_close = np.abs(df['high'] - df['close'].shift())\n        low_close = np.abs(df['low'] - df['close'].shift())\n        ranges = pd.concat([high_low, high_close, low_close], axis=1)\n        true_range = np.max(ranges, axis=1)\n        df['atr'] = true_range.rolling(14).mean()\n        \n        # Bollinger Bands\n        df['bb_mid'] = df['close'].rolling(20).mean()\n        bb_std = df['close'].rolling(20).std()\n        df['bb_upper'] = df['bb_mid'] + (2 * bb_std)\n        df['bb_lower'] = df['bb_mid'] - (2 * bb_std)\n        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_mid']\n        \n        # RSI\n        delta = df['close'].diff()\n        gain = (delta.where(delta > 0, 0)).rolling(14).mean()\n        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()\n        rs = gain / loss\n        df['rsi'] = 100 - (100 / (1 + rs))\n        \n        # ADX\n        plus_dm = df['high'].diff()\n        minus_dm = -df['low'].diff()\n        plus_dm[plus_dm < 0] = 0\n        minus_dm[minus_dm < 0] = 0\n        \n        tr_sum = true_range.rolling(14).sum()\n        plus_di = 100 * (plus_dm.rolling(14).sum() / tr_sum)\n        minus_di = 100 * (minus_dm.rolling(14).sum() / tr_sum)\n        \n        dx = (np.abs(plus_di - minus_di) / (plus_di + minus_di)) * 100\n        df['adx'] = dx.rolling(14).mean()\n        \n        # Volume MA\n        df['volume_ma'] = df['volume'].rolling(self.volume_ma_period).mean()\n        \n        return df\n    \n    def generate_signal(self, df: pd.DataFrame) -> Dict:\n        """生成交易信號"""\n        if df.empty:\n            return {'signal': 'hold', 'stop_loss': None, 'take_profit': None}\n        \n        df = self.add_indicators(df)\n        row = df.iloc[-1]\n        \n        # 檢查盤整\n        if pd.isna(row['adx']) or row['adx'] >= self.adx_threshold:\n            return {'signal': 'hold', 'stop_loss': None, 'take_profit': None}\n        \n        if pd.isna(row['bb_width']) or row['bb_width'] < 0.01:\n            return {'signal': 'hold', 'stop_loss': None, 'take_profit': None}\n        \n        current_price = row['close']\n        atr = row['atr']\n        volume_contracted = row['volume'] < (row['volume_ma'] * self.volume_threshold)\n        \n        # 做多條件\n        if (row['close'] <= row['bb_lower'] and \n            row['rsi'] < self.rsi_oversold and \n            volume_contracted):\n            \n            if self.use_atr_stops:\n                stop_loss = current_price - (atr * self.atr_multiplier)\n            else:\n                stop_loss = current_price * (1 - self.fixed_stop_pct)\n            \n            take_profit = row['bb_mid']\n            risk = current_price - stop_loss\n            reward = take_profit - current_price\n            if reward / risk < 1.0:\n                take_profit = current_price + (risk * self.target_rr)\n            \n            return {\n                'signal': 'buy',\n                'stop_loss': stop_loss,\n                'take_profit': take_profit,\n                'entry': current_price,\n                'adx': row['adx'],\n                'rsi': row['rsi']\n            }\n        \n        # 做空條件\n        elif (row['close'] >= row['bb_upper'] and \n              row['rsi'] > self.rsi_overbought and \n              volume_contracted):\n            \n            if self.use_atr_stops:\n                stop_loss = current_price + (atr * self.atr_multiplier)\n            else:\n                stop_loss = current_price * (1 + self.fixed_stop_pct)\n            \n            take_profit = row['bb_mid']\n            risk = stop_loss - current_price\n            reward = current_price - take_profit\n            if reward / risk < 1.0:\n                take_profit = current_price - (risk * self.target_rr)\n            \n            return {\n                'signal': 'sell',\n                'stop_loss': stop_loss,\n                'take_profit': take_profit,\n                'entry': current_price,\n                'adx': row['adx'],\n                'rsi': row['rsi']\n            }\n        \n        return {'signal': 'hold', 'stop_loss': None, 'take_profit': None}\n
+"""Range-Bound Trading Strategy"""
+
+import pandas as pd
+import numpy as np
+from typing import Dict
+
+
+class RangeBoundStrategy:
+    def __init__(
+        self,
+        bb_period: int = 20,
+        bb_std: float = 2.0,
+        adx_period: int = 14,
+        adx_threshold: float = 25,
+        rsi_period: int = 14,
+        rsi_oversold: float = 30,
+        rsi_overbought: float = 70,
+        volume_ma_period: int = 20,
+        volume_threshold: float = 0.8,
+        atr_period: int = 14,
+        use_atr_stops: bool = True,
+        atr_multiplier: float = 2.0,
+        fixed_stop_pct: float = 0.02,
+        target_rr: float = 2.0
+    ):
+        self.bb_period = bb_period
+        self.bb_std = bb_std
+        self.adx_period = adx_period
+        self.adx_threshold = adx_threshold
+        self.rsi_period = rsi_period
+        self.rsi_oversold = rsi_oversold
+        self.rsi_overbought = rsi_overbought
+        self.volume_ma_period = volume_ma_period
+        self.volume_threshold = volume_threshold
+        self.atr_period = atr_period
+        self.use_atr_stops = use_atr_stops
+        self.atr_multiplier = atr_multiplier
+        self.fixed_stop_pct = fixed_stop_pct
+        self.target_rr = target_rr
+    
+    def add_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add technical indicators"""
+        df = df.copy()
+        
+        df['bb_mid'] = df['close'].rolling(window=self.bb_period).mean()
+        bb_std = df['close'].rolling(window=self.bb_period).std()
+        df['bb_upper'] = df['bb_mid'] + (self.bb_std * bb_std)
+        df['bb_lower'] = df['bb_mid'] - (self.bb_std * bb_std)
+        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_mid']
+        
+        df['adx'] = self._calculate_adx(df)
+        
+        df['rsi'] = self._calculate_rsi(df)
+        
+        df['volume_ma'] = df['volume'].rolling(window=self.volume_ma_period).mean()
+        
+        df['atr'] = self._calculate_atr(df)
+        
+        return df
+    
+    def _calculate_rsi(self, df: pd.DataFrame) -> pd.Series:
+        """Calculate RSI"""
+        delta = df['close'].diff()
+        gain = delta.where(delta > 0, 0).rolling(window=self.rsi_period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=self.rsi_period).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+    
+    def _calculate_adx(self, df: pd.DataFrame) -> pd.Series:
+        """Calculate ADX"""
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        
+        plus_dm = high.diff()
+        minus_dm = -low.diff()
+        plus_dm[plus_dm < 0] = 0
+        minus_dm[minus_dm < 0] = 0
+        
+        tr1 = high - low
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(window=self.adx_period).mean()
+        
+        plus_di = 100 * (plus_dm.rolling(window=self.adx_period).mean() / atr)
+        minus_di = 100 * (minus_dm.rolling(window=self.adx_period).mean() / atr)
+        
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+        adx = dx.rolling(window=self.adx_period).mean()
+        
+        return adx
+    
+    def _calculate_atr(self, df: pd.DataFrame) -> pd.Series:
+        """Calculate ATR"""
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        
+        tr1 = high - low
+        tr2 = abs(high - close.shift())
+        tr3 = abs(low - close.shift())
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.rolling(window=self.atr_period).mean()
+        
+        return atr
+    
+    def get_parameters(self) -> Dict:
+        """Get strategy parameters"""
+        return {
+            'bb_period': self.bb_period,
+            'bb_std': self.bb_std,
+            'adx_threshold': self.adx_threshold,
+            'rsi_oversold': self.rsi_oversold,
+            'rsi_overbought': self.rsi_overbought,
+            'volume_threshold': self.volume_threshold,
+            'use_atr_stops': self.use_atr_stops,
+            'atr_multiplier': self.atr_multiplier,
+            'fixed_stop_pct': self.fixed_stop_pct,
+            'target_rr': self.target_rr
+        }
