@@ -19,11 +19,11 @@ def render_strategy_a_tab(loader, symbol_selector):
     st.info("""
     **策略核心優勢**:
     
-    [+] 無固定RSI限制 - AI模型動態學習最佳進場時機
-    [+] 20+智能特徵 - 價格、波動、成交量、趨勢多維分析
-    [+] 雙模型架構 - 做多/做空獨立預測
-    [+] Tick級別回測 - 模擬K線內100個tick
-    [+] 優化止盈止損 - 提高盈虧比
+    [+] ML智能進場 - 動態學習最佳時機
+    [+] 動態仓位管理 - 根據機率調整仓位
+    [+] 回撤控制 - 虧損後降低仓位
+    [+] 高盈虧比 - 目標 2.0+ 盈虧比
+    [+] 月報酬目標 - 100% (翻倉)
     """)
     
     st.markdown("---")
@@ -42,8 +42,8 @@ def render_strategy_a_tab(loader, symbol_selector):
     with col2:
         st.markdown("**交易設定**")
         initial_capital = st.number_input("初始資金 (USDT)", 1000.0, 100000.0, 10000.0, 1000.0, key="capital")
-        leverage = st.slider("槓桿倍數", 1, 10, 3, key="leverage")
-        confidence_threshold = st.slider("模型信心度閾值", 0.3, 0.8, 0.5, 0.05, key="confidence")
+        leverage = st.slider("槓桿倍數", 1, 10, 5, key="leverage", help="高槓桿配合動態仓位")
+        confidence_threshold = st.slider("模型信心度閾值", 0.3, 0.8, 0.55, 0.05, key="confidence")
     
     with col3:
         st.markdown("**技術參數**")
@@ -51,22 +51,22 @@ def render_strategy_a_tab(loader, symbol_selector):
         adx_threshold = st.slider("ADX閾值", 15, 35, 30, key="adx")
         ticks_per_candle = st.select_slider("Tick模擬密度", [50, 100, 200], 100, key="ticks")
     
-    # 止盈止損設定
-    with st.expander("進階設定: 止盈止損"):
+    with st.expander("進階設定: 風險控制"):
         col_a1, col_a2 = st.columns(2)
         with col_a1:
-            stop_loss_atr = st.slider("止損 ATR 倍數", 1.0, 3.0, 1.5, 0.5, key="sl_atr", 
-                                      help="止損 = 進場價 +/- (ATR * 此倍數)")
+            st.markdown("**止盈止損**")
+            stop_loss_atr = st.slider("止損 ATR 倍數", 1.0, 3.0, 1.2, 0.1, key="sl_atr")
+            profit_factor_target = st.slider("目標盈虧比", 1.5, 3.0, 2.5, 0.1, key="pf_target")
+        
         with col_a2:
-            take_profit_mode = st.radio(
-                "止盈模式",
-                ["中軌回歸", "固定盈虧比"],
-                key="tp_mode",
-                help="中軌回歸: 目標BB中軌 | 固定盈虧比: 止盈 = 止損 * 盈虧比"
-            )
+            st.markdown("**動態仓位管理**")
+            base_position_pct = st.slider("基礎仓位 %", 20, 100, 60, 10, key="base_pos",
+                                          help="模型信心度最低時的仓位")
+            max_position_pct = st.slider("最大仓位 %", 50, 100, 100, 10, key="max_pos",
+                                         help="模型信心度最高時的仓位")
             
-            if take_profit_mode == "固定盈虧比":
-                profit_factor_target = st.slider("目標盈虧比", 1.5, 3.0, 2.0, 0.5, key="pf_target")
+            enable_drawdown_control = st.checkbox("啟用回撤控制", value=True, key="dd_ctrl",
+                                                   help="虧損後減少仓位,降低風險")
     
     st.markdown("---")
     
@@ -121,11 +121,13 @@ def render_strategy_a_tab(loader, symbol_selector):
             progress_bar.progress(50)
             
             # Step 3
-            status_text.text("步驟 3/4: 生成交易信號...")
+            status_text.text("步驟 3/4: 生成交易信號(含動態仓位)...")
             
             df_test = strategy.add_indicators(df_test)
             
             signals = []
+            peak_equity = initial_capital
+            current_equity = initial_capital
             
             for i in range(50, len(df_test)):
                 long_proba, short_proba = strategy.predict(df_test, i)
@@ -134,54 +136,71 @@ def render_strategy_a_tab(loader, symbol_selector):
                 signal = 0
                 stop_loss = np.nan
                 take_profit = np.nan
+                position_size = 1.0
                 
                 near_lower = row['close'] <= row['bb_lower'] * 1.005
                 near_upper = row['close'] >= row['bb_upper'] * 0.995
                 is_ranging = row['adx'] < adx_threshold
+                
+                # 計算動態仓位
+                if long_proba > confidence_threshold or short_proba > confidence_threshold:
+                    proba = max(long_proba, short_proba)
+                    
+                    # 根據機率調整仓位 (confidence_threshold 到 1.0 線性映射到 base 到 max)
+                    proba_normalized = (proba - confidence_threshold) / (1.0 - confidence_threshold)
+                    position_pct = base_position_pct + (max_position_pct - base_position_pct) * proba_normalized
+                    position_size = position_pct / 100.0
+                    
+                    # 回撤控制
+                    if enable_drawdown_control:
+                        drawdown = (peak_equity - current_equity) / peak_equity
+                        if drawdown > 0.1:  # 10%回撤
+                            position_size *= 0.5  # 減半仓位
+                        elif drawdown > 0.2:  # 20%回撤
+                            position_size *= 0.3  # 減到70%仓位
                 
                 if long_proba > confidence_threshold and near_lower and is_ranging:
                     signal = 1
                     entry = row['close']
                     atr = row['atr']
                     
-                    # 止損
                     stop_loss = entry - stop_loss_atr * atr
-                    
-                    # 止盈
-                    if take_profit_mode == "中軌回歸":
-                        take_profit = row['bb_mid']
-                    else:
-                        # 固定盈虧比
-                        risk = stop_loss_atr * atr
-                        reward = risk * profit_factor_target
-                        take_profit = entry + reward
+                    risk = stop_loss_atr * atr
+                    reward = risk * profit_factor_target
+                    take_profit = entry + reward
                         
                 elif short_proba > confidence_threshold and near_upper and is_ranging:
                     signal = -1
                     entry = row['close']
                     atr = row['atr']
                     
-                    # 止損
                     stop_loss = entry + stop_loss_atr * atr
-                    
-                    # 止盈
-                    if take_profit_mode == "中軌回歸":
-                        take_profit = row['bb_mid']
-                    else:
-                        # 固定盈虧比
-                        risk = stop_loss_atr * atr
-                        reward = risk * profit_factor_target
-                        take_profit = entry - reward
+                    risk = stop_loss_atr * atr
+                    reward = risk * profit_factor_target
+                    take_profit = entry - reward
                 
                 signals.append({
                     'signal': signal,
                     'long_proba': long_proba,
                     'short_proba': short_proba,
                     'stop_loss': stop_loss,
-                    'take_profit': take_profit
+                    'take_profit': take_profit,
+                    'position_size': position_size if signal != 0 else 1.0
                 })
+                
+                # 簡單更新equity估計(僅用於回撤控制)
+                if i > 50 and len(signals) > 1:
+                    prev_signal = signals[-2]
+                    if prev_signal['signal'] != 0:
+                        if prev_signal['signal'] == 1:
+                            pnl_pct = (row['close'] - df_test.iloc[i-1]['close']) / df_test.iloc[i-1]['close']
+                        else:
+                            pnl_pct = (df_test.iloc[i-1]['close'] - row['close']) / df_test.iloc[i-1]['close']
+                        
+                        current_equity += current_equity * pnl_pct * leverage * prev_signal.get('position_size', 1.0)
+                        peak_equity = max(peak_equity, current_equity)
             
-            signals = [{'signal': 0, 'long_proba': 0, 'short_proba': 0, 'stop_loss': np.nan, 'take_profit': np.nan}] * 50 + signals
+            signals = [{'signal': 0, 'long_proba': 0, 'short_proba': 0, 'stop_loss': np.nan, 'take_profit': np.nan, 'position_size': 1.0}] * 50 + signals
             df_signals = pd.DataFrame(signals)
             
             signal_count = (df_signals['signal'] != 0).sum()
@@ -193,7 +212,11 @@ def render_strategy_a_tab(loader, symbol_selector):
                 st.info("建議: 降低信心度閾值")
                 return
             
-            st.success(f"信號生成完成: 總共 {signal_count} 個 (做多: {long_count}, 做空: {short_count})")
+            # 顯示仓位統計
+            active_signals = df_signals[df_signals['signal'] != 0]
+            avg_position = active_signals['position_size'].mean() * 100
+            
+            st.success(f"信號生成: {signal_count}個 (做多:{long_count} 做空:{short_count}) | 平均仓位: {avg_position:.1f}%")
             progress_bar.progress(70)
             
             # Step 4
@@ -220,39 +243,39 @@ def render_strategy_a_tab(loader, symbol_selector):
             
             with col_r1:
                 profit = metrics['final_equity'] - initial_capital
-                st.metric("最終權益", f"${metrics['final_equity']:,.2f}", delta=f"{profit:+,.2f} USDT")
+                st.metric("最終權益", f"${metrics['final_equity']:,.2f}", delta=f"{profit:+,.2f}")
                 st.metric("交易次數", metrics['total_trades'])
             
             with col_r2:
-                st.metric("報酬率", f"{metrics['total_return_pct']:.2f}%", delta="Tick級別")
-                st.metric("勝率", f"{metrics['win_rate']:.1f}%")
+                return_pct = metrics['total_return_pct']
+                monthly_return = return_pct * 30 / test_days
+                st.metric("總報酬率", f"{return_pct:.2f}%")
+                st.metric("月化報酬率", f"{monthly_return:.2f}%", delta="目標100%")
             
             with col_r3:
                 pf = metrics['profit_factor']
-                pf_delta = "OK" if pf > 1.5 else "LOW"
-                st.metric("盈虧比", f"{pf:.2f}", delta=pf_delta)
-                st.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
+                st.metric("勝率", f"{metrics['win_rate']:.1f}%")
+                st.metric("盈虧比", f"{pf:.2f}", delta="OK" if pf > 1.5 else "LOW")
             
             with col_r4:
                 st.metric("最大回撤", f"{metrics['max_drawdown_pct']:.2f}%")
-                st.metric("平均每筆", f"${metrics['avg_pnl_per_trade']:.2f}")
+                st.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
             
             # Performance
             st.markdown("---")
-            return_pct = metrics['total_return_pct']
             
-            if pf < 1.0:
-                st.error("[警告] 盈虧比 < 1.0 - 策略需要優化")
-                st.info("建議: 使用'固定盈虧比'模式,設定目標盈虧比 2.0")
-            elif return_pct > 15 and metrics['win_rate'] > 50 and pf > 1.5:
-                st.success("[優秀] 策略表現非常出色!")
+            if monthly_return >= 100 and metrics['max_drawdown_pct'] < 30 and pf > 1.5:
+                st.success("[目標達成] 月化報酬100%+ | 回撤<30% | 盈虧比>1.5")
                 st.balloons()
-            elif return_pct > 10 and pf > 1.3:
-                st.success("[良好] 策略有穩定的獲利能力")
-            elif return_pct > 0:
-                st.warning("[一般] 報酬率偏低")
+            elif monthly_return >= 80:
+                st.success("[接近目標] 月化報酬80%+")
+            elif monthly_return >= 50:
+                st.warning("[需要優化] 月化報酬50%+, 建議提高信心度閾值或增加槓桿")
             else:
-                st.error("[不佳] 表現不佳")
+                st.error("[未達標] 月化報酬<50%, 需要調整參數")
+            
+            if metrics['max_drawdown_pct'] > 30:
+                st.warning("警告: 最大回撤>30%, 建議啟用回撤控制或降低槓桿")
             
             # Equity curve
             st.markdown("---")
@@ -264,9 +287,8 @@ def render_strategy_a_tab(loader, symbol_selector):
             trades_df = engine.get_trades_dataframe()
             if not trades_df.empty:
                 st.markdown("---")
-                st.subheader("交易明細")
+                st.subheader("交易分析")
                 
-                # 顯示盈虧分析
                 wins = trades_df[trades_df['pnl_usdt'] > 0]
                 losses = trades_df[trades_df['pnl_usdt'] < 0]
                 
@@ -282,7 +304,6 @@ def render_strategy_a_tab(loader, symbol_selector):
                     avg_loss = losses['pnl_usdt'].mean() if len(losses) > 0 else 0
                     st.metric("平均虧損", f"${avg_loss:.2f}")
                 
-                # 交易記錄
                 st.markdown("**最近20筆交易**")
                 display_df = trades_df[[
                     'entry_time', 'exit_time', 'direction',
