@@ -146,7 +146,21 @@ class SSLHybridStrategy:
         df['ssl2_buy_cont'] = ((df['close'] > df['baseline']) & (df['close'] > df['ssl2_down'])).astype(int)
         df['ssl2_sell_cont'] = ((df['close'] < df['baseline']) & (df['close'] < df['ssl2_down'])).astype(int)
         
+        # 新增特徵
+        df['rsi'] = self.calculate_rsi(df['close'], 14)
+        df['volume_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
+        df['price_change'] = df['close'].pct_change()
+        df['trend_strength'] = abs(df['baseline'] - df['baseline'].shift(5)) / df['atr']
+        
         return df
+    
+    def calculate_rsi(self, series, period=14):
+        """計算RSI"""
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+        rs = gain / loss
+        return 100 - (100 / (1 + rs))
     
     def generate_ssl_signals(self, df):
         """生成SSL原始信號"""
@@ -206,14 +220,18 @@ class SSLHybridStrategy:
             'ssl2_direction',
             'exit_direction',
             'ssl2_buy_cont',
-            'ssl2_sell_cont'
+            'ssl2_sell_cont',
+            'rsi',
+            'volume_ratio',
+            'price_change',
+            'trend_strength'
         ]
         
         X = df[feature_cols].fillna(0)
         return X
     
-    def train_filter_model(self, df, df_signals, lookahead=10, threshold=0.005):
-        """訓練AI過濾模型"""
+    def train_filter_model(self, df, df_signals, lookahead=5, threshold=0.003):
+        """訓練AI過濾模型 - 降低門檻"""
         # 重置索引以確保對齊
         df = df.reset_index(drop=True)
         df_signals = df_signals.reset_index(drop=True)
@@ -233,12 +251,16 @@ class SSLHybridStrategy:
                 y.append(0)
                 continue
             
-            future_return = (df.iloc[i+lookahead]['close'] - df.iloc[i]['close']) / df.iloc[i]['close']
+            # 計算未來報酬
+            future_prices = df.iloc[i+1:i+lookahead+1]['close'].values
+            entry_price = df.iloc[i]['close']
             
-            if sig > 0:  # Long signal
-                y.append(1 if future_return > threshold else 0)
-            else:  # Short signal
-                y.append(1 if future_return < -threshold else 0)
+            if sig > 0:  # Long
+                max_profit = (future_prices.max() - entry_price) / entry_price
+                y.append(1 if max_profit > threshold else 0)
+            else:  # Short
+                max_profit = (entry_price - future_prices.min()) / entry_price
+                y.append(1 if max_profit > threshold else 0)
         
         y = pd.Series(y)
         
@@ -251,12 +273,20 @@ class SSLHybridStrategy:
             st.warning("信號太少,無法訓練AI")
             return None
         
+        # 顯示標籤分佈
+        positive_rate = y_train.sum() / len(y_train) * 100
+        st.info(f"好信號比例: {positive_rate:.1f}% ({y_train.sum()}/{len(y_train)})")
+        
+        if y_train.sum() < 10:
+            st.warning("好信號太少,AI可能無效")
+            return None
+        
         # 訓練
         self.scaler.fit(X_train)
         X_scaled = self.scaler.transform(X_train)
         
         self.model = GradientBoostingClassifier(
-            n_estimators=100,
+            n_estimators=50,
             max_depth=3,
             learning_rate=0.1,
             random_state=42
@@ -326,8 +356,9 @@ def render_strategy_b_tab(loader, symbol_selector):
     
     with col3:
         st.markdown("**AI設定**")
-        use_ai_filter = st.checkbox("AI過濾", value=True, key="ai_filter")
-        confidence_threshold = st.slider("AI信心度", 0.5, 0.9, 0.65, 0.05, key="ai_conf")
+        use_ai_filter = st.checkbox("AI過濾", value=False, key="ai_filter")
+        confidence_threshold = st.slider("AI信心度", 0.3, 0.7, 0.45, 0.05, key="ai_conf")
+        st.caption("先測不開AI看原始表現")
         
         st.markdown("**風控**")
         stop_atr_mult = st.slider("止損ATR倍數", 1.0, 3.0, 1.5, 0.5, key="sl_b")
