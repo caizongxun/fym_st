@@ -1,148 +1,177 @@
-"""策略A: 高頻ML策略 - 預測下1根K線0.5%波動"""
+"""策略A: 訂單流失衡 - 利用成交量偵測買賣壓力"""
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
 
 from backtesting.tick_level_engine import TickLevelBacktestEngine
 from data.binance_loader import BinanceDataLoader
 
 
-class HighFreqMLStrategy:
-    """高頻ML策略 - 預測短期快速波動"""
+class OrderFlowStrategy:
+    """
+    訂單流失衡策略
+    
+    理論:
+    1. 大量買單推高價格 -> 上漨動能
+    2. 大量賣單壓低價格 -> 下跌動能
+    3. 當買賣失衡時,在反轉前進場
+    
+    核心指標:
+    - OBV (On Balance Volume)
+    - 量價背離
+    - 獲利回吐區
+    """
     
     def __init__(self):
-        self.model_long = None
-        self.model_short = None
-        self.scaler = StandardScaler()
-        self.feature_cols = None
+        pass
     
-    def create_features(self, df):
-        """短期特徵"""
+    def calculate_obv(self, df):
+        """計算OBV - 累積成交量"""
         df = df.copy()
         
-        # 近期價格變化
-        for i in [1, 2, 3, 5, 8]:
-            df[f'ret_{i}'] = df['close'].pct_change(i)
+        # 基本OBV
+        df['price_change'] = df['close'].diff()
+        df['obv'] = 0.0
         
-        # 動量
-        for i in [3, 5, 10]:
-            df[f'momentum_{i}'] = df['close'] - df['close'].shift(i)
+        for i in range(1, len(df)):
+            if df.iloc[i]['price_change'] > 0:
+                df.iloc[i, df.columns.get_loc('obv')] = df.iloc[i-1]['obv'] + df.iloc[i]['volume']
+            elif df.iloc[i]['price_change'] < 0:
+                df.iloc[i, df.columns.get_loc('obv')] = df.iloc[i-1]['obv'] - df.iloc[i]['volume']
+            else:
+                df.iloc[i, df.columns.get_loc('obv')] = df.iloc[i-1]['obv']
         
-        # 短期波動
-        for i in [3, 5, 10]:
-            df[f'std_{i}'] = df['close'].rolling(i).std()
+        # OBV變化率
+        df['obv_change_5'] = df['obv'].pct_change(5)
+        df['obv_change_10'] = df['obv'].pct_change(10)
         
-        # K線形態
-        df['body_pct'] = (df['close'] - df['open']) / (df['high'] - df['low'] + 1e-10)
-        df['upper_wick'] = (df['high'] - df[['open','close']].max(axis=1)) / (df['high'] - df['low'] + 1e-10)
-        df['lower_wick'] = (df[['open','close']].min(axis=1) - df['low']) / (df['high'] - df['low'] + 1e-10)
-        
-        # 成交量
-        df['volume_ratio'] = df['volume'] / df['volume'].rolling(10).mean()
-        
-        # 價格加速度
-        df['accel_1'] = df['close'].pct_change(1) - df['close'].pct_change(1).shift(1)
-        df['accel_2'] = df['close'].pct_change(2) - df['close'].pct_change(2).shift(1)
-        
-        # 高低點距離
-        df['dist_high_5'] = (df['high'].rolling(5).max() - df['close']) / df['close']
-        df['dist_low_5'] = (df['close'] - df['low'].rolling(5).min()) / df['close']
+        # OBV移動平均
+        df['obv_ma_20'] = df['obv'].rolling(20).mean()
+        df['obv_trend'] = (df['obv'] - df['obv_ma_20']) / (df['obv_ma_20'].abs() + 1e-10)
         
         return df
     
-    def create_labels(self, df):
-        """短期標籤 - 下1根K線能否剕0.5%+"""
+    def calculate_volume_profile(self, df):
+        """計算成交量分佈"""
         df = df.copy()
         
-        # 下1根最高/最低
-        df['next_high'] = df['high'].shift(-1)
-        df['next_low'] = df['low'].shift(-1)
+        # 成交量異常
+        df['volume_ma'] = df['volume'].rolling(20).mean()
+        df['volume_std'] = df['volume'].rolling(20).std()
+        df['volume_zscore'] = (df['volume'] - df['volume_ma']) / (df['volume_std'] + 1e-10)
         
-        # 做多: 下1根最高 > 現價 * 1.005
-        df['long_target'] = ((df['next_high'] - df['close']) / df['close'] > 0.005).astype(int)
+        # 量價關係
+        df['price_volume_corr'] = df['close'].rolling(20).corr(df['volume'])
         
-        # 做空: 下1根最低 < 現價 * 0.995
-        df['short_target'] = ((df['close'] - df['next_low']) / df['close'] > 0.005).astype(int)
+        # 買賣壓力指標
+        df['buy_pressure'] = ((df['close'] - df['low']) / (df['high'] - df['low'] + 1e-10)) * df['volume']
+        df['sell_pressure'] = ((df['high'] - df['close']) / (df['high'] - df['low'] + 1e-10)) * df['volume']
+        
+        df['pressure_diff'] = df['buy_pressure'] - df['sell_pressure']
+        df['pressure_ratio'] = df['buy_pressure'] / (df['sell_pressure'] + 1e-10)
+        
+        # 累積壓力
+        df['cum_pressure_5'] = df['pressure_diff'].rolling(5).sum()
+        df['cum_pressure_10'] = df['pressure_diff'].rolling(10).sum()
         
         return df
     
-    def train(self, df):
-        df = self.create_features(df)
-        df = self.create_labels(df)
-        df = df.replace([np.inf, -np.inf], np.nan).dropna()
+    def calculate_support_resistance(self, df):
+        """計算支撐壓力區"""
+        df = df.copy()
         
-        if len(df) < 100:
-            raise ValueError(f"有效數據過少: {len(df)}")
+        # 近20根K線的高低點
+        df['resistance'] = df['high'].rolling(20).max()
+        df['support'] = df['low'].rolling(20).min()
         
-        exclude = ['open', 'high', 'low', 'close', 'volume', 'open_time', 'close_time',
-                  'long_target', 'short_target', 'next_high', 'next_low']
+        # 價格相對位置
+        df['price_position'] = (df['close'] - df['support']) / (df['resistance'] - df['support'] + 1e-10)
         
-        self.feature_cols = [c for c in df.columns if c not in exclude and df[c].dtype in ['float64', 'int64']]
+        # 距離支撐/壓力
+        df['dist_to_resistance'] = (df['resistance'] - df['close']) / df['close']
+        df['dist_to_support'] = (df['close'] - df['support']) / df['close']
         
-        X = df[self.feature_cols].values
-        X_scaled = self.scaler.fit_transform(X)
-        
-        y_long = df['long_target'].values
-        y_short = df['short_target'].values
-        
-        self.model_long = RandomForestClassifier(
-            n_estimators=50,  # 減少樹數加速
-            max_depth=8,
-            min_samples_split=30,
-            random_state=42,
-            n_jobs=-1
-        )
-        self.model_long.fit(X_scaled, y_long)
-        
-        self.model_short = RandomForestClassifier(
-            n_estimators=50,
-            max_depth=8,
-            min_samples_split=30,
-            random_state=42,
-            n_jobs=-1
-        )
-        self.model_short.fit(X_scaled, y_short)
-        
-        return {
-            'long_samples': int(y_long.sum()),
-            'short_samples': int(y_short.sum()),
-            'total': len(df),
-            'features': len(self.feature_cols)
-        }
+        return df
     
-    def predict_batch(self, df):
-        df_test = self.create_features(df)
-        df_test = df_test.replace([np.inf, -np.inf], np.nan).fillna(0)
+    def generate_signals(self, df, obv_threshold=0.02, pressure_threshold=0, volume_z=1.0):
+        """生成交易信號"""
+        df = self.calculate_obv(df)
+        df = self.calculate_volume_profile(df)
+        df = self.calculate_support_resistance(df)
         
-        X = df_test[self.feature_cols].values
-        X_scaled = self.scaler.transform(X)
+        signals = []
         
-        long_proba = self.model_long.predict_proba(X_scaled)[:, 1]
-        short_proba = self.model_short.predict_proba(X_scaled)[:, 1]
+        for i in range(50, len(df)):
+            r = df.iloc[i]
+            
+            sig = 0
+            reason = ""
+            
+            # 做多條件:
+            # 1. OBV上升 (買盤增加)
+            # 2. 累積買壓 > 賣壓
+            # 3. 成交量異常增加
+            # 4. 靠近支撐位
+            
+            long_obv = r['obv_change_5'] > obv_threshold
+            long_pressure = r['cum_pressure_5'] > pressure_threshold
+            long_volume = r['volume_zscore'] > volume_z
+            long_position = r['price_position'] < 0.3  # 低位
+            
+            if long_obv and long_pressure and (long_volume or long_position):
+                sig = 1
+                reason = "OBV上升+買壓"
+            
+            # 做空條件:
+            # 1. OBV下降 (賣盤增加)
+            # 2. 累積賣壓 > 買壓
+            # 3. 成交量異常增加
+            # 4. 靠近壓力位
+            
+            short_obv = r['obv_change_5'] < -obv_threshold
+            short_pressure = r['cum_pressure_5'] < -pressure_threshold
+            short_volume = r['volume_zscore'] > volume_z
+            short_position = r['price_position'] > 0.7  # 高位
+            
+            if short_obv and short_pressure and (short_volume or short_position):
+                sig = -1
+                reason = "OBV下降+賣壓"
+            
+            signals.append({
+                'signal': sig,
+                'reason': reason,
+                'obv_trend': r['obv_change_5'],
+                'pressure': r['cum_pressure_5'],
+                'volume_z': r['volume_zscore'],
+                'position': r['price_position']
+            })
         
-        return long_proba, short_proba
+        # 前50筆無信號
+        empty_signals = [{'signal': 0, 'reason': '', 'obv_trend': 0, 'pressure': 0, 'volume_z': 0, 'position': 0.5}] * 50
+        
+        return pd.DataFrame(empty_signals + signals)
 
 
 def render_strategy_a_tab(loader, symbol_selector):
-    st.header("策略 A: 高頻ML")
+    st.header("策略 A: 訂單流失衡")
     
     st.info("""
-    **高頻交易ML策略**:
+    **訂單流失衡策略**:
     
-    目標: 預測下1根K線(15分鐘)能否波動0.5%+
+    理論基礎:
+    - 大量買單推高價格 (做多機會)
+    - 大量賣單壓低價格 (做空機會)
     
-    特點:
-    - 短期特徵(1-10期)
-    - 快速進出場
-    - 高交易頻率
-    - 小止損小止盈
+    核心指標:
+    - OBV (累積成交量)
+    - 買賣壓力差值
+    - 成交量異常
+    - 支撐/壓力位置
     
-    適合: 波動市場
+    優勢: 捕捉主力資金動向
     """)
     
     st.markdown("---")
@@ -153,103 +182,74 @@ def render_strategy_a_tab(loader, symbol_selector):
         st.markdown("**數據**")
         symbol_list = symbol_selector("strategy_a", multi=False)
         symbol = symbol_list[0]
-        train_days = st.slider("訓練天數", 30, 120, 60, key="train")
         test_days = st.slider("回測天數", 7, 60, 30, key="test")
     
     with col2:
         st.markdown("**交易**")
         capital = st.number_input("資金", 1000.0, 100000.0, 10000.0, 1000.0, key="cap")
         leverage = st.slider("槓桿", 3, 10, 5, key="lev")
-        confidence = st.slider("信心度", 0.45, 0.70, 0.52, 0.01, key="conf")
+        position_pct = st.slider("倉位%", 40, 100, 70, 10, key="pos")
     
     with col3:
-        st.markdown("**風控**")
-        target_pct = st.slider("目標%", 0.3, 1.5, 0.6, 0.1, key="target")
-        stop_pct = st.slider("止損%", 0.3, 1.5, 0.8, 0.1, key="stop")
-        position_pct = st.slider("倉位%", 30, 100, 60, 10, key="pos")
+        st.markdown("**參數**")
+        obv_thresh = st.slider("OBV門檻%", 1.0, 5.0, 2.0, 0.5, key="obv") / 100
+        volume_z = st.slider("量能Z值", 0.5, 2.5, 1.0, 0.5, key="vz")
+        stop_pct = st.slider("止損%", 0.5, 2.0, 1.0, 0.1, key="sl")
+        target_pct = st.slider("止盈%", 0.5, 3.0, 1.5, 0.1, key="tp")
     
     st.markdown("---")
     
-    if st.button("執行高頻ML", type="primary", use_container_width=True):
+    if st.button("執行訂單流策略", type="primary", use_container_width=True):
         prog = st.progress(0)
         stat = st.empty()
         
         try:
-            stat.text("1/4: 載入...")
-            prog.progress(10)
+            stat.text("載入...")
+            prog.progress(20)
             
             if isinstance(loader, BinanceDataLoader):
                 end = datetime.now()
-                start = end - timedelta(days=train_days + test_days)
-                df_all = loader.load_historical_data(symbol, '15m', start, end)
+                start = end - timedelta(days=test_days + 10)
+                df_test = loader.load_historical_data(symbol, '15m', start, end)
             else:
-                df_all = loader.load_klines(symbol, '15m')
-                df_all = df_all.tail((train_days + test_days) * 96)
+                df_test = loader.load_klines(symbol, '15m')
+                df_test = df_test.tail((test_days + 10) * 96)
             
-            split = len(df_all) - test_days * 96
-            df_train = df_all.iloc[:split].copy()
-            df_test = df_all.iloc[split:].copy()
+            st.success(f"{len(df_test)}根")
+            prog.progress(40)
             
-            st.success(f"{len(df_train)}+{len(df_test)}")
-            prog.progress(30)
+            stat.text("計算訂單流...")
+            strategy = OrderFlowStrategy()
+            df_sig = strategy.generate_signals(df_test, obv_thresh, 0, volume_z)
             
-            stat.text("2/4: 訓練...")
-            strategy = HighFreqMLStrategy()
-            stats = strategy.train(df_train)
-            st.success(f"L:{stats['long_samples']} S:{stats['short_samples']} | {stats['features']}特徵")
-            prog.progress(60)
-            
-            stat.text("3/4: 預測...")
-            long_proba_all, short_proba_all = strategy.predict_batch(df_test)
-            
-            signals = []
-            
-            for i in range(len(df_test)):
-                if i < 20:
-                    signals.append({'signal': 0, 'stop_loss': np.nan, 'take_profit': np.nan, 'position_size': 1.0})
-                    continue
-                
-                lp = long_proba_all[i]
-                sp = short_proba_all[i]
-                r = df_test.iloc[i]
-                
-                sig = 0
-                sl = np.nan
-                tp = np.nan
-                
-                if lp > confidence and lp > sp:
-                    sig = 1
-                    entry = r['close']
-                    sl = entry * (1 - stop_pct / 100)
-                    tp = entry * (1 + target_pct / 100)
-                
-                elif sp > confidence and sp > lp:
-                    sig = -1
-                    entry = r['close']
-                    sl = entry * (1 + stop_pct / 100)
-                    tp = entry * (1 - target_pct / 100)
-                
-                signals.append({
-                    'signal': sig,
-                    'stop_loss': sl,
-                    'take_profit': tp,
-                    'position_size': position_pct / 100.0
-                })
-            
-            df_sig = pd.DataFrame(signals)
+            # 加上止損止盈
+            for i in range(len(df_sig)):
+                if df_sig.iloc[i]['signal'] != 0:
+                    r = df_test.iloc[i]
+                    if df_sig.iloc[i]['signal'] == 1:
+                        df_sig.at[i, 'stop_loss'] = r['close'] * (1 - stop_pct / 100)
+                        df_sig.at[i, 'take_profit'] = r['close'] * (1 + target_pct / 100)
+                    else:
+                        df_sig.at[i, 'stop_loss'] = r['close'] * (1 + stop_pct / 100)
+                        df_sig.at[i, 'take_profit'] = r['close'] * (1 - target_pct / 100)
+                    df_sig.at[i, 'position_size'] = position_pct / 100.0
+                else:
+                    df_sig.at[i, 'stop_loss'] = np.nan
+                    df_sig.at[i, 'take_profit'] = np.nan
+                    df_sig.at[i, 'position_size'] = 1.0
             
             cnt = (df_sig['signal'] != 0).sum()
             
             if cnt == 0:
-                st.warning("無信號 - 降低信心度")
+                st.warning("無信號 - 調低OBV門檻")
                 return
             
             long_cnt = (df_sig['signal'] == 1).sum()
             short_cnt = (df_sig['signal'] == -1).sum()
             st.success(f"{cnt}信號 (L:{long_cnt} S:{short_cnt})")
-            prog.progress(80)
+            prog.progress(70)
             
-            stat.text("4/4: 回測...")
+            stat.text("回測...")
             engine = TickLevelBacktestEngine(capital, leverage, 0.0006, 0.01, 100)
             metrics = engine.run_backtest(df_test, df_sig)
             
@@ -281,9 +281,7 @@ def render_strategy_a_tab(loader, symbol_selector):
             
             st.markdown("---")
             
-            if metrics['total_trades'] < 20:
-                st.warning("交易次數少 - 降低信心度")
-            elif wr >= 50 and pf >= 1.2:
+            if wr >= 50 and pf >= 1.2:
                 st.success("✅ 策略有效")
                 st.balloons()
             elif ret > 0:
@@ -310,22 +308,10 @@ def render_strategy_a_tab(loader, symbol_selector):
                 c3.metric("平均贏", f"${wins['pnl_usdt'].mean():.2f}" if len(wins)>0 else "$0")
                 c4.metric("平均輸", f"${losses['pnl_usdt'].mean():.2f}" if len(losses)>0 else "$0")
                 
-                st.dataframe(trades[['entry_time', 'direction', 'entry_price', 'exit_price', 'pnl_usdt', 'exit_reason']].tail(50), use_container_width=True)
+                st.dataframe(trades[['entry_time', 'direction', 'entry_price', 'exit_price', 'pnl_usdt', 'exit_reason']].tail(30), use_container_width=True)
                 
                 csv = trades.to_csv(index=False).encode('utf-8')
-                st.download_button("CSV", csv, f"{symbol}_hfml_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
-            
-            st.markdown("---")
-            st.subheader("建議")
-            
-            if metrics['total_trades'] >= 50:
-                st.success("交易頻率良好")
-            
-            if wr < 50:
-                st.info("勝率低 - 嘗試降低信心度到 0.50 或調整止損/止盈比例")
-            
-            if pf < 1.0:
-                st.warning("盈虧比<1 - 考慮拉大止盈或縮小止損")
+                st.download_button("CSV", csv, f"{symbol}_orderflow_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
             
         except Exception as e:
             st.error(f"錯: {e}")
