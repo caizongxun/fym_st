@@ -1,0 +1,274 @@
+//@version=5
+indicator("Volume-Price Reversal Filter [FTM]", shorttitle="VP Rev Filter", overlay=false)
+
+// ==========================================
+// THEORY: Volume-Price Divergence & Conviction Filter
+// ==========================================
+// Problem: Neckline/SR breaks often result in fake breakouts
+// Solution: Use volume behavior to distinguish REAL vs FAKE breaks
+//
+// Key Concepts:
+// 1. VOLUME CONVICTION: Real reversals show increasing volume BEFORE the break
+// 2. PRICE MOMENTUM SHIFT: Velocity changes before direction changes  
+// 3. VOLUME-PRICE DIVERGENCE: Price pushes but volume declines = exhaustion
+// 4. ABSORPTION: Price can't move despite high volume = strong opposite pressure
+
+// ==========================================
+// INPUTS
+// ==========================================
+grp_vol = "Volume Analysis"
+vol_len = input.int(20, "Volume MA Length", group=grp_vol)
+vol_surge = input.float(1.5, "Volume Surge Threshold", group=grp_vol, tooltip="How many times above MA to consider 'high volume'")
+
+grp_momentum = "Momentum Settings"
+roc_len = input.int(3, "ROC Length (Velocity)", group=grp_momentum)
+roc_smooth = input.int(3, "ROC Smoothing", group=grp_momentum)
+
+grp_filter = "Signal Filters"
+min_signal_gap = input.int(5, "Min Bars Between Signals", group=grp_filter, tooltip="Prevent signal spam")
+use_bb_filter = input.bool(true, "Only Signal at BB Extremes", group=grp_filter)
+
+// ==========================================
+// 1. VOLUME ANALYSIS
+// ==========================================
+
+// Basic Volume Metrics
+vol_ma = ta.sma(volume, vol_len)
+vol_ratio = volume / vol_ma
+
+// Volume Trend (Is volume increasing or decreasing over time?)
+vol_trend = ta.sma(vol_ratio, 5)  // Smoothed volume strength
+vol_rising = vol_trend > vol_trend[1] and vol_trend[1] > vol_trend[2]
+vol_falling = vol_trend < vol_trend[1] and vol_trend[1] < vol_trend[2]
+
+// Delta Volume (Buying vs Selling Pressure)
+// Green bars = buying, Red bars = selling
+delta_vol = close > open ? volume : -volume
+delta_ma = ta.sma(delta_vol, 10)
+
+// Net Buying/Selling Pressure over last N bars
+net_pressure = ta.cum(delta_vol) - ta.cum(delta_vol[20])
+
+// ==========================================
+// 2. PRICE MOMENTUM (Velocity Analysis)
+// ==========================================
+
+// Rate of Change (ROC) - How fast is price moving?
+roc = ta.roc(close, roc_len)
+roc_ma = ta.sma(roc, roc_smooth)
+
+// Momentum Direction
+mom_bullish = roc_ma > 0 and roc_ma > roc_ma[1]
+mom_bearish = roc_ma < 0 and roc_ma < roc_ma[1]
+
+// Deceleration Detection (Critical for reversals)
+// Price still going up but velocity is slowing = top forming
+bull_decel = roc > 0 and roc < roc[1] and roc[1] < roc[2]  // Slowing upward momentum
+bear_decel = roc < 0 and roc > roc[1] and roc[1] > roc[2]  // Slowing downward momentum
+
+// ==========================================
+// 3. VOLUME-PRICE DIVERGENCE
+// ==========================================
+
+// Find recent swing points
+ph = ta.pivothigh(high, 3, 3)
+pl = ta.pivotlow(low, 3, 3)
+
+var float last_ph = na
+var float last_pl = na
+var float last_ph_vol = na
+var float last_pl_vol = na
+
+if not na(ph)
+    last_ph := ph
+    last_ph_vol := vol_ratio[3]
+if not na(pl)
+    last_pl := pl
+    last_pl_vol := vol_ratio[3]
+
+// Bearish Volume-Price Divergence:
+// Price makes higher high, but volume is lower = weak rally
+bear_vp_div = not na(last_ph) and high > last_ph and vol_ratio < last_ph_vol * 0.8
+
+// Bullish Volume-Price Divergence:
+// Price makes lower low, but volume is lower = weak selloff
+bull_vp_div = not na(last_pl) and low < last_pl and vol_ratio < last_pl_vol * 0.8
+
+// ==========================================
+// 4. ABSORPTION DETECTION
+// ==========================================
+// High volume but small price movement = one side absorbing the other
+
+body = math.abs(close - open)
+range_bar = high - low
+
+// Small body despite high volume
+is_absorption = vol_ratio > vol_surge and body < range_bar * 0.3
+
+// Direction of absorption
+bull_absorption = is_absorption and close > open  // Bulls absorbing sells at bottom
+bear_absorption = is_absorption and close < open  // Bears absorbing buys at top
+
+// ==========================================
+// 5. BOLLINGER BAND EXTREME FILTER (Optional)
+// ==========================================
+bb_len = 20
+bb_mult = 2.0
+basis = ta.sma(close, bb_len)
+dev = ta.stdev(close, bb_len)
+upper_bb = basis + dev * bb_mult
+lower_bb = basis - dev * bb_mult
+
+at_top = close >= upper_bb
+at_bottom = close <= lower_bb
+
+// ==========================================
+// 6. REVERSAL SIGNAL LOGIC
+// ==========================================
+
+// BULLISH REVERSAL CONDITIONS (Buy Signal)
+// Scenario A: Volume-Price Divergence + Deceleration
+bull_scenario_a = bull_vp_div and bear_decel and vol_ratio > 1.0
+
+// Scenario B: Absorption at Support + Volume Rising
+bull_scenario_b = bull_absorption and vol_rising and delta_ma > 0
+
+// Scenario C: Momentum Shift + Volume Surge
+bull_scenario_c = roc_ma < 0 and roc > roc[1] and roc[1] > roc[2] and vol_ratio > vol_surge
+
+// Combined Bullish Signal
+bull_signal_raw = bull_scenario_a or bull_scenario_b or bull_scenario_c
+
+// Apply BB Filter if enabled
+bull_signal = use_bb_filter ? (bull_signal_raw and at_bottom) : bull_signal_raw
+
+// BEARISH REVERSAL CONDITIONS (Sell Signal)
+// Scenario A: Volume-Price Divergence + Deceleration
+bear_scenario_a = bear_vp_div and bull_decel and vol_ratio > 1.0
+
+// Scenario B: Absorption at Resistance + Volume Rising
+bear_scenario_b = bear_absorption and vol_rising and delta_ma < 0
+
+// Scenario C: Momentum Shift + Volume Surge
+bear_scenario_c = roc_ma > 0 and roc < roc[1] and roc[1] < roc[2] and vol_ratio > vol_surge
+
+// Combined Bearish Signal
+bear_signal_raw = bear_scenario_a or bear_scenario_b or bear_scenario_c
+
+// Apply BB Filter if enabled
+bear_signal = use_bb_filter ? (bear_signal_raw and at_top) : bear_signal_raw
+
+// ==========================================
+// 7. SIGNAL FILTERING (Reduce Spam)
+// ==========================================
+var int last_bull_bar = -999
+var int last_bear_bar = -999
+
+// Only show signal if enough bars have passed since last signal
+bull_final = bull_signal and (bar_index - last_bull_bar) > min_signal_gap
+bear_final = bear_signal and (bar_index - last_bear_bar) > min_signal_gap
+
+if bull_final
+    last_bull_bar := bar_index
+if bear_final
+    last_bear_bar := bar_index
+
+// ==========================================
+// 8. CONVICTION METER (0-100)
+// ==========================================
+// Real-time strength of current reversal setup
+
+conviction_score = 0
+
+// Volume Component (0-40)
+if vol_ratio > vol_surge
+    conviction_score += 20
+else if vol_ratio > 1.2
+    conviction_score += 10
+    
+if vol_rising
+    conviction_score += 10
+else if vol_falling
+    conviction_score -= 10
+
+// Momentum Component (0-30)
+if bull_decel or bear_decel
+    conviction_score += 15
+if math.abs(roc_ma) < 1.0  // Momentum near zero (consolidation)
+    conviction_score += 15
+
+// Divergence Component (0-30)
+if bull_vp_div or bear_vp_div
+    conviction_score += 30
+
+// Normalize to 0-100
+conviction_score := math.min(conviction_score, 100)
+
+// Directional Conviction
+bull_conviction = at_bottom and delta_ma > 0 and conviction_score > 50
+bear_conviction = at_top and delta_ma < 0 and conviction_score > 50
+
+// ==========================================
+// 9. VISUALIZATION
+// ==========================================
+
+// A. Volume Ratio Histogram
+vol_color = vol_ratio > vol_surge ? color.new(color.orange, 0) : 
+            vol_ratio > 1.2 ? color.new(color.yellow, 50) : 
+            color.new(color.gray, 70)
+plot(vol_ratio, "Volume Ratio", color=vol_color, style=plot.style_columns, linewidth=2)
+
+// B. Delta Pressure Line
+plot(delta_ma / vol_ma * 10, "Net Pressure", color=delta_ma > 0 ? color.green : color.red, linewidth=2)
+
+// C. Momentum ROC
+plot(roc_ma / 5, "Momentum", color=color.new(color.blue, 50), linewidth=1)
+
+// D. Reference Lines
+hline(vol_surge, "Volume Surge Level", color=color.orange, linestyle=hline.style_dashed)
+hline(1.0, "Average Volume", color=color.gray)
+hline(0, "Zero", color=color.white)
+
+// E. Signal Markers
+plotshape(bull_final, "Bullish Reversal", shape.triangleup, location.bottom, color.lime, size=size.normal, text="BUY", textcolor=color.white)
+plotshape(bear_final, "Bearish Reversal", shape.triangledown, location.top, color.red, size=size.normal, text="SELL", textcolor=color.white)
+
+// F. Early Warning (Low opacity)
+plotshape(bull_conviction and not bull_final, "Bull Setup Forming", shape.circle, location.bottom, color.new(color.green, 70), size=size.tiny)
+plotshape(bear_conviction and not bear_final, "Bear Setup Forming", shape.circle, location.top, color.new(color.red, 70), size=size.tiny)
+
+// G. Background for Extreme Zones
+bgcolor(at_top ? color.new(color.red, 95) : at_bottom ? color.new(color.green, 95) : na)
+
+// ==========================================
+// 10. INFO TABLE
+// ==========================================
+var table info = table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 85), border_width=1)
+
+if barstate.islast
+    table.cell(info, 0, 0, "Metric", text_color=color.yellow, text_size=size.small)
+    table.cell(info, 1, 0, "Status", text_color=color.yellow, text_size=size.small)
+    
+    table.cell(info, 0, 1, "Vol Ratio", text_color=color.gray, text_size=size.tiny)
+    table.cell(info, 1, 1, str.tostring(vol_ratio, "#.##"), 
+               text_color=vol_ratio > vol_surge ? color.orange : color.white, text_size=size.tiny)
+    
+    table.cell(info, 0, 2, "Net Pressure", text_color=color.gray, text_size=size.tiny)
+    table.cell(info, 1, 2, delta_ma > 0 ? "Buying" : "Selling", 
+               text_color=delta_ma > 0 ? color.green : color.red, text_size=size.tiny)
+    
+    table.cell(info, 0, 3, "Momentum", text_color=color.gray, text_size=size.tiny)
+    table.cell(info, 1, 3, bull_decel ? "Bull Decel" : bear_decel ? "Bear Decel" : "Normal", 
+               text_color=bull_decel or bear_decel ? color.yellow : color.gray, text_size=size.tiny)
+    
+    table.cell(info, 0, 4, "Conviction", text_color=color.gray, text_size=size.tiny)
+    table.cell(info, 1, 4, str.tostring(conviction_score) + "%", 
+               text_color=conviction_score > 70 ? color.lime : conviction_score > 50 ? color.yellow : color.gray, text_size=size.tiny)
+
+// ==========================================
+// 11. ALERTS
+// ==========================================
+alertcondition(bull_final, "Bullish Reversal Confirmed", "VP Filter: BULLISH REVERSAL - High Volume Conviction")
+alertcondition(bear_final, "Bearish Reversal Confirmed", "VP Filter: BEARISH REVERSAL - High Volume Conviction")
+alertcondition(bull_conviction, "Bullish Setup Forming", "VP Filter: Bullish reversal setup building...")
+alertcondition(bear_conviction, "Bearish Setup Forming", "VP Filter: Bearish reversal setup building...")
