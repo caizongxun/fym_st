@@ -151,17 +151,11 @@ def train_manual_model(loader, symbol, train_days, lookback_candles, future_cand
                       gamma, scale_pos_weight_multiplier, probability_threshold):
     with st.spinner(f"正在訓練 {symbol}..."):
         try:
-            # 載入資料
             df = load_data(loader, symbol, train_days)
-            
-            # 生成標籤 (新邏輯)
             df = generate_labels_new(df, bb_period, bb_std, lookback_candles, 
                                     future_candles, volatility_multiplier)
-            
-            # 提取特徵 (新邏輯)
             df = extract_features_new(df, bb_period, lookback_candles)
             
-            # 訓練參數
             xgb_params = {
                 'max_depth': max_depth,
                 'learning_rate': learning_rate,
@@ -171,21 +165,18 @@ def train_manual_model(loader, symbol, train_days, lookback_candles, future_cand
                 'scale_pos_weight_multiplier': scale_pos_weight_multiplier
             }
             
-            # 訓練上軌模型
             upper_result = train_model(
                 df[df['touch_upper']].copy(),
                 'label_upper_reversal',
                 test_size, xgb_params, probability_threshold
             )
             
-            # 訓練下軌模型
             lower_result = train_model(
                 df[df['touch_lower']].copy(),
                 'label_lower_reversal',
                 test_size, xgb_params, probability_threshold
             )
             
-            # 顯示結果
             display_results(upper_result, lower_result, symbol, 
                           bb_period, bb_std, lookback_candles, future_candles,
                           volatility_multiplier, probability_threshold)
@@ -220,7 +211,11 @@ def train_with_bayesian(loader, symbol, train_days, lookback_candles, future_can
             )
             
             st.success("優化完成!")
-            display_bayesian_results(upper_best, lower_best)
+            display_bayesian_results(
+                upper_best, lower_best, symbol,
+                bb_period, bb_std, lookback_candles, future_candles,
+                volatility_multiplier, probability_threshold
+            )
             
         except Exception as e:
             st.error(f"優化失敗: {str(e)}")
@@ -230,40 +225,27 @@ def train_with_bayesian(loader, symbol, train_days, lookback_candles, future_can
 # ========== 新的標籤生成邏輯 ==========
 
 def generate_labels_new(df, bb_period, bb_std, lookback_candles, future_candles, volatility_multiplier):
-    """
-    新邏輯:
-    1. BB 通道基於前 lookback_candles 根計算
-    2. 當前 K 棒觸碰檢測使用 shift 後的 BB 值
-    3. 標籤: 當前觸碰 + 未來反彈
-    """
-    # 計算 BB 指標
     df['bb_mid'] = df['close'].rolling(window=bb_period).mean()
     df['bb_std'] = df['close'].rolling(window=bb_period).std()
     df['bb_upper'] = df['bb_mid'] + bb_std * df['bb_std']
     df['bb_lower'] = df['bb_mid'] - bb_std * df['bb_std']
     
-    # 歷史波動
     df['price_range'] = df['high'] - df['low']
     df['historical_volatility'] = df['price_range'].rolling(window=lookback_candles).mean()
     df['reversal_threshold'] = df['historical_volatility'] * volatility_multiplier
     
-    # 關鍵: 使用 shift(1) - 當前 K 棒觸碰時,BB 值是基於前一根計算的
     df['bb_upper_prev'] = df['bb_upper'].shift(1)
     df['bb_lower_prev'] = df['bb_lower'].shift(1)
     
-    # 觸碰檢測
     df['touch_upper'] = df['high'] >= df['bb_upper_prev'] * 0.999
     df['touch_lower'] = df['low'] <= df['bb_lower_prev'] * 1.001
     
-    # 未來價格走勢
     df['future_min'] = df['low'].shift(-1).rolling(window=future_candles).min()
     df['future_max'] = df['high'].shift(-1).rolling(window=future_candles).max()
     
-    # 反彈幅度
-    df['future_drop'] = df['high'] - df['future_min']  # 上軌觸碰後下跌幅度
-    df['future_rise'] = df['future_max'] - df['low']   # 下軌觸碰後上漲幅度
+    df['future_drop'] = df['high'] - df['future_min']
+    df['future_rise'] = df['future_max'] - df['low']
     
-    # 標籤: 觸碰 + 反彈幅度超過閾值
     df['label_upper_reversal'] = (
         df['touch_upper'] & 
         (df['future_drop'] > df['reversal_threshold'].shift(1))
@@ -277,11 +259,6 @@ def generate_labels_new(df, bb_period, bb_std, lookback_candles, future_candles,
     return df
 
 def extract_features_new(df, bb_period, lookback_candles):
-    """
-    新邏輯: 所有特徵基於前 lookback_candles 根 K 棒
-    使用 shift(1) 確保不使用當前 K 棒資料
-    """
-    # 基礎 BB 特徵 (使用前一根的值)
     df['bb_position'] = (
         (df['close'].shift(1) - df['bb_lower'].shift(1)) / 
         (df['bb_upper'].shift(1) - df['bb_lower'].shift(1))
@@ -297,18 +274,15 @@ def extract_features_new(df, bb_period, lookback_candles):
         df['close'].shift(1) * 100
     )
     
-    # BB 寬度
     bb_width = df['bb_upper'].shift(1) - df['bb_lower'].shift(1)
     df['bb_width_pct'] = bb_width / df['bb_mid'].shift(1) * 100
     df['bb_width_ratio'] = bb_width / bb_width.rolling(50).mean()
     
-    # 波動率 (基於歷史)
     df['volatility_ratio'] = (
         df['price_range'].shift(1) / 
         df['historical_volatility'].shift(1)
     )
     
-    # RSI (基於前 14 根)
     delta = df['close'].diff()
     gain = delta.where(delta > 0, 0).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -316,13 +290,11 @@ def extract_features_new(df, bb_period, lookback_candles):
     df['rsi'] = 100 - (100 / (1 + rs))
     df['rsi'] = df['rsi'].shift(1)
     
-    # 成交量
     df['volume_ratio'] = (
         df['volume'].shift(1) / 
         df['volume'].rolling(window=20).mean().shift(1)
     )
     
-    # K 線形態 (前一根)
     df['body_size_pct'] = (
         abs(df['close'].shift(1) - df['open'].shift(1)) / 
         df['open'].shift(1) * 100
@@ -338,7 +310,6 @@ def extract_features_new(df, bb_period, lookback_candles):
         df['open'].shift(1) * 100
     )
     
-    # 觸碰計數 (前 5 根)
     df['touch_count_5'] = (
         df['touch_upper'].shift(1).rolling(5).sum() + 
         df['touch_lower'].shift(1).rolling(5).sum()
@@ -437,12 +408,18 @@ def bayesian_optimize(df, label_col, test_size, n_trials, prob_threshold):
     y_pred = (y_pred_proba >= prob_threshold).astype(int)
     cm = confusion_matrix(y_test, y_pred)
     
+    importance = pd.DataFrame({
+        'feature': feature_cols,
+        'importance': best_model.feature_importances_
+    }).sort_values('importance', ascending=False)
+    
     return {
         'best_params': best_params,
         'best_score': study.best_value,
         'model': best_model,
         'metrics': calculate_metrics(y_test, y_pred, y_pred_proba, cm),
-        'study': study
+        'study': study,
+        'importance': importance
     }
 
 # ========== 輔助函數 ==========
@@ -491,7 +468,8 @@ def display_results(upper_result, lower_result, symbol, bb_period, bb_std,
             upper_result['metrics'], lower_result['metrics']
         )
 
-def display_bayesian_results(upper_best, lower_best):
+def display_bayesian_results(upper_best, lower_best, symbol, bb_period, bb_std,
+                            lookback_candles, future_candles, volatility_multiplier, probability_threshold):
     col1, col2 = st.columns(2)
     
     with col1:
@@ -499,6 +477,7 @@ def display_bayesian_results(upper_best, lower_best):
         st.json(upper_best['best_params'])
         st.metric("Best Score", f"{upper_best['best_score']:.3f}")
         display_metrics(upper_best['metrics'])
+        st.plotly_chart(plot_importance(upper_best['importance'], "上軌"), use_container_width=True)
         with st.expander("優化歷史"):
             fig = go.Figure()
             fig.add_trace(go.Scatter(
@@ -513,6 +492,7 @@ def display_bayesian_results(upper_best, lower_best):
         st.json(lower_best['best_params'])
         st.metric("Best Score", f"{lower_best['best_score']:.3f}")
         display_metrics(lower_best['metrics'])
+        st.plotly_chart(plot_importance(lower_best['importance'], "下軌"), use_container_width=True)
         with st.expander("優化歷史"):
             fig = go.Figure()
             fig.add_trace(go.Scatter(
@@ -521,6 +501,14 @@ def display_bayesian_results(upper_best, lower_best):
             ))
             fig.update_layout(title="優化進度", xaxis_title="Trial", yaxis_title="Score")
             st.plotly_chart(fig, use_container_width=True)
+    
+    if st.button("保存模型", key="save_bayes_models"):
+        save_model_package(
+            symbol, upper_best['model'], lower_best['model'],
+            bb_period, bb_std, lookback_candles, future_candles,
+            volatility_multiplier, probability_threshold,
+            upper_best['metrics'], lower_best['metrics']
+        )
 
 def display_metrics(metrics):
     col1, col2, col3 = st.columns(3)
@@ -549,22 +537,30 @@ def save_model_package(symbol, upper_model, lower_model, bb_period, bb_std,
     os.makedirs(model_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     model_name = f"{symbol}_bb_{timestamp}.pkl"
+    model_path = os.path.join(model_dir, model_name)
     
-    joblib.dump({
-        'upper_model': upper_model,
-        'lower_model': lower_model,
-        'params': {
-            'bb_period': bb_period,
-            'bb_std': bb_std,
-            'lookback_candles': lookback_candles,
-            'future_candles': future_candles,
-            'volatility_multiplier': volatility_multiplier,
-            'probability_threshold': prob_threshold
-        },
-        'metrics': {
-            'upper': upper_metrics,
-            'lower': lower_metrics
-        }
-    }, os.path.join(model_dir, model_name))
-    
-    st.success(f"模型已保存: {model_name}")
+    try:
+        joblib.dump({
+            'upper_model': upper_model,
+            'lower_model': lower_model,
+            'params': {
+                'bb_period': int(bb_period),
+                'bb_std': float(bb_std),
+                'lookback_candles': int(lookback_candles),
+                'future_candles': int(future_candles),
+                'volatility_multiplier': float(volatility_multiplier),
+                'probability_threshold': float(prob_threshold)
+            },
+            'metrics': {
+                'upper': upper_metrics,
+                'lower': lower_metrics
+            }
+        }, model_path)
+        
+        st.success(f"模型已保存: {model_name}")
+        st.info(f"完整路徑: {os.path.abspath(model_path)}")
+        
+    except Exception as e:
+        st.error(f"保存失敗: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
