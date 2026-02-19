@@ -1,4 +1,4 @@
-"""策略A: ML驅動的區間震盪交易 (一鍵執行)"""
+"""策略A: ML驅動的區間震盪交易"""
 
 import streamlit as st
 import pandas as pd
@@ -23,7 +23,7 @@ def render_strategy_a_tab(loader, symbol_selector):
     [+] 20+智能特徵 - 價格、波動、成交量、趨勢多維分析
     [+] 雙模型架構 - 做多/做空獨立預測
     [+] Tick級別回測 - 模擬K線內100個tick
-    [+] 自適應止損 - 基於ATR動態調整
+    [+] 優化止盈止損 - 提高盈虧比
     """)
     
     st.markdown("---")
@@ -50,6 +50,23 @@ def render_strategy_a_tab(loader, symbol_selector):
         bb_period = st.number_input("BB週期", 10, 50, 20, key="bb_period")
         adx_threshold = st.slider("ADX閾值", 15, 35, 30, key="adx")
         ticks_per_candle = st.select_slider("Tick模擬密度", [50, 100, 200], 100, key="ticks")
+    
+    # 止盈止損設定
+    with st.expander("進階設定: 止盈止損"):
+        col_a1, col_a2 = st.columns(2)
+        with col_a1:
+            stop_loss_atr = st.slider("止損 ATR 倍數", 1.0, 3.0, 1.5, 0.5, key="sl_atr", 
+                                      help="止損 = 進場價 +/- (ATR * 此倍數)")
+        with col_a2:
+            take_profit_mode = st.radio(
+                "止盈模式",
+                ["中軌回歸", "固定盈虧比"],
+                key="tp_mode",
+                help="中軌回歸: 目標BB中軌 | 固定盈虧比: 止盈 = 止損 * 盈虧比"
+            )
+            
+            if take_profit_mode == "固定盈虧比":
+                profit_factor_target = st.slider("目標盈虧比", 1.5, 3.0, 2.0, 0.5, key="pf_target")
     
     st.markdown("---")
     
@@ -109,7 +126,6 @@ def render_strategy_a_tab(loader, symbol_selector):
             df_test = strategy.add_indicators(df_test)
             
             signals = []
-            signal_debug = []
             
             for i in range(50, len(df_test)):
                 long_proba, short_proba = strategy.predict(df_test, i)
@@ -123,26 +139,39 @@ def render_strategy_a_tab(loader, symbol_selector):
                 near_upper = row['close'] >= row['bb_upper'] * 0.995
                 is_ranging = row['adx'] < adx_threshold
                 
-                signal_debug.append({
-                    'long_proba': long_proba,
-                    'short_proba': short_proba,
-                    'near_lower': near_lower,
-                    'near_upper': near_upper,
-                    'is_ranging': is_ranging
-                })
-                
                 if long_proba > confidence_threshold and near_lower and is_ranging:
                     signal = 1
                     entry = row['close']
                     atr = row['atr']
-                    stop_loss = entry - 2 * atr
-                    take_profit = row['bb_mid']
+                    
+                    # 止損
+                    stop_loss = entry - stop_loss_atr * atr
+                    
+                    # 止盈
+                    if take_profit_mode == "中軌回歸":
+                        take_profit = row['bb_mid']
+                    else:
+                        # 固定盈虧比
+                        risk = stop_loss_atr * atr
+                        reward = risk * profit_factor_target
+                        take_profit = entry + reward
+                        
                 elif short_proba > confidence_threshold and near_upper and is_ranging:
                     signal = -1
                     entry = row['close']
                     atr = row['atr']
-                    stop_loss = entry + 2 * atr
-                    take_profit = row['bb_mid']
+                    
+                    # 止損
+                    stop_loss = entry + stop_loss_atr * atr
+                    
+                    # 止盈
+                    if take_profit_mode == "中軌回歸":
+                        take_profit = row['bb_mid']
+                    else:
+                        # 固定盈虧比
+                        risk = stop_loss_atr * atr
+                        reward = risk * profit_factor_target
+                        take_profit = entry - reward
                 
                 signals.append({
                     'signal': signal,
@@ -161,25 +190,7 @@ def render_strategy_a_tab(loader, symbol_selector):
             
             if signal_count == 0:
                 st.warning("未生成任何交易信號")
-                
-                debug_df = pd.DataFrame(signal_debug)
-                
-                st.write("**模型預測統計**:")
-                col_d1, col_d2, col_d3, col_d4 = st.columns(4)
-                with col_d1:
-                    st.metric("做多機率平均", f"{debug_df['long_proba'].mean():.3f}")
-                    st.metric("做多機率最大", f"{debug_df['long_proba'].max():.3f}")
-                with col_d2:
-                    st.metric("做空機率平均", f"{debug_df['short_proba'].mean():.3f}")
-                    st.metric("做空機率最大", f"{debug_df['short_proba'].max():.3f}")
-                with col_d3:
-                    st.metric("做多>閾值次數", (debug_df['long_proba'] > confidence_threshold).sum())
-                    st.metric("做空>閾值次數", (debug_df['short_proba'] > confidence_threshold).sum())
-                with col_d4:
-                    st.metric("盤整市場次數", debug_df['is_ranging'].sum())
-                    st.metric("接近BB帶次數", (debug_df['near_lower'] | debug_df['near_upper']).sum())
-                
-                st.info("建議: 降低信心度閾值到模型機率最大值以下")
+                st.info("建議: 降低信心度閾值")
                 return
             
             st.success(f"信號生成完成: 總共 {signal_count} 個 (做多: {long_count}, 做空: {short_count})")
@@ -200,7 +211,6 @@ def render_strategy_a_tab(loader, symbol_selector):
             
             progress_bar.progress(100)
             status_text.text("全部完成!")
-            st.balloons()
             
             # Results
             st.markdown("---")
@@ -218,7 +228,9 @@ def render_strategy_a_tab(loader, symbol_selector):
                 st.metric("勝率", f"{metrics['win_rate']:.1f}%")
             
             with col_r3:
-                st.metric("盈虧比", f"{metrics['profit_factor']:.2f}")
+                pf = metrics['profit_factor']
+                pf_delta = "OK" if pf > 1.5 else "LOW"
+                st.metric("盈虧比", f"{pf:.2f}", delta=pf_delta)
                 st.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
             
             with col_r4:
@@ -228,11 +240,16 @@ def render_strategy_a_tab(loader, symbol_selector):
             # Performance
             st.markdown("---")
             return_pct = metrics['total_return_pct']
-            if return_pct > 15 and metrics['win_rate'] > 50:
+            
+            if pf < 1.0:
+                st.error("[警告] 盈虧比 < 1.0 - 策略需要優化")
+                st.info("建議: 使用'固定盈虧比'模式,設定目標盈虧比 2.0")
+            elif return_pct > 15 and metrics['win_rate'] > 50 and pf > 1.5:
                 st.success("[優秀] 策略表現非常出色!")
-            elif return_pct > 10:
+                st.balloons()
+            elif return_pct > 10 and pf > 1.3:
                 st.success("[良好] 策略有穩定的獲利能力")
-            elif return_pct > 5:
+            elif return_pct > 0:
                 st.warning("[一般] 報酬率偏低")
             else:
                 st.error("[不佳] 表現不佳")
@@ -247,8 +264,26 @@ def render_strategy_a_tab(loader, symbol_selector):
             trades_df = engine.get_trades_dataframe()
             if not trades_df.empty:
                 st.markdown("---")
-                st.subheader("交易明細 (最近20筆)")
+                st.subheader("交易明細")
                 
+                # 顯示盈虧分析
+                wins = trades_df[trades_df['pnl_usdt'] > 0]
+                losses = trades_df[trades_df['pnl_usdt'] < 0]
+                
+                col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+                with col_s1:
+                    st.metric("獲利交易", len(wins))
+                with col_s2:
+                    st.metric("虧損交易", len(losses))
+                with col_s3:
+                    avg_win = wins['pnl_usdt'].mean() if len(wins) > 0 else 0
+                    st.metric("平均獲利", f"${avg_win:.2f}")
+                with col_s4:
+                    avg_loss = losses['pnl_usdt'].mean() if len(losses) > 0 else 0
+                    st.metric("平均虧損", f"${avg_loss:.2f}")
+                
+                # 交易記錄
+                st.markdown("**最近20筆交易**")
                 display_df = trades_df[[
                     'entry_time', 'exit_time', 'direction',
                     'entry_price', 'exit_price', 'pnl_usdt', 'pnl_pct', 'exit_reason'
