@@ -214,6 +214,10 @@ class SSLHybridStrategy:
     
     def train_filter_model(self, df, df_signals, lookahead=10, threshold=0.005):
         """訓練AI過濾模型"""
+        # 重置索引以確保對齊
+        df = df.reset_index(drop=True)
+        df_signals = df_signals.reset_index(drop=True)
+        
         # 準備特徵
         X = self.prepare_ml_features(df)
         
@@ -240,8 +244,8 @@ class SSLHybridStrategy:
         
         # 只訓練有信號的樣本
         signal_mask = df_signals['signal'] != 0
-        X_train = X[signal_mask]
-        y_train = y[signal_mask]
+        X_train = X[signal_mask].reset_index(drop=True)
+        y_train = y[signal_mask].reset_index(drop=True)
         
         if len(X_train) < 50:
             st.warning("信號太少,無法訓練AI")
@@ -265,6 +269,9 @@ class SSLHybridStrategy:
         """用AI過濾信號"""
         if self.model is None:
             return df_signals
+        
+        df = df.reset_index(drop=True)
+        df_signals = df_signals.reset_index(drop=True)
         
         X = self.prepare_ml_features(df)
         X_scaled = self.scaler.transform(X)
@@ -299,7 +306,7 @@ def render_strategy_b_tab(loader, symbol_selector):
     - 訓練XGBoost分類器
     - 過濾假信號 (震盪/假突破)
     - 只保留高信心度信號
-    """, icon="⚡")
+    """)
     
     st.markdown("---")
     
@@ -343,6 +350,8 @@ def render_strategy_b_tab(loader, symbol_selector):
             else:
                 df_test = loader.load_klines(symbol, '15m')
                 df_test = df_test.tail((test_days + 30) * 96)
+            
+            df_test = df_test.reset_index(drop=True)
             
             st.success(f"{len(df_test)}根")
             prog.progress(20)
