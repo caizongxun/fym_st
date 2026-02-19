@@ -129,21 +129,17 @@ class PureMLStrategy:
             'features': len(self.feature_cols)
         }
     
-    def predict(self, df, idx):
-        """預測單個時間點"""
-        df_test = self.create_features(df.iloc[:idx+1])
+    def predict_batch(self, df):
+        """批量預測 - 更快"""
+        df_test = self.create_features(df)
         df_test = df_test.replace([np.inf, -np.inf], np.nan)
+        df_test = df_test.fillna(0)  # 用0填充nan
         
-        X = df_test[self.feature_cols].iloc[-1:].values
-        
-        # 如果有 nan, 返回中性機率
-        if np.any(~np.isfinite(X)):
-            return 0.5, 0.5
-        
+        X = df_test[self.feature_cols].values
         X_scaled = self.scaler.transform(X)
         
-        long_proba = self.model_long.predict_proba(X_scaled)[0][1]
-        short_proba = self.model_short.predict_proba(X_scaled)[0][1]
+        long_proba = self.model_long.predict_proba(X_scaled)[:, 1]
+        short_proba = self.model_short.predict_proba(X_scaled)[:, 1]
         
         return long_proba, short_proba
 
@@ -222,12 +218,27 @@ def render_strategy_a_tab(loader, symbol_selector):
             st.success(f"L:{stats['long_samples']} S:{stats['short_samples']} | {stats['features']}特徵")
             prog.progress(60)
             
-            stat.text("3/4: 生成信號...")
+            stat.text("3/4: 生成信號 (批量預測)...")
+            
+            # 批量預測 - 一次性預測所有數據
+            long_proba_all, short_proba_all = strategy.predict_batch(df_test)
             
             signals = []
             
-            for i in range(50, len(df_test)):
-                lp, sp = strategy.predict(df_test, i)
+            for i in range(len(df_test)):
+                if i < 50:
+                    signals.append({
+                        'signal': 0,
+                        'stop_loss': np.nan,
+                        'take_profit': np.nan,
+                        'position_size': 1.0,
+                        'long_proba': 0,
+                        'short_proba': 0
+                    })
+                    continue
+                
+                lp = long_proba_all[i]
+                sp = short_proba_all[i]
                 r = df_test.iloc[i]
                 
                 sig = 0
@@ -257,7 +268,6 @@ def render_strategy_a_tab(loader, symbol_selector):
                     'short_proba': sp
                 })
             
-            signals = [{'signal': 0, 'stop_loss': np.nan, 'take_profit': np.nan, 'position_size': 1.0, 'long_proba': 0, 'short_proba': 0}] * 50 + signals
             df_sig = pd.DataFrame(signals)
             
             cnt = (df_sig['signal'] != 0).sum()
