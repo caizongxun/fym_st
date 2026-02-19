@@ -12,7 +12,7 @@ from data.binance_loader import BinanceDataLoader
 
 
 def render_strategy_a_tab(loader, symbol_selector):
-    """渲柔策略A Tab - 一鍵執行ML訓練和Tick級別回測"""
+    """渲柔策略A Tab"""
     
     st.header("策略 A: ML驅動的區間震盪交易")
     
@@ -21,15 +21,12 @@ def render_strategy_a_tab(loader, symbol_selector):
     
     [+] 無固定RSI限制 - AI模型動態學習最佳進場時機
     [+] 20+智能特徵 - 價格、波動、成交量、趨勢多維分析
-    [+] 雙模型架構 - 做多/做空獨立預測,更精準
-    [+] Tick級別回測 - 模擬K線內100個tick,真實反映止損觸發
-    [+] 自適應止損 - 基於ATR動態調整,適應市場波動
-    
-    **一鍵執行流程**: 選擇參數 -> 點擊按鈕 -> 自動訓練 -> 自動回測 -> 查看結果
+    [+] 雙模型架構 - 做多/做空獨立預測
+    [+] Tick級別回測 - 模擬K線內100個tick
+    [+] 自適應止損 - 基於ATR動態調整
     """)
     
     st.markdown("---")
-    
     st.subheader("策略參數設定")
     
     col1, col2, col3 = st.columns(3)
@@ -39,81 +36,20 @@ def render_strategy_a_tab(loader, symbol_selector):
         symbol_list = symbol_selector("strategy_a", multi=False)
         symbol = symbol_list[0]
         
-        train_days = st.slider(
-            "訓練數據天數",
-            min_value=30,
-            max_value=180,
-            value=90,
-            key="train_days",
-            help="更多數據 = 更好的模型"
-        )
-        
-        test_days = st.slider(
-            "回測天數",
-            min_value=7,
-            max_value=60,
-            value=30,
-            key="test_days"
-        )
+        train_days = st.slider("訓練數據天數", 30, 180, 90, key="train_days")
+        test_days = st.slider("回測天數", 7, 60, 30, key="test_days")
     
     with col2:
         st.markdown("**交易設定**")
-        
-        initial_capital = st.number_input(
-            "初始資金 (USDT)",
-            min_value=1000.0,
-            max_value=100000.0,
-            value=10000.0,
-            step=1000.0,
-            key="capital"
-        )
-        
-        leverage = st.slider(
-            "槓桿倍數",
-            min_value=1,
-            max_value=10,
-            value=3,
-            key="leverage",
-            help="建議3-5倍"
-        )
-        
-        confidence_threshold = st.slider(
-            "模型信心度閾值",
-            min_value=0.3,
-            max_value=0.8,
-            value=0.5,
-            step=0.05,
-            key="confidence",
-            help="降低此值可增加交易次數"
-        )
+        initial_capital = st.number_input("初始資金 (USDT)", 1000.0, 100000.0, 10000.0, 1000.0, key="capital")
+        leverage = st.slider("槓桿倍數", 1, 10, 3, key="leverage")
+        confidence_threshold = st.slider("模型信心度閾值", 0.3, 0.8, 0.5, 0.05, key="confidence")
     
     with col3:
         st.markdown("**技術參數**")
-        
-        bb_period = st.number_input(
-            "BB週期",
-            min_value=10,
-            max_value=50,
-            value=20,
-            key="bb_period"
-        )
-        
-        adx_threshold = st.slider(
-            "ADX閾值",
-            min_value=15,
-            max_value=35,
-            value=30,
-            key="adx",
-            help="提高此值可增加盤整市場識別寬鬆度"
-        )
-        
-        ticks_per_candle = st.select_slider(
-            "Tick模擬密度",
-            options=[50, 100, 200],
-            value=100,
-            key="ticks",
-            help="越多越真實但越慢"
-        )
+        bb_period = st.number_input("BB週期", 10, 50, 20, key="bb_period")
+        adx_threshold = st.slider("ADX閾值", 15, 35, 30, key="adx")
+        ticks_per_candle = st.select_slider("Tick模擬密度", [50, 100, 200], 100, key="ticks")
     
     st.markdown("---")
     
@@ -123,7 +59,7 @@ def render_strategy_a_tab(loader, symbol_selector):
         status_text = st.empty()
         
         try:
-            # Step 1: 載入訓練數據
+            # Step 1
             status_text.text("步驟 1/4: 載入訓練數據...")
             progress_bar.progress(10)
             
@@ -142,7 +78,7 @@ def render_strategy_a_tab(loader, symbol_selector):
             st.success(f"載入完成: 訓練 {len(df_train)} 根K線, 測試 {len(df_test)} 根K線")
             progress_bar.progress(20)
             
-            # Step 2: 訓練ML模型
+            # Step 2
             status_text.text("步驟 2/4: 訓練機器學習模型...")
             
             strategy = MLRangeBoundStrategy(
@@ -154,19 +90,20 @@ def render_strategy_a_tab(loader, symbol_selector):
             
             train_stats = strategy.train(df_train, forward_bars=10)
             
-            # 顯示詳細訓練結果
             st.success("訓練完成!")
-            col_t1, col_t2, col_t3 = st.columns(3)
+            col_t1, col_t2, col_t3, col_t4 = st.columns(4)
             with col_t1:
                 st.metric("總樣本數", train_stats['total_samples'])
             with col_t2:
                 st.metric("做多樣本", f"{train_stats['long_samples']} ({train_stats['long_ratio']})")
             with col_t3:
                 st.metric("做空樣本", f"{train_stats['short_samples']} ({train_stats['short_ratio']})")
+            with col_t4:
+                st.metric("測試預測", f"L:{train_stats['test_long_proba']:.3f} S:{train_stats['test_short_proba']:.3f}")
             
             progress_bar.progress(50)
             
-            # Step 3: 生成交易信號
+            # Step 3
             status_text.text("步驟 3/4: 生成交易信號...")
             
             df_test = strategy.add_indicators(df_test)
@@ -187,11 +124,6 @@ def render_strategy_a_tab(loader, symbol_selector):
                 is_ranging = row['adx'] < adx_threshold
                 
                 signal_debug.append({
-                    'index': i,
-                    'close': row['close'],
-                    'bb_lower': row['bb_lower'],
-                    'bb_upper': row['bb_upper'],
-                    'adx': row['adx'],
                     'long_proba': long_proba,
                     'short_proba': short_proba,
                     'near_lower': near_lower,
@@ -227,7 +159,6 @@ def render_strategy_a_tab(loader, symbol_selector):
             long_count = (df_signals['signal'] == 1).sum()
             short_count = (df_signals['signal'] == -1).sum()
             
-            # 如果沒有信號,顯示調試信息
             if signal_count == 0:
                 st.warning("未生成任何交易信號")
                 
@@ -242,24 +173,19 @@ def render_strategy_a_tab(loader, symbol_selector):
                     st.metric("做空機率平均", f"{debug_df['short_proba'].mean():.3f}")
                     st.metric("做空機率最大", f"{debug_df['short_proba'].max():.3f}")
                 with col_d3:
-                    st.metric("做多機率>閾值次數", (debug_df['long_proba'] > confidence_threshold).sum())
-                    st.metric("做空機率>閾值次數", (debug_df['short_proba'] > confidence_threshold).sum())
+                    st.metric("做多>閾值次數", (debug_df['long_proba'] > confidence_threshold).sum())
+                    st.metric("做空>閾值次數", (debug_df['short_proba'] > confidence_threshold).sum())
                 with col_d4:
                     st.metric("盤整市場次數", debug_df['is_ranging'].sum())
-                    st.metric("平均ADX", f"{debug_df['adx'].mean():.1f}")
+                    st.metric("接近BB帶次數", (debug_df['near_lower'] | debug_df['near_upper']).sum())
                 
-                st.info("""
-                **建議調整**:
-                1. 降低「模型信心度閾值」到模型機率最大值以下
-                2. 提高「ADX閾值」以增加盤整市場識別
-                3. 增加訓練數據天數到 120-180 天
-                """)
+                st.info("建議: 降低信心度閾值到模型機率最大值以下")
                 return
             
             st.success(f"信號生成完成: 總共 {signal_count} 個 (做多: {long_count}, 做空: {short_count})")
             progress_bar.progress(70)
             
-            # Step 4: Tick級別回測
+            # Step 4
             status_text.text("步驟 4/4: 執行Tick級別回測...")
             
             engine = TickLevelBacktestEngine(
@@ -274,10 +200,9 @@ def render_strategy_a_tab(loader, symbol_selector):
             
             progress_bar.progress(100)
             status_text.text("全部完成!")
-            
             st.balloons()
             
-            # 顯示結果
+            # Results
             st.markdown("---")
             st.subheader("回測結果")
             
@@ -285,61 +210,40 @@ def render_strategy_a_tab(loader, symbol_selector):
             
             with col_r1:
                 profit = metrics['final_equity'] - initial_capital
-                st.metric(
-                    "最終權益",
-                    f"${metrics['final_equity']:,.2f}",
-                    delta=f"{profit:+,.2f} USDT"
-                )
+                st.metric("最終權益", f"${metrics['final_equity']:,.2f}", delta=f"{profit:+,.2f} USDT")
                 st.metric("交易次數", metrics['total_trades'])
             
             with col_r2:
-                return_pct = metrics['total_return_pct']
-                st.metric(
-                    "報酬率",
-                    f"{return_pct:.2f}%",
-                    delta="Tick級別精度"
-                )
+                st.metric("報酬率", f"{metrics['total_return_pct']:.2f}%", delta="Tick級別")
                 st.metric("勝率", f"{metrics['win_rate']:.1f}%")
             
             with col_r3:
-                pf = metrics['profit_factor']
-                st.metric(
-                    "盈虧比",
-                    f"{pf:.2f}",
-                    delta="目標 > 1.5"
-                )
+                st.metric("盈虧比", f"{metrics['profit_factor']:.2f}")
                 st.metric("夏普比率", f"{metrics['sharpe_ratio']:.2f}")
             
             with col_r4:
-                st.metric(
-                    "最大回撤",
-                    f"{metrics['max_drawdown_pct']:.2f}%"
-                )
-                st.metric(
-                    "平均每筆獲利",
-                    f"${metrics['avg_pnl_per_trade']:.2f}"
-                )
+                st.metric("最大回撤", f"{metrics['max_drawdown_pct']:.2f}%")
+                st.metric("平均每筆", f"${metrics['avg_pnl_per_trade']:.2f}")
             
-            # 績效評估
+            # Performance
             st.markdown("---")
-            st.subheader("績效評估")
-            
+            return_pct = metrics['total_return_pct']
             if return_pct > 15 and metrics['win_rate'] > 50:
-                st.success("[優秀] 策略表現非常出色,報酬率和勝率都很高!")
+                st.success("[優秀] 策略表現非常出色!")
             elif return_pct > 10:
-                st.success("[良好] 策略有穩定的獲利能力。")
+                st.success("[良好] 策略有穩定的獲利能力")
             elif return_pct > 5:
-                st.warning("[一般] 報酬率偏低,建議調整槓桿或信心度閾值。")
+                st.warning("[一般] 報酬率偏低")
             else:
-                st.error("[不佳] 表現不佳。建議重新訓練或調整參數。")
+                st.error("[不佳] 表現不佳")
             
-            # 權益曲線
+            # Equity curve
             st.markdown("---")
-            st.subheader("權益曲線 (Tick級別模擬)")
+            st.subheader("權益曲線")
             fig = engine.plot_equity_curve()
             st.plotly_chart(fig, use_container_width=True)
             
-            # 交易明細
+            # Trades
             trades_df = engine.get_trades_dataframe()
             if not trades_df.empty:
                 st.markdown("---")
@@ -360,19 +264,19 @@ def render_strategy_a_tab(loader, symbol_selector):
                 st.download_button(
                     label="下載完整交易記錄 CSV",
                     data=csv,
-                    file_name=f"{symbol}_strategy_a_backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    file_name=f"{symbol}_backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                     mime="text/csv",
-                    key="download_trades"
+                    key="download"
                 )
             
-            # 特徵重要性
+            # Feature importance
             st.markdown("---")
-            st.subheader("模型特徵重要性")
+            st.subheader("特徵重要性")
             
             col_fi1, col_fi2 = st.columns(2)
             
             with col_fi1:
-                st.markdown("**做多模型 - Top 10 特徵**")
+                st.markdown("**做多模型**")
                 if hasattr(strategy.long_model, 'feature_importances_'):
                     importance_df = pd.DataFrame({
                         '特徵': train_stats['feature_names'],
@@ -389,7 +293,7 @@ def render_strategy_a_tab(loader, symbol_selector):
                     st.plotly_chart(fig_long, use_container_width=True)
             
             with col_fi2:
-                st.markdown("**做空模型 - Top 10 特徵**")
+                st.markdown("**做空模型**")
                 if hasattr(strategy.short_model, 'feature_importances_'):
                     importance_df = pd.DataFrame({
                         '特徵': train_stats['feature_names'],
@@ -405,7 +309,7 @@ def render_strategy_a_tab(loader, symbol_selector):
                     fig_short.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20))
                     st.plotly_chart(fig_short, use_container_width=True)
             
-            # 保存模型選項
+            # Save model
             st.markdown("---")
             if st.checkbox("保存此模型供未來使用"):
                 model_path = f'models/saved/{symbol}_strategy_a_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pkl'
