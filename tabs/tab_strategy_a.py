@@ -36,17 +36,18 @@ class PureMLStrategy:
         # 波動率特徵
         for i in [5, 10, 20]:
             df[f'volatility_{i}'] = df['close'].pct_change().rolling(i).std()
-            df[f'range_{i}'] = (df['high'] - df['low']) / df['close']
+            df[f'range_{i}'] = (df['high'] - df['low']) / (df['close'] + 1e-10)
         
         # 成交量特徵
         df['volume_ret_1'] = df['volume'].pct_change(1)
         df['volume_ret_5'] = df['volume'].pct_change(5)
-        df['volume_ma_ratio'] = df['volume'] / df['volume'].rolling(20).mean()
+        volume_ma = df['volume'].rolling(20).mean()
+        df['volume_ma_ratio'] = df['volume'] / (volume_ma + 1e-10)
         
         # K線形態
-        df['body'] = (df['close'] - df['open']) / df['close']
-        df['upper_shadow'] = (df['high'] - df[['open', 'close']].max(axis=1)) / df['close']
-        df['lower_shadow'] = (df[['open', 'close']].min(axis=1) - df['low']) / df['close']
+        df['body'] = (df['close'] - df['open']) / (df['close'] + 1e-10)
+        df['upper_shadow'] = (df['high'] - df[['open', 'close']].max(axis=1)) / (df['close'] + 1e-10)
+        df['lower_shadow'] = (df[['open', 'close']].min(axis=1) - df['low']) / (df['close'] + 1e-10)
         
         # 價格位置
         for i in [10, 20, 50]:
@@ -65,10 +66,10 @@ class PureMLStrategy:
         df['future_low'] = df['low'].rolling(self.forward_bars).min().shift(-self.forward_bars)
         
         # 做多機會: 未來能上漨1%+
-        df['long_target'] = ((df['future_high'] - df['close']) / df['close'] > 0.01).astype(int)
+        df['long_target'] = ((df['future_high'] - df['close']) / (df['close'] + 1e-10) > 0.01).astype(int)
         
         # 做空機會: 未來會下跌1%+
-        df['short_target'] = ((df['close'] - df['future_low']) / df['close'] > 0.01).astype(int)
+        df['short_target'] = ((df['close'] - df['future_low']) / (df['close'] + 1e-10) > 0.01).astype(int)
         
         return df
     
@@ -76,7 +77,13 @@ class PureMLStrategy:
         """訓練模型"""
         df = self.create_features(df)
         df = self.create_labels(df)
+        
+        # 移除 inf 和 nan
+        df = df.replace([np.inf, -np.inf], np.nan)
         df = df.dropna()
+        
+        if len(df) < 100:
+            raise ValueError(f"有效數據過少: {len(df)}, 需要至少100筆")
         
         # 只保留數值特徵
         exclude_cols = ['open', 'high', 'low', 'close', 'volume', 'open_time', 'close_time', 
@@ -85,17 +92,34 @@ class PureMLStrategy:
         self.feature_cols = [c for c in df.columns if c not in exclude_cols and df[c].dtype in ['float64', 'int64']]
         
         X = df[self.feature_cols].values
+        
+        # 再次確認無 inf/nan
+        if np.any(~np.isfinite(X)):
+            raise ValueError("特徵中仍包含 inf 或 nan")
+        
         X_scaled = self.scaler.fit_transform(X)
         
         y_long = df['long_target'].values
         y_short = df['short_target'].values
         
         # 訓練做多模型
-        self.model_long = RandomForestClassifier(n_estimators=100, max_depth=10, min_samples_split=50, random_state=42)
+        self.model_long = RandomForestClassifier(
+            n_estimators=100, 
+            max_depth=10, 
+            min_samples_split=50, 
+            random_state=42,
+            n_jobs=-1
+        )
         self.model_long.fit(X_scaled, y_long)
         
         # 訓練做空模型
-        self.model_short = RandomForestClassifier(n_estimators=100, max_depth=10, min_samples_split=50, random_state=42)
+        self.model_short = RandomForestClassifier(
+            n_estimators=100, 
+            max_depth=10, 
+            min_samples_split=50, 
+            random_state=42,
+            n_jobs=-1
+        )
         self.model_short.fit(X_scaled, y_short)
         
         return {
@@ -108,8 +132,14 @@ class PureMLStrategy:
     def predict(self, df, idx):
         """預測單個時間點"""
         df_test = self.create_features(df.iloc[:idx+1])
+        df_test = df_test.replace([np.inf, -np.inf], np.nan)
         
         X = df_test[self.feature_cols].iloc[-1:].values
+        
+        # 如果有 nan, 返回中性機率
+        if np.any(~np.isfinite(X)):
+            return 0.5, 0.5
+        
         X_scaled = self.scaler.transform(X)
         
         long_proba = self.model_long.predict_proba(X_scaled)[0][1]
