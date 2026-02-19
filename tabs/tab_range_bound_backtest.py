@@ -1,1 +1,267 @@
-"""\n策略 C: 區間震盪回測 Tab\n"""\n\nimport streamlit as st\nimport pandas as pd\nfrom datetime import datetime, timedelta\nfrom utils.range_bound_signal_generator import RangeBoundSignalGenerator\nfrom backtesting.range_bound_engine import RangeBoundBacktestEngine\nfrom data.binance_loader import BinanceDataLoader\n\n\ndef render_range_bound_backtest_tab(loader, symbol_selector):\n    \"\"\"\u6e32\u67d3策略 C 回測 Tab\"\"\"\n    \n    st.header(\"策略 C: 區間震盪 (Range-Bound)\")\n    \n    st.success(\"\"\"\n    **策略 C - 改良版區間震盪策略**:\n    \n    **核心邏輯**:\n    1. 盤整確認: ADX < 25 → 確認非趨勢市場\n    2. 做多信號:\n       - 價格 ≤ BB 下軌\n       - RSI < 30 (超賣)\n       - 成交量萎縮 (恐慌拋售)\n    3. 做空信號:\n       - 價格 ≥ BB 上軌\n       - RSI > 70 (超買)\n       - 成交量萎縮 (貫婪追漲)\n    4. 出場: 價格回到 BB 中軌 或 ATR 動態止損\n    \n    **優勢**:\n    - 多重過濾 → 提高勝率\n    - ATR 動態止損 → 適應市場波動\n    - 改善原 BB 反轉策略的低勝率問題\n    \"\"\")\n    \n    # 參數設定\n    st.markdown(\"### 策略參數\")\n    \n    col1, col2 = st.columns(2)\n    \n    with col1:\n        st.subheader(\"基本設定\")\n        rb_symbol_list = symbol_selector(\"range_bound\", multi=False)\n        rb_symbol = rb_symbol_list[0]\n        \n        rb_days = st.slider(\n            \"回測天數\",\n            min_value=30,\n            max_value=180,\n            value=60,\n            key=\"rb_days\"\n        )\n        \n        rb_capital = st.number_input(\n            \"初始資金 (USDT)\",\n            min_value=100.0,\n            max_value=100000.0,\n            value=10000.0,\n            step=100.0,\n            key=\"rb_capital\"\n        )\n        \n        rb_leverage = st.slider(\n            \"槓桿倍數\",\n            min_value=1,\n            max_value=20,\n            value=1,\n            key=\"rb_leverage\"\n        )\n    \n    with col2:\n        st.subheader(\"策略參數\")\n        \n        adx_threshold = st.slider(\n            \"ADX 門檻 (盤整確認)\",\n            min_value=15,\n            max_value=35,\n            value=25,\n            key=\"rb_adx\",\n            help=\"ADX < 此值時確認盤整\"\n        )\n        \n        rsi_oversold = st.slider(\n            \"RSI 超賣線\",\n            min_value=20,\n            max_value=35,\n            value=30,\n            key=\"rb_rsi_low\"\n        )\n        \n        rsi_overbought = st.slider(\n            \"RSI 超買線\",\n            min_value=65,\n            max_value=80,\n            value=70,\n            key=\"rb_rsi_high\"\n        )\n        \n        volume_threshold = st.slider(\n            \"成交量門檻\",\n            min_value=0.5,\n            max_value=1.0,\n            value=0.8,\n            step=0.1,\n            key=\"rb_vol\",\n            help=\"成交量 < MA × 此值 = 萎縮\"\n        )\n    \n    # 止損設定\n    st.markdown(\"### 止損止盈設定\")\n    col3, col4 = st.columns(2)\n    \n    with col3:\n        use_atr_stops = st.radio(\n            \"止損模式\",\n            options=[True, False],\n            format_func=lambda x: \"ATR 動態止損\" if x else \"固定百分比止損\",\n            key=\"rb_stop_mode\"\n        )\n    \n    with col4:\n        if use_atr_stops:\n            atr_multiplier = st.slider(\n                \"ATR 倍數\",\n                min_value=1.0,\n                max_value=4.0,\n                value=2.0,\n                step=0.5,\n                key=\"rb_atr_mult\"\n            )\n            fixed_stop_pct = 0.02\n        else:\n            atr_multiplier = 2.0\n            fixed_stop_pct = st.slider(\n                \"固定止損 %\",\n                min_value=0.01,\n                max_value=0.05,\n                value=0.02,\n                step=0.005,\n                format_func=lambda x: f\"{x*100:.1f}%\",\n                key=\"rb_fixed_stop\"\n            )\n        \n        target_rr = st.slider(\n            \"目標風報比\",\n            min_value=1.0,\n            max_value=3.0,\n            value=2.0,\n            step=0.5,\n            key=\"rb_rr\",\n            help=\"風險:報酬 = 1:此值\"\n        )\n    \n    # 執行回測按鈕\n    if st.button(\"執行回測\", key=\"rb_backtest_btn\", type=\"primary\"):\n        with st.spinner(f\"正在回測 {rb_symbol}...\"):\n            try:\n                # 載入數據\n                if isinstance(loader, BinanceDataLoader):\n                    end_date = datetime.now()\n                    start_date = end_date - timedelta(days=rb_days)\n                    df = loader.load_historical_data(rb_symbol, '15m', start_date, end_date)\n                else:\n                    df = loader.load_klines(rb_symbol, '15m')\n                    df = df.tail(rb_days * 96)\n                \n                st.info(f\"載入 {len(df)} 根K線\")\n                \n                # 生成信號\n                generator = RangeBoundSignalGenerator(\n                    adx_threshold=adx_threshold,\n                    rsi_oversold=rsi_oversold,\n                    rsi_overbought=rsi_overbought,\n                    volume_threshold=volume_threshold,\n                    use_atr_stops=use_atr_stops,\n                    atr_multiplier=atr_multiplier,\n                    fixed_stop_pct=fixed_stop_pct,\n                    target_rr=target_rr\n                )\n                \n                df_signals = generator.generate_signals(df)\n                \n                signal_count = (df_signals['signal'] != 0).sum()\n                st.info(f\"生成 {signal_count} 個信號 (做多: {(df_signals['signal']==1).sum()}, 做空: {(df_signals['signal']==-1).sum()})\")\n                \n                # 執行回測\n                engine = RangeBoundBacktestEngine(\n                    initial_capital=rb_capital,\n                    leverage=rb_leverage,\n                    fee_rate=0.0006\n                )\n                \n                signals_dict = {rb_symbol: df_signals}\n                metrics = engine.run_backtest(signals_dict)\n                \n                # 顯示結果\n                st.subheader(\"回測結果\")\n                \n                # 績效指標卡片\n                col_r1, col_r2, col_r3, col_r4 = st.columns(4)\n                \n                with col_r1:\n                    st.metric(\n                        \"最終資金\",\n                        f\"${metrics['final_equity']:,.2f}\",\n                        delta=f\"${metrics['final_equity'] - rb_capital:,.2f}\"\n                    )\n                    st.metric(\"交易次數\", metrics['total_trades'])\n                \n                with col_r2:\n                    st.metric(\n                        \"報酬率\",\n                        f\"{metrics['total_return_pct']:.2f}%\",\n                        delta=\"vs 0.18% 原策略\"\n                    )\n                    st.metric(\"勝率\", f\"{metrics['win_rate']:.1f}%\")\n                \n                with col_r3:\n                    st.metric(\n                        \"盈虧比\",\n                        f\"{metrics['profit_factor']:.2f}\",\n                        delta=\"目標 >1.5\"\n                    )\n                    st.metric(\"夏普比率\", f\"{metrics['sharpe_ratio']:.2f}\")\n                \n                with col_r4:\n                    st.metric(\n                        \"最大回撒\",\n                        f\"{metrics['max_drawdown_pct']:.2f}%\"\n                    )\n                    avg_duration = metrics['avg_duration_min']\n                    st.metric(\"平均持倉(分)\", f\"{avg_duration:.0f}\" if avg_duration else \"N/A\")\n                \n                # 權益曲線\n                st.markdown(\"### 權益曲線\")\n                fig = engine.plot_equity_curve()\n                st.plotly_chart(fig, use_container_width=True)\n                \n                # 交易明細\n                trades_df = engine.get_trades_dataframe()\n                if not trades_df.empty:\n                    st.markdown(\"### 交易明細 (最近 20 筆)\")\n                    display_cols = ['進場時間', '離場時間', '方向', '進場價格', '離場價格',\n                                  '損益(USDT)', '損益率', '離場原因', '持倉時長(分)']\n                    st.dataframe(trades_df[display_cols].tail(20), use_container_width=True)\n                    \n                    # 下載按鈕\n                    csv = trades_df.to_csv(index=False).encode('utf-8')\n                    st.download_button(\n                        label=\"下載完整交易記錄 CSV\",\n                        data=csv,\n                        file_name=f\"{rb_symbol}_strategy_c_backtest.csv\",\n                        mime=\"text/csv\",\n                        key=\"rb_download\"\n                    )\n                    \n                    # 績效分析\n                    if metrics['total_return_pct'] > 5 and metrics['win_rate'] > 40:\n                        st.balloons()\n                        st.success(\"策略 C 表現優異! 勝率和盈虧比都有顯著改善\")\n                else:\n                    st.warning(\"沒有產生任何交易，請調整參數\")\n                    \n            except Exception as e:\n                st.error(f\"回測錯誤: {str(e)}\")\n                import traceback\n                st.code(traceback.format_exc())\n
+# -*- coding: utf-8 -*-
+"""
+Strategy C: Range-Bound Backtest Tab
+"""
+
+import streamlit as st
+import pandas as pd
+from datetime import datetime, timedelta
+from utils.range_bound_signal_generator import RangeBoundSignalGenerator
+from backtesting.range_bound_engine import RangeBoundBacktestEngine
+from data.binance_loader import BinanceDataLoader
+
+
+def render_range_bound_backtest_tab(loader, symbol_selector):
+    """Render Strategy C backtest tab"""
+    
+    st.header("Strategy C: Range-Bound Trading")
+    
+    st.success("""
+    **Strategy C - Improved Range-Bound Strategy**:
+    
+    **Core Logic**:
+    1. Range confirmation: ADX < 25 (non-trending market)
+    2. Long signals:
+       - Price <= BB lower band
+       - RSI < 30 (oversold)
+       - Volume shrinking (panic selling)
+    3. Short signals:
+       - Price >= BB upper band
+       - RSI > 70 (overbought)
+       - Volume shrinking (FOMO buying)
+    4. Exit: Price returns to BB middle or ATR-based stop loss
+    
+    **Advantages**:
+    - Multiple filters improve win rate
+    - ATR dynamic stop loss adapts to market volatility
+    - Improves original BB reversal strategy's low win rate
+    """)
+    
+    st.markdown("### Strategy Parameters")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("Basic Settings")
+        rb_symbol_list = symbol_selector("range_bound", multi=False)
+        rb_symbol = rb_symbol_list[0]
+        
+        rb_days = st.slider(
+            "Backtest Days",
+            min_value=30,
+            max_value=180,
+            value=60,
+            key="rb_days"
+        )
+        
+        rb_capital = st.number_input(
+            "Initial Capital (USDT)",
+            min_value=100.0,
+            max_value=100000.0,
+            value=10000.0,
+            step=100.0,
+            key="rb_capital"
+        )
+        
+        rb_leverage = st.slider(
+            "Leverage",
+            min_value=1,
+            max_value=20,
+            value=1,
+            key="rb_leverage"
+        )
+    
+    with col2:
+        st.subheader("Strategy Parameters")
+        
+        adx_threshold = st.slider(
+            "ADX Threshold (Range Confirmation)",
+            min_value=15,
+            max_value=35,
+            value=25,
+            key="rb_adx",
+            help="Confirm ranging market when ADX < threshold"
+        )
+        
+        rsi_oversold = st.slider(
+            "RSI Oversold",
+            min_value=20,
+            max_value=35,
+            value=30,
+            key="rb_rsi_low"
+        )
+        
+        rsi_overbought = st.slider(
+            "RSI Overbought",
+            min_value=65,
+            max_value=80,
+            value=70,
+            key="rb_rsi_high"
+        )
+        
+        volume_threshold = st.slider(
+            "Volume Threshold",
+            min_value=0.5,
+            max_value=1.0,
+            value=0.8,
+            step=0.1,
+            key="rb_vol",
+            help="Volume < MA * threshold = shrinking"
+        )
+    
+    st.markdown("### Stop Loss & Take Profit")
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        use_atr_stops = st.radio(
+            "Stop Loss Mode",
+            options=[True, False],
+            format_func=lambda x: "ATR Dynamic Stop" if x else "Fixed Percentage Stop",
+            key="rb_stop_mode"
+        )
+    
+    with col4:
+        if use_atr_stops:
+            atr_multiplier = st.slider(
+                "ATR Multiplier",
+                min_value=1.0,
+                max_value=4.0,
+                value=2.0,
+                step=0.5,
+                key="rb_atr_mult"
+            )
+            fixed_stop_pct = 0.02
+        else:
+            atr_multiplier = 2.0
+            fixed_stop_pct = st.slider(
+                "Fixed Stop Loss %",
+                min_value=0.01,
+                max_value=0.05,
+                value=0.02,
+                step=0.005,
+                format_func=lambda x: f"{x*100:.1f}%",
+                key="rb_fixed_stop"
+            )
+        
+        target_rr = st.slider(
+            "Target Risk-Reward Ratio",
+            min_value=1.0,
+            max_value=3.0,
+            value=2.0,
+            step=0.5,
+            key="rb_rr",
+            help="Risk:Reward = 1:this value"
+        )
+    
+    if st.button("Run Backtest", key="rb_backtest_btn", type="primary"):
+        with st.spinner(f"Backtesting {rb_symbol}..."):
+            try:
+                # Load data
+                if isinstance(loader, BinanceDataLoader):
+                    end_date = datetime.now()
+                    start_date = end_date - timedelta(days=rb_days)
+                    df = loader.load_historical_data(rb_symbol, '15m', start_date, end_date)
+                else:
+                    df = loader.load_klines(rb_symbol, '15m')
+                    df = df.tail(rb_days * 96)
+                
+                st.info(f"Loaded {len(df)} candles")
+                
+                # Generate signals
+                generator = RangeBoundSignalGenerator(
+                    adx_threshold=adx_threshold,
+                    rsi_oversold=rsi_oversold,
+                    rsi_overbought=rsi_overbought,
+                    volume_threshold=volume_threshold,
+                    use_atr_stops=use_atr_stops,
+                    atr_multiplier=atr_multiplier,
+                    fixed_stop_pct=fixed_stop_pct,
+                    target_rr=target_rr
+                )
+                
+                df_signals = generator.generate_signals(df)
+                
+                signal_count = (df_signals['signal'] != 0).sum()
+                st.info(f"Generated {signal_count} signals (Long: {(df_signals['signal']==1).sum()}, Short: {(df_signals['signal']==-1).sum()})")
+                
+                # Run backtest
+                engine = RangeBoundBacktestEngine(
+                    initial_capital=rb_capital,
+                    leverage=rb_leverage,
+                    fee_rate=0.0006
+                )
+                
+                signals_dict = {rb_symbol: df_signals}
+                metrics = engine.run_backtest(signals_dict)
+                
+                # Display results
+                st.subheader("Backtest Results")
+                
+                col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+                
+                with col_r1:
+                    st.metric(
+                        "Final Equity",
+                        f"${metrics['final_equity']:,.2f}",
+                        delta=f"${metrics['final_equity'] - rb_capital:,.2f}"
+                    )
+                    st.metric("Total Trades", metrics['total_trades'])
+                
+                with col_r2:
+                    st.metric(
+                        "Return %",
+                        f"{metrics['total_return_pct']:.2f}%",
+                        delta="vs 0.18% original"
+                    )
+                    st.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
+                
+                with col_r3:
+                    st.metric(
+                        "Profit Factor",
+                        f"{metrics['profit_factor']:.2f}",
+                        delta="target >1.5"
+                    )
+                    st.metric("Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}")
+                
+                with col_r4:
+                    st.metric(
+                        "Max Drawdown",
+                        f"{metrics['max_drawdown_pct']:.2f}%"
+                    )
+                    avg_duration = metrics['avg_duration_min']
+                    st.metric("Avg Hold (min)", f"{avg_duration:.0f}" if avg_duration else "N/A")
+                
+                # Equity curve
+                st.markdown("### Equity Curve")
+                fig = engine.plot_equity_curve()
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Trade details
+                trades_df = engine.get_trades_dataframe()
+                if not trades_df.empty:
+                    st.markdown("### Trade Details (Last 20)")
+                    display_cols = ['Entry Time', 'Exit Time', 'Direction', 'Entry Price', 'Exit Price',
+                                  'PnL (USDT)', 'PnL %', 'Exit Reason', 'Hold Time (min)']
+                    st.dataframe(trades_df[display_cols].tail(20), use_container_width=True)
+                    
+                    # Download button
+                    csv = trades_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="Download Full Trade Log CSV",
+                        data=csv,
+                        file_name=f"{rb_symbol}_strategy_c_backtest.csv",
+                        mime="text/csv",
+                        key="rb_download"
+                    )
+                    
+                    # Performance analysis
+                    if metrics['total_return_pct'] > 5 and metrics['win_rate'] > 40:
+                        st.balloons()
+                        st.success("Strategy C performs excellently! Win rate and profit factor both improved significantly")
+                else:
+                    st.warning("No trades generated, please adjust parameters")
+                    
+            except Exception as e:
+                st.error(f"Backtest error: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
