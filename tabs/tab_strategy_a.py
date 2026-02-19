@@ -12,7 +12,7 @@ from data.binance_loader import BinanceDataLoader
 
 
 def render_strategy_a_tab(loader, symbol_selector):
-    """渲染策略A Tab - 一鍵執行ML訓練和Tick級別回測"""
+    """渲柔策略A Tab - 一鍵執行ML訓練和Tick級別回測"""
     
     st.header("策略 A: ML驅動的區間震盪交易")
     
@@ -20,23 +20,16 @@ def render_strategy_a_tab(loader, symbol_selector):
     **策略核心優勢**:
     
     [+] 無固定RSI限制 - AI模型動態學習最佳進場時機
-    
     [+] 20+智能特徵 - 價格、波動、成交量、趨勢多維分析
-    
     [+] 雙模型架構 - 做多/做空獨立預測,更精準
-    
     [+] Tick級別回測 - 模擬K線內100個tick,真實反映止損觸發
-    
     [+] 自適應止損 - 基於ATR動態調整,適應市場波動
-    
-    ---
     
     **一鍵執行流程**: 選擇參數 -> 點擊按鈕 -> 自動訓練 -> 自動回測 -> 查看結果
     """)
     
     st.markdown("---")
     
-    # 參數設定區
     st.subheader("策略參數設定")
     
     col1, col2, col3 = st.columns(3)
@@ -124,7 +117,6 @@ def render_strategy_a_tab(loader, symbol_selector):
     
     st.markdown("---")
     
-    # 一鍵執行按鈕
     if st.button("開始執行: 訓練 + 回測", key="execute_all", type="primary", use_container_width=True):
         
         progress_bar = st.progress(0)
@@ -143,7 +135,6 @@ def render_strategy_a_tab(loader, symbol_selector):
                 df_all = loader.load_klines(symbol, '15m')
                 df_all = df_all.tail((train_days + test_days) * 96)
             
-            # Split train/test
             split_idx = len(df_all) - test_days * 96
             df_train = df_all.iloc[:split_idx].copy()
             df_test = df_all.iloc[split_idx:].copy()
@@ -163,7 +154,16 @@ def render_strategy_a_tab(loader, symbol_selector):
             
             train_stats = strategy.train(df_train, forward_bars=10)
             
-            st.success(f"訓練完成: 做多樣本 {train_stats['long_samples']}, 做空樣本 {train_stats['short_samples']}")
+            # 顯示詳細訓練結果
+            st.success("訓練完成!")
+            col_t1, col_t2, col_t3 = st.columns(3)
+            with col_t1:
+                st.metric("總樣本數", train_stats['total_samples'])
+            with col_t2:
+                st.metric("做多樣本", f"{train_stats['long_samples']} ({train_stats['long_ratio']})")
+            with col_t3:
+                st.metric("做空樣本", f"{train_stats['short_samples']} ({train_stats['short_ratio']})")
+            
             progress_bar.progress(50)
             
             # Step 3: 生成交易信號
@@ -182,14 +182,10 @@ def render_strategy_a_tab(loader, symbol_selector):
                 stop_loss = np.nan
                 take_profit = np.nan
                 
-                # 檢查是否在BB帶附近
                 near_lower = row['close'] <= row['bb_lower'] * 1.005
                 near_upper = row['close'] >= row['bb_upper'] * 0.995
-                
-                # 檢查ADX (盤整市場)
                 is_ranging = row['adx'] < adx_threshold
                 
-                # Debug info
                 signal_debug.append({
                     'index': i,
                     'close': row['close'],
@@ -224,7 +220,6 @@ def render_strategy_a_tab(loader, symbol_selector):
                     'take_profit': take_profit
                 })
             
-            # Pad signals
             signals = [{'signal': 0, 'long_proba': 0, 'short_proba': 0, 'stop_loss': np.nan, 'take_profit': np.nan}] * 50 + signals
             df_signals = pd.DataFrame(signals)
             
@@ -234,25 +229,29 @@ def render_strategy_a_tab(loader, symbol_selector):
             
             # 如果沒有信號,顯示調試信息
             if signal_count == 0:
-                st.warning("未生成任何交易信號,檢查以下統計數據:")
+                st.warning("未生成任何交易信號")
                 
                 debug_df = pd.DataFrame(signal_debug)
-                st.write("**信號條件統計**:")
-                col_d1, col_d2, col_d3 = st.columns(3)
+                
+                st.write("**模型預測統計**:")
+                col_d1, col_d2, col_d3, col_d4 = st.columns(4)
                 with col_d1:
-                    st.metric("價格接近下軌次數", debug_df['near_lower'].sum())
-                    st.metric("價格接近上軌次數", debug_df['near_upper'].sum())
+                    st.metric("做多機率平均", f"{debug_df['long_proba'].mean():.3f}")
+                    st.metric("做多機率最大", f"{debug_df['long_proba'].max():.3f}")
                 with col_d2:
-                    st.metric("盤整市場次數", debug_df['is_ranging'].sum())
-                    st.metric("平均ADX", f"{debug_df['adx'].mean():.1f}")
+                    st.metric("做空機率平均", f"{debug_df['short_proba'].mean():.3f}")
+                    st.metric("做空機率最大", f"{debug_df['short_proba'].max():.3f}")
                 with col_d3:
                     st.metric("做多機率>閾值次數", (debug_df['long_proba'] > confidence_threshold).sum())
                     st.metric("做空機率>閾值次數", (debug_df['short_proba'] > confidence_threshold).sum())
+                with col_d4:
+                    st.metric("盤整市場次數", debug_df['is_ranging'].sum())
+                    st.metric("平均ADX", f"{debug_df['adx'].mean():.1f}")
                 
                 st.info("""
                 **建議調整**:
-                1. 降低「模型信心度閾值」到 0.4 或更低
-                2. 提高「ADX閾值」到 30-35 以增加盤整市場識別
+                1. 降低「模型信心度閾值」到模型機率最大值以下
+                2. 提高「ADX閾值」以增加盤整市場識別
                 3. 增加訓練數據天數到 120-180 天
                 """)
                 return
@@ -282,7 +281,6 @@ def render_strategy_a_tab(loader, symbol_selector):
             st.markdown("---")
             st.subheader("回測結果")
             
-            # 關鍵指標
             col_r1, col_r2, col_r3, col_r4 = st.columns(4)
             
             with col_r1:
@@ -347,20 +345,17 @@ def render_strategy_a_tab(loader, symbol_selector):
                 st.markdown("---")
                 st.subheader("交易明細 (最近20筆)")
                 
-                # 顯示格式化的交易記錄
                 display_df = trades_df[[
                     'entry_time', 'exit_time', 'direction',
                     'entry_price', 'exit_price', 'pnl_usdt', 'pnl_pct', 'exit_reason'
                 ]].tail(20).copy()
                 
-                # 格式化
                 display_df['pnl_usdt'] = display_df['pnl_usdt'].apply(lambda x: f"${x:.2f}")
                 display_df['entry_price'] = display_df['entry_price'].apply(lambda x: f"${x:.2f}")
                 display_df['exit_price'] = display_df['exit_price'].apply(lambda x: f"${x:.2f}")
                 
                 st.dataframe(display_df, use_container_width=True)
                 
-                # 下載按鈕
                 csv = trades_df.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     label="下載完整交易記錄 CSV",
