@@ -14,8 +14,8 @@ class TickLevelBacktestEngine:
         initial_capital: float = 10000.0,
         leverage: float = 3.0,
         fee_rate: float = 0.0006,
-        slippage_pct: float = 0.02,  # 0.02% slippage
-        ticks_per_candle: int = 100  # Simulate 100 ticks per 15min candle
+        slippage_pct: float = 0.02,
+        ticks_per_candle: int = 100
     ):
         self.initial_capital = initial_capital
         self.leverage = leverage
@@ -25,7 +25,6 @@ class TickLevelBacktestEngine:
         
         self.trades = []
         self.equity_curve = []
-        self.tick_data = []
     
     def simulate_intrabar_ticks(self, row: pd.Series) -> List[float]:
         """Simulate realistic intra-bar price movement using OHLC"""
@@ -34,54 +33,34 @@ class TickLevelBacktestEngine:
         low_price = row['low']
         close_price = row['close']
         
-        # Determine intra-bar pattern based on OHLC relationship
-        if close_price >= open_price:  # Bullish candle
+        if close_price >= open_price:
             if high_price - open_price > close_price - low_price:
-                # High made early
-                ticks = self._generate_pattern(
-                    open_price, high_price, low_price, close_price,
-                    pattern='high_first'
-                )
+                ticks = self._generate_pattern(open_price, high_price, low_price, close_price, 'high_first')
             else:
-                # Low made early
-                ticks = self._generate_pattern(
-                    open_price, high_price, low_price, close_price,
-                    pattern='low_first'
-                )
-        else:  # Bearish candle
+                ticks = self._generate_pattern(open_price, high_price, low_price, close_price, 'low_first')
+        else:
             if open_price - low_price > high_price - close_price:
-                # Low made early
-                ticks = self._generate_pattern(
-                    open_price, high_price, low_price, close_price,
-                    pattern='low_first'
-                )
+                ticks = self._generate_pattern(open_price, high_price, low_price, close_price, 'low_first')
             else:
-                # High made early
-                ticks = self._generate_pattern(
-                    open_price, high_price, low_price, close_price,
-                    pattern='high_first'
-                )
+                ticks = self._generate_pattern(open_price, high_price, low_price, close_price, 'high_first')
         
         return ticks
     
     def _generate_pattern(self, o, h, l, c, pattern='high_first') -> List[float]:
-        """Generate tick sequence based on pattern"""
+        """Generate tick sequence"""
         n = self.ticks_per_candle
         
         if pattern == 'high_first':
-            # Open -> High -> Low -> Close
             segment1 = np.linspace(o, h, n//4)
             segment2 = np.linspace(h, l, n//2)
             segment3 = np.linspace(l, c, n//4)
             ticks = np.concatenate([segment1, segment2, segment3])
         else:
-            # Open -> Low -> High -> Close
             segment1 = np.linspace(o, l, n//4)
             segment2 = np.linspace(l, h, n//2)
             segment3 = np.linspace(h, c, n//4)
             ticks = np.concatenate([segment1, segment2, segment3])
         
-        # Add micro noise
         noise = np.random.normal(0, (h - l) * 0.01, len(ticks))
         ticks = ticks + noise
         ticks = np.clip(ticks, l, h)
@@ -89,7 +68,7 @@ class TickLevelBacktestEngine:
         return ticks.tolist()
     
     def run_backtest(self, df: pd.DataFrame, signals: pd.DataFrame) -> Dict:
-        """Run tick-level backtest"""
+        """Run tick-level backtest with dynamic position sizing"""
         balance = self.initial_capital
         position = None
         
@@ -98,11 +77,9 @@ class TickLevelBacktestEngine:
             signal_row = signals.iloc[i]
             current_time = row.get('open_time', i)
             
-            # Simulate intra-bar ticks
             ticks = self.simulate_intrabar_ticks(row)
             
             for tick_idx, tick_price in enumerate(ticks):
-                # Calculate current equity
                 current_equity = balance
                 if position:
                     if position['type'] == 'long':
@@ -111,7 +88,6 @@ class TickLevelBacktestEngine:
                         unrealized_pnl = (position['entry'] - tick_price) * position['size']
                     current_equity += unrealized_pnl
                 
-                # Record equity at first tick of each candle
                 if tick_idx == 0:
                     self.equity_curve.append({
                         'time': current_time,
@@ -119,7 +95,6 @@ class TickLevelBacktestEngine:
                         'balance': balance
                     })
                 
-                # Check stop loss / take profit at EVERY tick
                 if position:
                     hit_sl = ((position['type'] == 'long' and tick_price <= position['sl']) or
                              (position['type'] == 'short' and tick_price >= position['sl']))
@@ -136,7 +111,6 @@ class TickLevelBacktestEngine:
                     else:
                         continue
                     
-                    # Close position
                     if position['type'] == 'long':
                         pnl = (exit_price - position['entry']) * position['size']
                     else:
@@ -154,22 +128,23 @@ class TickLevelBacktestEngine:
                         'exit_price': exit_price,
                         'pnl_usdt': pnl,
                         'pnl_pct': (pnl / (position['entry'] * position['size'] / self.leverage)) * 100,
-                        'exit_reason': exit_reason,
-                        'tick_index': tick_idx
+                        'exit_reason': exit_reason
                     })
                     
                     position = None
-                    break  # Exit tick loop after closing position
+                    break
             
-            # Check for new entry signal at candle close
             if position is None:
                 signal = signal_row.get('signal', 0)
                 long_proba = signal_row.get('long_proba', 0)
                 short_proba = signal_row.get('short_proba', 0)
                 
-                if signal == 1 and long_proba > 0.5:  # Long signal
+                # Get dynamic position size
+                position_size_pct = signal_row.get('position_size', 1.0)
+                
+                if signal == 1 and long_proba > 0.5:
                     entry_price = row['close'] * (1 + self.slippage_pct / 100)
-                    position_value = balance * self.leverage
+                    position_value = balance * self.leverage * position_size_pct
                     position_size = position_value / entry_price
                     
                     open_fee = entry_price * position_size * self.fee_rate
@@ -184,9 +159,9 @@ class TickLevelBacktestEngine:
                         'entry_time': current_time
                     }
                 
-                elif signal == -1 and short_proba > 0.5:  # Short signal
+                elif signal == -1 and short_proba > 0.5:
                     entry_price = row['close'] * (1 - self.slippage_pct / 100)
-                    position_value = balance * self.leverage
+                    position_value = balance * self.leverage * position_size_pct
                     position_size = position_value / entry_price
                     
                     open_fee = entry_price * position_size * self.fee_rate
@@ -201,7 +176,6 @@ class TickLevelBacktestEngine:
                         'entry_time': current_time
                     }
         
-        # Force close any remaining position
         if position:
             final_price = df.iloc[-1]['close']
             if position['type'] == 'long':
@@ -278,7 +252,7 @@ class TickLevelBacktestEngine:
             x=equity_df['time'],
             y=equity_df['equity'],
             mode='lines',
-            name='Equity (Tick-Level)',
+            name='Equity',
             line=dict(color='blue', width=2)
         ))
         
@@ -290,7 +264,7 @@ class TickLevelBacktestEngine:
         )
         
         fig.update_layout(
-            title='Strategy D - Tick-Level Equity Curve',
+            title='Equity Curve (Tick-Level Simulation)',
             xaxis_title='Time',
             yaxis_title='Equity (USDT)',
             hovermode='x unified',
