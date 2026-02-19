@@ -1,4 +1,4 @@
-"""策略A: 純ML預測 - 不依賰傳統指標"""
+"""策略A: 高頻ML策略 - 預測下1根K線0.5%波動"""
 
 import streamlit as st
 import pandas as pd
@@ -12,111 +12,97 @@ from backtesting.tick_level_engine import TickLevelBacktestEngine
 from data.binance_loader import BinanceDataLoader
 
 
-class PureMLStrategy:
-    """純ML預測策略 - 預測未來N根K線的價格方向"""
+class HighFreqMLStrategy:
+    """高頻ML策略 - 預測短期快速波動"""
     
-    def __init__(self, lookback=20, forward_bars=3):
-        self.lookback = lookback
-        self.forward_bars = forward_bars
+    def __init__(self):
         self.model_long = None
         self.model_short = None
         self.scaler = StandardScaler()
         self.feature_cols = None
     
     def create_features(self, df):
-        """創建純價格特徵 - 不用任何指標"""
+        """短期特徵"""
         df = df.copy()
         
-        # 價格變化率特徵
-        for i in [1, 2, 3, 5, 10, 15, 20]:
+        # 近期價格變化
+        for i in [1, 2, 3, 5, 8]:
             df[f'ret_{i}'] = df['close'].pct_change(i)
-            df[f'high_ret_{i}'] = df['high'].pct_change(i)
-            df[f'low_ret_{i}'] = df['low'].pct_change(i)
         
-        # 波動率特徵
-        for i in [5, 10, 20]:
-            df[f'volatility_{i}'] = df['close'].pct_change().rolling(i).std()
-            df[f'range_{i}'] = (df['high'] - df['low']) / (df['close'] + 1e-10)
+        # 動量
+        for i in [3, 5, 10]:
+            df[f'momentum_{i}'] = df['close'] - df['close'].shift(i)
         
-        # 成交量特徵
-        df['volume_ret_1'] = df['volume'].pct_change(1)
-        df['volume_ret_5'] = df['volume'].pct_change(5)
-        volume_ma = df['volume'].rolling(20).mean()
-        df['volume_ma_ratio'] = df['volume'] / (volume_ma + 1e-10)
+        # 短期波動
+        for i in [3, 5, 10]:
+            df[f'std_{i}'] = df['close'].rolling(i).std()
         
         # K線形態
-        df['body'] = (df['close'] - df['open']) / (df['close'] + 1e-10)
-        df['upper_shadow'] = (df['high'] - df[['open', 'close']].max(axis=1)) / (df['close'] + 1e-10)
-        df['lower_shadow'] = (df[['open', 'close']].min(axis=1) - df['low']) / (df['close'] + 1e-10)
+        df['body_pct'] = (df['close'] - df['open']) / (df['high'] - df['low'] + 1e-10)
+        df['upper_wick'] = (df['high'] - df[['open','close']].max(axis=1)) / (df['high'] - df['low'] + 1e-10)
+        df['lower_wick'] = (df[['open','close']].min(axis=1) - df['low']) / (df['high'] - df['low'] + 1e-10)
         
-        # 價格位置
-        for i in [10, 20, 50]:
-            rolling_min = df['close'].rolling(i).min()
-            rolling_max = df['close'].rolling(i).max()
-            df[f'price_position_{i}'] = (df['close'] - rolling_min) / (rolling_max - rolling_min + 1e-10)
+        # 成交量
+        df['volume_ratio'] = df['volume'] / df['volume'].rolling(10).mean()
+        
+        # 價格加速度
+        df['accel_1'] = df['close'].pct_change(1) - df['close'].pct_change(1).shift(1)
+        df['accel_2'] = df['close'].pct_change(2) - df['close'].pct_change(2).shift(1)
+        
+        # 高低點距離
+        df['dist_high_5'] = (df['high'].rolling(5).max() - df['close']) / df['close']
+        df['dist_low_5'] = (df['close'] - df['low'].rolling(5).min()) / df['close']
         
         return df
     
     def create_labels(self, df):
-        """創建標籤 - 未來是否上漨/下跌超過閾值"""
+        """短期標籤 - 下1根K線能否剕0.5%+"""
         df = df.copy()
         
-        # 未來最高/最低價
-        df['future_high'] = df['high'].rolling(self.forward_bars).max().shift(-self.forward_bars)
-        df['future_low'] = df['low'].rolling(self.forward_bars).min().shift(-self.forward_bars)
+        # 下1根最高/最低
+        df['next_high'] = df['high'].shift(-1)
+        df['next_low'] = df['low'].shift(-1)
         
-        # 做多機會: 未來能上漨1%+
-        df['long_target'] = ((df['future_high'] - df['close']) / (df['close'] + 1e-10) > 0.01).astype(int)
+        # 做多: 下1根最高 > 現價 * 1.005
+        df['long_target'] = ((df['next_high'] - df['close']) / df['close'] > 0.005).astype(int)
         
-        # 做空機會: 未來會下跌1%+
-        df['short_target'] = ((df['close'] - df['future_low']) / (df['close'] + 1e-10) > 0.01).astype(int)
+        # 做空: 下1根最低 < 現價 * 0.995
+        df['short_target'] = ((df['close'] - df['next_low']) / df['close'] > 0.005).astype(int)
         
         return df
     
     def train(self, df):
-        """訓練模型"""
         df = self.create_features(df)
         df = self.create_labels(df)
-        
-        # 移除 inf 和 nan
-        df = df.replace([np.inf, -np.inf], np.nan)
-        df = df.dropna()
+        df = df.replace([np.inf, -np.inf], np.nan).dropna()
         
         if len(df) < 100:
-            raise ValueError(f"有效數據過少: {len(df)}, 需要至少100筆")
+            raise ValueError(f"有效數據過少: {len(df)}")
         
-        # 只保留數值特徵
-        exclude_cols = ['open', 'high', 'low', 'close', 'volume', 'open_time', 'close_time', 
-                       'long_target', 'short_target', 'future_high', 'future_low']
+        exclude = ['open', 'high', 'low', 'close', 'volume', 'open_time', 'close_time',
+                  'long_target', 'short_target', 'next_high', 'next_low']
         
-        self.feature_cols = [c for c in df.columns if c not in exclude_cols and df[c].dtype in ['float64', 'int64']]
+        self.feature_cols = [c for c in df.columns if c not in exclude and df[c].dtype in ['float64', 'int64']]
         
         X = df[self.feature_cols].values
-        
-        # 再次確認無 inf/nan
-        if np.any(~np.isfinite(X)):
-            raise ValueError("特徵中仍包含 inf 或 nan")
-        
         X_scaled = self.scaler.fit_transform(X)
         
         y_long = df['long_target'].values
         y_short = df['short_target'].values
         
-        # 訓練做多模型
         self.model_long = RandomForestClassifier(
-            n_estimators=100, 
-            max_depth=10, 
-            min_samples_split=50, 
+            n_estimators=50,  # 減少樹數加速
+            max_depth=8,
+            min_samples_split=30,
             random_state=42,
             n_jobs=-1
         )
         self.model_long.fit(X_scaled, y_long)
         
-        # 訓練做空模型
         self.model_short = RandomForestClassifier(
-            n_estimators=100, 
-            max_depth=10, 
-            min_samples_split=50, 
+            n_estimators=50,
+            max_depth=8,
+            min_samples_split=30,
             random_state=42,
             n_jobs=-1
         )
@@ -125,15 +111,13 @@ class PureMLStrategy:
         return {
             'long_samples': int(y_long.sum()),
             'short_samples': int(y_short.sum()),
-            'total_samples': len(df),
+            'total': len(df),
             'features': len(self.feature_cols)
         }
     
     def predict_batch(self, df):
-        """批量預測 - 更快"""
         df_test = self.create_features(df)
-        df_test = df_test.replace([np.inf, -np.inf], np.nan)
-        df_test = df_test.fillna(0)  # 用0填充nan
+        df_test = df_test.replace([np.inf, -np.inf], np.nan).fillna(0)
         
         X = df_test[self.feature_cols].values
         X_scaled = self.scaler.transform(X)
@@ -145,23 +129,20 @@ class PureMLStrategy:
 
 
 def render_strategy_a_tab(loader, symbol_selector):
-    st.header("策略 A: 純ML預測")
+    st.header("策略 A: 高頻ML")
     
     st.info("""
-    **純機器學習策略**:
+    **高頻交易ML策略**:
     
-    不使用任何傳統指標(RSI/MACD/BB等)
+    目標: 預測下1根K線(15分鐘)能否波動0.5%+
     
-    特徵:
-    - 價格變化率(1-20期)
-    - 波動率(5-20期)
-    - 成交量變化
-    - K線形態
-    - 價格相對位置
+    特點:
+    - 短期特徵(1-10期)
+    - 快速進出場
+    - 高交易頻率
+    - 小止損小止盈
     
-    預測: 未來3根K線能否獲利1%+
-    
-    優勢: 適應各種市場環境
+    適合: 波動市場
     """)
     
     st.markdown("---")
@@ -172,24 +153,24 @@ def render_strategy_a_tab(loader, symbol_selector):
         st.markdown("**數據**")
         symbol_list = symbol_selector("strategy_a", multi=False)
         symbol = symbol_list[0]
-        train_days = st.slider("訓練天數", 60, 180, 120, key="train")
+        train_days = st.slider("訓練天數", 30, 120, 60, key="train")
         test_days = st.slider("回測天數", 7, 60, 30, key="test")
     
     with col2:
         st.markdown("**交易**")
         capital = st.number_input("資金", 1000.0, 100000.0, 10000.0, 1000.0, key="cap")
         leverage = st.slider("槓桿", 3, 10, 5, key="lev")
-        confidence = st.slider("信心度", 0.4, 0.8, 0.55, 0.05, key="conf")
+        confidence = st.slider("信心度", 0.45, 0.70, 0.52, 0.01, key="conf")
     
     with col3:
         st.markdown("**風控**")
-        target_pct = st.slider("目標獲利%", 0.5, 3.0, 1.0, 0.1, key="target")
-        stop_pct = st.slider("止損%", 0.5, 3.0, 1.5, 0.1, key="stop")
-        position_pct = st.slider("倉位%", 40, 100, 70, 10, key="pos")
+        target_pct = st.slider("目標%", 0.3, 1.5, 0.6, 0.1, key="target")
+        stop_pct = st.slider("止損%", 0.3, 1.5, 0.8, 0.1, key="stop")
+        position_pct = st.slider("倉位%", 30, 100, 60, 10, key="pos")
     
     st.markdown("---")
     
-    if st.button("執行純ML策略", type="primary", use_container_width=True):
+    if st.button("執行高頻ML", type="primary", use_container_width=True):
         prog = st.progress(0)
         stat = st.empty()
         
@@ -212,29 +193,20 @@ def render_strategy_a_tab(loader, symbol_selector):
             st.success(f"{len(df_train)}+{len(df_test)}")
             prog.progress(30)
             
-            stat.text("2/4: 訓練ML...")
-            strategy = PureMLStrategy(lookback=20, forward_bars=3)
+            stat.text("2/4: 訓練...")
+            strategy = HighFreqMLStrategy()
             stats = strategy.train(df_train)
             st.success(f"L:{stats['long_samples']} S:{stats['short_samples']} | {stats['features']}特徵")
             prog.progress(60)
             
-            stat.text("3/4: 生成信號 (批量預測)...")
-            
-            # 批量預測 - 一次性預測所有數據
+            stat.text("3/4: 預測...")
             long_proba_all, short_proba_all = strategy.predict_batch(df_test)
             
             signals = []
             
             for i in range(len(df_test)):
-                if i < 50:
-                    signals.append({
-                        'signal': 0,
-                        'stop_loss': np.nan,
-                        'take_profit': np.nan,
-                        'position_size': 1.0,
-                        'long_proba': 0,
-                        'short_proba': 0
-                    })
+                if i < 20:
+                    signals.append({'signal': 0, 'stop_loss': np.nan, 'take_profit': np.nan, 'position_size': 1.0})
                     continue
                 
                 lp = long_proba_all[i]
@@ -245,14 +217,12 @@ def render_strategy_a_tab(loader, symbol_selector):
                 sl = np.nan
                 tp = np.nan
                 
-                # 做多
                 if lp > confidence and lp > sp:
                     sig = 1
                     entry = r['close']
                     sl = entry * (1 - stop_pct / 100)
                     tp = entry * (1 + target_pct / 100)
                 
-                # 做空
                 elif sp > confidence and sp > lp:
                     sig = -1
                     entry = r['close']
@@ -263,9 +233,7 @@ def render_strategy_a_tab(loader, symbol_selector):
                     'signal': sig,
                     'stop_loss': sl,
                     'take_profit': tp,
-                    'position_size': position_pct / 100.0,
-                    'long_proba': lp,
-                    'short_proba': sp
+                    'position_size': position_pct / 100.0
                 })
             
             df_sig = pd.DataFrame(signals)
@@ -273,7 +241,7 @@ def render_strategy_a_tab(loader, symbol_selector):
             cnt = (df_sig['signal'] != 0).sum()
             
             if cnt == 0:
-                st.warning("無信號 - 降低信心度到 0.50")
+                st.warning("無信號 - 降低信心度")
                 return
             
             long_cnt = (df_sig['signal'] == 1).sum()
@@ -288,7 +256,6 @@ def render_strategy_a_tab(loader, symbol_selector):
             prog.progress(100)
             stat.text("完成")
             
-            # Results
             st.markdown("---")
             st.subheader("結果")
             
@@ -314,13 +281,15 @@ def render_strategy_a_tab(loader, symbol_selector):
             
             st.markdown("---")
             
-            if wr >= 50 and pf >= 1.2:
+            if metrics['total_trades'] < 20:
+                st.warning("交易次數少 - 降低信心度")
+            elif wr >= 50 and pf >= 1.2:
                 st.success("✅ 策略有效")
                 st.balloons()
             elif ret > 0:
                 st.info("⚠️ 有獲利但需優化")
             else:
-                st.warning("❌ 需調整參數")
+                st.warning("❌ 需調整")
             
             st.markdown("---")
             st.subheader("權益")
@@ -341,10 +310,22 @@ def render_strategy_a_tab(loader, symbol_selector):
                 c3.metric("平均贏", f"${wins['pnl_usdt'].mean():.2f}" if len(wins)>0 else "$0")
                 c4.metric("平均輸", f"${losses['pnl_usdt'].mean():.2f}" if len(losses)>0 else "$0")
                 
-                st.dataframe(trades[['entry_time', 'direction', 'entry_price', 'exit_price', 'pnl_usdt', 'exit_reason']].tail(30), use_container_width=True)
+                st.dataframe(trades[['entry_time', 'direction', 'entry_price', 'exit_price', 'pnl_usdt', 'exit_reason']].tail(50), use_container_width=True)
                 
                 csv = trades.to_csv(index=False).encode('utf-8')
-                st.download_button("CSV", csv, f"{symbol}_ml_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
+                st.download_button("CSV", csv, f"{symbol}_hfml_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
+            
+            st.markdown("---")
+            st.subheader("建議")
+            
+            if metrics['total_trades'] >= 50:
+                st.success("交易頻率良好")
+            
+            if wr < 50:
+                st.info("勝率低 - 嘗試降低信心度到 0.50 或調整止損/止盈比例")
+            
+            if pf < 1.0:
+                st.warning("盈虧比<1 - 考慮拉大止盈或縮小止損")
             
         except Exception as e:
             st.error(f"錯: {e}")
