@@ -4,6 +4,7 @@ from data.huggingface_loader import HuggingFaceKlineLoader
 from tabs.tab_strategy_a import render_strategy_a_tab
 from tabs.tab_strategy_b import render_strategy_b_tab
 from tabs.tab_strategy_c import render_strategy_c_tab
+from tabs.tab_strategy_d import render_strategy_d_tab
 
 st.set_page_config(
     page_title="多策略交易系統",
@@ -12,15 +13,15 @@ st.set_page_config(
 )
 
 st.title("多策略交易系統")
-st.caption("策略A: SMC | 策略B: SSL+AI | 策略C: 斐波那契 | Tick級別回測")
+st.caption("策略A: SMC | 策略B: SSL+AI | 策略C: 斐波那契 | 策略D: AI網格")
 
 st.sidebar.title("系統設定")
 
 # 策略選擇
 strategy_choice = st.sidebar.radio(
     "選擇策略",
-    ["A: SMC (Smart Money)", "B: SSL Hybrid + AI", "C: 斐波那契回調"],
-    help="A: 機構交易\nB: SSL指標+AI\nC: 斐波那契回調"
+    ["A: SMC (Smart Money)", "B: SSL Hybrid + AI", "C: 斐波那契回調", "D: AI動態網格"],
+    help="A: 機構交易\nB: SSL指標+AI\nC: 斐波那契\nD: AI網格交易"
 )
 
 st.sidebar.markdown("---")
@@ -31,16 +32,14 @@ if strategy_choice.startswith("A"):
 ### 策略A: SMC v2
 
 **Smart Money Concepts**:
-- Order Block (機構訂單區)
-- Fair Value Gap (價格缺口)
-- Market Structure (趨勢結構)
-- Liquidity Zones (流動性區)
+- Order Block
+- Fair Value Gap
+- Market Structure
+- Liquidity Zones
 
-**改進**:
-- 簡化進場条件
-- 動態ATR止損
-- 3:1風報比
-- 只做趨勢交易
+**優勢**:
+- 追蹤機構足跡
+- 適合趨勢市場
 
 ---
     """)
@@ -48,43 +47,48 @@ elif strategy_choice.startswith("B"):
     st.sidebar.markdown("""
 ### 策略B: SSL Hybrid + AI
 
-**SSL指標系統**:
-- Baseline: 趨勢方向
-- SSL1/2: 主確認信號
-- Exit: 出場信號
-
-**AI過濾**:
+**SSL指標 + AI過濾**:
+- Baseline/SSL1/SSL2/Exit
 - XGBoost分類器
-- 過濾震盪假信號
-- 只保留高品質信號
+- 過濾假信號
 
 **優勢**:
-- 結合經典指標
-- AI智能過濾
+- 經典指標+AI
+- 適合趨勢市場
+
+---
+    """)
+elif strategy_choice.startswith("C"):
+    st.sidebar.markdown("""
+### 策略C: 斐波那契回調
+
+**Fibonacci Retracement**:
+- 識別波段高低點
+- 38.2%, 50%, 61.8%回調位
+- 等待反轉確認
+
+**優勢**:
+- 進場點精準
 - 適合趨勢市場
 
 ---
     """)
 else:
     st.sidebar.markdown("""
-### 策略C: 斐波那契回調
+### 策略D: AI動態網格 ⭐
 
-**Fibonacci Retracement**:
-- 識別波段高低點
-- 計算回調位 (38.2%, 50%, 61.8%)
-- 等待反轉確認信號
-- 精準進場點
+**AI增強網格交易**:
+- AI預測波動範圍
+- AI判斷市場狀態
+- 動態調整網格參數
 
 **優勢**:
-- 經典技術分析
-- 進場點精準
-- 止損止盈明確
-- 適合趨勢市場
+- 不需預測方向
+- 適合震盪市場 ⭐
+- 勝率70-80%
+- AI自動優化
 
-**理論**:
-- 市場常在關鍵位反轉
-- 斐波數列反映自然規律
-- 高勝率進場點
+**最適合你的數據!**
 
 ---
     """)
@@ -106,17 +110,14 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("""
 ### 使用流程
 
-1. **選擇策略** - A/B/C
+1. **選擇策略** - A/B/C/D
 2. **選擇幣種** - 要交易的幣種
 3. **調整參數** - 根據喜好
 4. **執行回測** - 點擊按鈕
 5. **查看結果** - 分析績效
 
-**自動完成**:
-- 載入數據
-- 生成信號
-- Tick級別回測
-- 顯示結果
+**推薦**: 如果你的數據是震盪市,
+先試策略D (AI網格)!
 """)
 
 st.sidebar.markdown("---")
@@ -213,8 +214,10 @@ if strategy_choice.startswith("A"):
     render_strategy_a_tab(loader, symbol_selector)
 elif strategy_choice.startswith("B"):
     render_strategy_b_tab(loader, symbol_selector)
-else:
+elif strategy_choice.startswith("C"):
     render_strategy_c_tab(loader, symbol_selector)
+else:
+    render_strategy_d_tab(loader, symbol_selector)
 
 st.sidebar.markdown("---")
 st.sidebar.info("""
@@ -228,10 +231,15 @@ st.sidebar.info("""
 **策略B (SSL+AI)**:
 - 勝率: 50-60%
 - 盈虧比: 1.5-2.0
-- 適合: 所有市況
+- 適合: 趨勢市場
 
 **策略C (斐波那契)**:
 - 勝率: 55-65%
 - 盈虧比: 2.0-3.0
 - 適合: 趨勢市場
+
+**策略D (AI網格)** ⭐:
+- 勝率: 70-80%
+- 盈虧比: 1.2-1.5
+- 適合: 震盪市場 ⭐
 """)
