@@ -111,11 +111,13 @@ class MLRangeBoundStrategy:
         return df
     
     def extract_features(self, df: pd.DataFrame, idx: int) -> np.ndarray:
-        """Extract features for ML model at specific index"""
-        return df.iloc[idx][self.feature_names].values
+        """Extract features for ML model at specific index - returns numpy array"""
+        # Extract as numpy array with explicit float64 dtype
+        features = df.iloc[idx][self.feature_names].values.astype(np.float64)
+        return features
     
     def create_labels(self, df: pd.DataFrame, forward_bars: int = 10) -> pd.DataFrame:
-        """Create training labels - RELAXED criteria for more training samples"""
+        """Create training labels"""
         df = df.copy()
         
         # Calculate future max/min
@@ -126,7 +128,7 @@ class MLRangeBoundStrategy:
         df['future_profit_long'] = (df['future_max'] - df['close']) / df['close']
         df['future_profit_short'] = (df['close'] - df['future_min']) / df['close']
         
-        # RELAXED labels - only require positive movement
+        # Labels
         df['label_long'] = (
             (df['close'] <= df['bb_lower'] * 1.01) &
             (df['future_profit_long'] > 0.005)
@@ -151,11 +153,12 @@ class MLRangeBoundStrategy:
         if len(df_clean) == 0:
             raise ValueError("No valid training data after cleaning")
         
-        X = df_clean[self.feature_names].values
+        # Convert to numpy with explicit dtype
+        X = df_clean[self.feature_names].values.astype(np.float64)
         X_scaled = self.scaler.fit_transform(X)
         
         # Train long model
-        y_long = df_clean['label_long'].values
+        y_long = df_clean['label_long'].values.astype(np.int32)
         long_positive = y_long.sum()
         
         if long_positive == 0:
@@ -174,7 +177,7 @@ class MLRangeBoundStrategy:
         self.long_model.fit(X_scaled, y_long)
         
         # Train short model
-        y_short = df_clean['label_short'].values
+        y_short = df_clean['label_short'].values.astype(np.int32)
         short_positive = y_short.sum()
         
         if short_positive == 0:
@@ -192,8 +195,8 @@ class MLRangeBoundStrategy:
         )
         self.short_model.fit(X_scaled, y_short)
         
-        # Test prediction on training data to verify
-        test_idx = len(df_clean) // 2
+        # Test prediction
+        test_idx = len(X_scaled) // 2
         test_features = X_scaled[test_idx:test_idx+1]
         test_long_proba = self.long_model.predict_proba(test_features)[0][1]
         test_short_proba = self.short_model.predict_proba(test_features)[0][1]
@@ -215,7 +218,12 @@ class MLRangeBoundStrategy:
             return 0.0, 0.0
         
         try:
+            # Extract features as float64 numpy array
             features = self.extract_features(df, idx).reshape(1, -1)
+            
+            # Verify it's a proper numpy array with float dtype
+            if not isinstance(features, np.ndarray):
+                features = np.array(features, dtype=np.float64)
             
             # Check for invalid values
             if np.any(np.isnan(features)) or np.any(np.isinf(features)):
@@ -224,14 +232,16 @@ class MLRangeBoundStrategy:
             # Scale features
             features_scaled = self.scaler.transform(features)
             
-            # Predict probabilities
+            # Predict
             long_proba = self.long_model.predict_proba(features_scaled)[0][1]
             short_proba = self.short_model.predict_proba(features_scaled)[0][1]
             
             return float(long_proba), float(short_proba)
             
         except Exception as e:
-            print(f"Prediction error: {e}")
+            print(f"Prediction error at idx {idx}: {e}")
+            import traceback
+            traceback.print_exc()
             return 0.0, 0.0
     
     def _calculate_adx(self, df: pd.DataFrame) -> pd.Series:
