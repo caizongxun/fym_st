@@ -1,4 +1,4 @@
-"""策略A: SMC (Smart Money Concepts) - 機構交易逻輯"""
+"""策略A: SMC v2 - 改進版"""
 
 import streamlit as st
 import pandas as pd
@@ -12,200 +12,219 @@ from data.binance_loader import BinanceDataLoader
 
 class SMCStrategy:
     """
-    SMC策略 - Smart Money Concepts
+    SMC v2 - 改進版
     
-    核心概念:
-    1. Order Block (OB) - 機構訂單區
-    2. Fair Value Gap (FVG) - 公允價值缺口
-    3. Break of Structure (BOS) - 市場結構破壞
-    4. Change of Character (CHoCH) - 趨勢轉換
-    
-    逻輯:
-    - 機構在OB區域建倉
-    - FVG是回調進場點
-    - BOS確認趨勢繼續
+    改進:
+    1. 簡化進場条件 (1個就够)
+    2. 動態ATR止損
+    3. 更大止盈目標
+    4. 只做趨勢內交易
     """
     
     def __init__(self, lookback=50):
         self.lookback = lookback
     
-    def identify_market_structure(self, df):
-        """識別市場結構 - 高點/低點"""
+    def calculate_atr(self, df, period=14):
+        """計算ATR"""
         df = df.copy()
         
-        # 初始化
-        df['swing_high'] = 0
-        df['swing_low'] = 0
+        df['tr1'] = df['high'] - df['low']
+        df['tr2'] = abs(df['high'] - df['close'].shift(1))
+        df['tr3'] = abs(df['low'] - df['close'].shift(1))
+        df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+        df['atr'] = df['tr'].rolling(period).mean()
         
-        # 高點 (Swing High)
-        for i in range(5, len(df)-5):
-            if df.iloc[i]['high'] == df.iloc[i-5:i+6]['high'].max():
-                df.iloc[i, df.columns.get_loc('swing_high')] = 1
+        return df
+    
+    def identify_trend(self, df):
+        """識別趨勢 - EMA"""
+        df = df.copy()
         
-        # 低點 (Swing Low)
-        for i in range(5, len(df)-5):
-            if df.iloc[i]['low'] == df.iloc[i-5:i+6]['low'].min():
-                df.iloc[i, df.columns.get_loc('swing_low')] = 1
+        df['ema20'] = df['close'].ewm(span=20).mean()
+        df['ema50'] = df['close'].ewm(span=50).mean()
+        df['ema100'] = df['close'].ewm(span=100).mean()
         
-        # 趨勢判斷
+        # 趨勢方向
         df['trend'] = 0
+        df.loc[(df['ema20'] > df['ema50']) & (df['ema50'] > df['ema100']), 'trend'] = 1  # 上升
+        df.loc[(df['ema20'] < df['ema50']) & (df['ema50'] < df['ema100']), 'trend'] = -1  # 下降
         
-        highs_idx = df[df['swing_high'] == 1].index
-        lows_idx = df[df['swing_low'] == 1].index
-        
-        if len(highs_idx) >= 2 and len(lows_idx) >= 2:
-            recent_highs = df.loc[highs_idx[-5:], 'high'].values if len(highs_idx) >= 5 else df.loc[highs_idx, 'high'].values
-            recent_lows = df.loc[lows_idx[-5:], 'low'].values if len(lows_idx) >= 5 else df.loc[lows_idx, 'low'].values
-            
-            hh = recent_highs[-1] > recent_highs[-2] if len(recent_highs) >= 2 else False
-            hl = recent_lows[-1] > recent_lows[-2] if len(recent_lows) >= 2 else False
-            
-            if hh and hl:
-                df['trend'] = 1  # 上升
-            elif not hh and not hl:
-                df['trend'] = -1  # 下降
+        # 趨勢強度
+        df['trend_strength'] = abs(df['ema20'] - df['ema50']) / df['close']
         
         return df
     
     def identify_order_blocks(self, df):
-        """識別Order Block"""
+        """識別Order Block - 大量K線"""
         df = df.copy()
         
+        df['vol_ma'] = df['volume'].rolling(20).mean()
+        df['range'] = (df['high'] - df['low']) / df['close']
+        df['range_ma'] = df['range'].rolling(20).mean()
+        
+        # 看多OB: 大量 + 大振幅 + 上漨
         df['bullish_ob'] = 0
+        df.loc[
+            (df['volume'] > df['vol_ma'] * 1.5) &
+            (df['range'] > df['range_ma'] * 1.2) &
+            (df['close'] > df['open']),
+            'bullish_ob'
+        ] = 1
+        
+        # 看空OB: 大量 + 大振幅 + 下跌
         df['bearish_ob'] = 0
-        
-        for i in range(10, len(df)-1):
-            # 看空OB
-            big_drop = (df.iloc[i+1]['close'] < df.iloc[i]['close'] * 0.995) and \
-                       (df.iloc[i+1]['volume'] > df.iloc[i-10:i+1]['volume'].mean() * 1.5)
-            
-            if big_drop:
-                df.iloc[i, df.columns.get_loc('bearish_ob')] = 1
-        
-        for i in range(10, len(df)-1):
-            # 看多OB
-            big_rise = (df.iloc[i+1]['close'] > df.iloc[i]['close'] * 1.005) and \
-                      (df.iloc[i+1]['volume'] > df.iloc[i-10:i+1]['volume'].mean() * 1.5)
-            
-            if big_rise:
-                df.iloc[i, df.columns.get_loc('bullish_ob')] = 1
+        df.loc[
+            (df['volume'] > df['vol_ma'] * 1.5) &
+            (df['range'] > df['range_ma'] * 1.2) &
+            (df['close'] < df['open']),
+            'bearish_ob'
+        ] = 1
         
         return df
     
     def identify_fvg(self, df):
-        """識別Fair Value Gap"""
+        """識別FVG - 價格缺口"""
         df = df.copy()
         
         df['bullish_fvg'] = 0
         df['bearish_fvg'] = 0
         
         for i in range(2, len(df)):
-            # 看多FVG
+            # 看多FVG: K1高 < K3低
             if df.iloc[i-2]['high'] < df.iloc[i]['low']:
-                df.iloc[i-1, df.columns.get_loc('bullish_fvg')] = 1
+                gap_size = (df.iloc[i]['low'] - df.iloc[i-2]['high']) / df.iloc[i]['close']
+                if gap_size > 0.002:  # 至少0.2%的gap
+                    df.iloc[i-1, df.columns.get_loc('bullish_fvg')] = 1
             
-            # 看空FVG
+            # 看空FVG: K1低 > K3高
             if df.iloc[i-2]['low'] > df.iloc[i]['high']:
-                df.iloc[i-1, df.columns.get_loc('bearish_fvg')] = 1
+                gap_size = (df.iloc[i-2]['low'] - df.iloc[i]['high']) / df.iloc[i]['close']
+                if gap_size > 0.002:
+                    df.iloc[i-1, df.columns.get_loc('bearish_fvg')] = 1
         
         return df
     
-    def calculate_liquidity_zones(self, df):
-        """計算流動性區域"""
+    def calculate_support_resistance(self, df):
+        """計算支撑阻力"""
         df = df.copy()
         
-        df['recent_high'] = df['high'].rolling(20).max()
-        df['recent_low'] = df['low'].rolling(20).min()
-        df['price_pct'] = (df['close'] - df['recent_low']) / (df['recent_high'] - df['recent_low'] + 1e-10)
+        # 近20期高低點
+        df['resistance'] = df['high'].rolling(20).max()
+        df['support'] = df['low'].rolling(20).min()
+        
+        # 相對位置
+        df['price_position'] = (df['close'] - df['support']) / (df['resistance'] - df['support'] + 1e-10)
         
         return df
     
-    def generate_signals(self, df, use_ob=True, use_fvg=True, use_structure=True):
-        """生成SMC交易信號"""
-        df = self.identify_market_structure(df)
+    def generate_signals(self, df, min_conditions=1):
+        """生成SMC信號 - 簡化版"""
+        df = self.calculate_atr(df)
+        df = self.identify_trend(df)
         df = self.identify_order_blocks(df)
         df = self.identify_fvg(df)
-        df = self.calculate_liquidity_zones(df)
+        df = self.calculate_support_resistance(df)
         
         signals = []
         
-        for i in range(50, len(df)):
+        for i in range(100, len(df)):
             r = df.iloc[i]
             
             sig = 0
             reason = ""
+            sl_distance = 0
+            tp_distance = 0
             
-            # 做多機會
-            conditions_long = []
+            # 做多條件
+            long_cond = []
             
-            if use_structure and r['trend'] == 1:
-                conditions_long.append("UpTrend")
+            # 1. 上升趨勢
+            if r['trend'] == 1:
+                long_cond.append("UP")
             
-            if use_ob:
-                recent_ob = df.iloc[max(0, i-10):i]['bullish_ob'].sum() > 0
-                if recent_ob:
-                    conditions_long.append("BullOB")
+            # 2. 近期OB
+            if df.iloc[max(0, i-5):i]['bullish_ob'].sum() > 0:
+                long_cond.append("OB")
             
-            if use_fvg and r['bullish_fvg'] == 1:
-                conditions_long.append("BullFVG")
+            # 3. FVG
+            if r['bullish_fvg'] == 1:
+                long_cond.append("FVG")
             
-            if r['price_pct'] < 0.4:
-                conditions_long.append("LowZone")
+            # 4. 低位
+            if r['price_position'] < 0.5:
+                long_cond.append("LOW")
             
-            if len(conditions_long) >= 2:
+            # 5. 價格 > EMA20 (回調結束)
+            if r['close'] > r['ema20'] and df.iloc[i-1]['close'] < df.iloc[i-1]['ema20']:
+                long_cond.append("CROSS")
+            
+            # 做空條件
+            short_cond = []
+            
+            # 1. 下降趨勢
+            if r['trend'] == -1:
+                short_cond.append("DOWN")
+            
+            # 2. 近期OB
+            if df.iloc[max(0, i-5):i]['bearish_ob'].sum() > 0:
+                short_cond.append("OB")
+            
+            # 3. FVG
+            if r['bearish_fvg'] == 1:
+                short_cond.append("FVG")
+            
+            # 4. 高位
+            if r['price_position'] > 0.5:
+                short_cond.append("HIGH")
+            
+            # 5. 價格 < EMA20
+            if r['close'] < r['ema20'] and df.iloc[i-1]['close'] > df.iloc[i-1]['ema20']:
+                short_cond.append("CROSS")
+            
+            # 決定信號
+            if len(long_cond) >= min_conditions and r['trend'] == 1:
                 sig = 1
-                reason = "+".join(conditions_long)
+                reason = "+".join(long_cond)
+                # 動態ATR止損
+                sl_distance = r['atr'] * 1.5
+                tp_distance = r['atr'] * 3.0
             
-            # 做空機會
-            conditions_short = []
-            
-            if use_structure and r['trend'] == -1:
-                conditions_short.append("DownTrend")
-            
-            if use_ob:
-                recent_ob = df.iloc[max(0, i-10):i]['bearish_ob'].sum() > 0
-                if recent_ob:
-                    conditions_short.append("BearOB")
-            
-            if use_fvg and r['bearish_fvg'] == 1:
-                conditions_short.append("BearFVG")
-            
-            if r['price_pct'] > 0.6:
-                conditions_short.append("HighZone")
-            
-            if len(conditions_short) >= 2:
-                if sig == 0:
-                    sig = -1
-                    reason = "+".join(conditions_short)
+            elif len(short_cond) >= min_conditions and r['trend'] == -1:
+                sig = -1
+                reason = "+".join(short_cond)
+                sl_distance = r['atr'] * 1.5
+                tp_distance = r['atr'] * 3.0
             
             signals.append({
                 'signal': sig,
                 'reason': reason,
-                'trend': r['trend'],
-                'price_pct': r['price_pct']
+                'sl_distance': sl_distance,
+                'tp_distance': tp_distance,
+                'atr': r['atr']
             })
         
-        empty = [{'signal': 0, 'reason': '', 'trend': 0, 'price_pct': 0.5}] * 50
+        empty = [{'signal': 0, 'reason': '', 'sl_distance': 0, 'tp_distance': 0, 'atr': 0}] * 100
         return pd.DataFrame(empty + signals)
 
 
 def render_strategy_a_tab(loader, symbol_selector):
-    st.header("策略 A: SMC")
+    st.header("策略 A: SMC v2")
     
     st.info("""
-    **SMC (Smart Money Concepts)**:
+    **SMC v2 - 改進版**:
     
-    機構交易逻輯:
-    - Order Block: 機構大單區域
-    - Fair Value Gap: 價格缺口
-    - Market Structure: 趨勢結構
-    - Liquidity Zones: 流動性區域
+    改進:
+    1. 簡化進場 - 只需滿足N個條件
+    2. 動態ATR止損 - 根據波動調整
+    3. 更大止盈 - 3:1風報比
+    4. 只做趨勢 - 上升做多/下降做空
     
-    進場:
-    - 上升趨勢 + 看多OB + 低位回調
-    - 下降趨勢 + 看空OB + 高位回調
-    
-    理念: 跟隨機構資金
+    條件:
+    - UP/DOWN: 趨勢方向 (EMA20>50>100)
+    - OB: Order Block (大量K線)
+    - FVG: Fair Value Gap (價格缺口)
+    - LOW/HIGH: 相對位置
+    - CROSS: 交叉確認
     """)
     
     st.markdown("---")
@@ -225,18 +244,16 @@ def render_strategy_a_tab(loader, symbol_selector):
         position_pct = st.slider("倉位%", 40, 100, 70, 10, key="pos")
     
     with col3:
-        st.markdown("**風控**")
-        stop_pct = st.slider("止損%", 0.5, 2.5, 1.2, 0.1, key="sl")
-        target_pct = st.slider("止盈%", 0.8, 4.0, 2.0, 0.2, key="tp")
+        st.markdown("**SMC設定**")
+        min_conditions = st.slider("最少條件", 1, 3, 2, key="min_cond")
+        st.caption("越低信號越多但品質下降")
         
-        st.markdown("**SMC功能**")
-        use_ob = st.checkbox("Order Block", value=True, key="ob")
-        use_fvg = st.checkbox("FVG", value=True, key="fvg")
-        use_structure = st.checkbox("趨勢結構", value=True, key="struct")
+        atr_sl_mult = st.slider("止損ATR倍數", 1.0, 3.0, 1.5, 0.5, key="sl_mult")
+        atr_tp_mult = st.slider("止盈ATR倍數", 2.0, 5.0, 3.0, 0.5, key="tp_mult")
     
     st.markdown("---")
     
-    if st.button("執行SMC策略", type="primary", use_container_width=True):
+    if st.button("執行SMC v2", type="primary", use_container_width=True):
         prog = st.progress(0)
         stat = st.empty()
         
@@ -246,29 +263,32 @@ def render_strategy_a_tab(loader, symbol_selector):
             
             if isinstance(loader, BinanceDataLoader):
                 end = datetime.now()
-                start = end - timedelta(days=test_days + 10)
+                start = end - timedelta(days=test_days + 20)
                 df_test = loader.load_historical_data(symbol, '15m', start, end)
             else:
                 df_test = loader.load_klines(symbol, '15m')
-                df_test = df_test.tail((test_days + 10) * 96)
+                df_test = df_test.tail((test_days + 20) * 96)
             
             st.success(f"{len(df_test)}根")
             prog.progress(40)
             
-            stat.text("分析SMC結構...")
+            stat.text("分析SMC...")
             strategy = SMCStrategy()
-            df_sig = strategy.generate_signals(df_test, use_ob, use_fvg, use_structure)
+            df_sig = strategy.generate_signals(df_test, min_conditions)
             
-            # 加上止損止盈
+            # 設定止損止盈
             for i in range(len(df_sig)):
                 if df_sig.iloc[i]['signal'] != 0:
                     r = df_test.iloc[i]
+                    atr = df_sig.iloc[i]['atr']
+                    
                     if df_sig.iloc[i]['signal'] == 1:
-                        df_sig.at[i, 'stop_loss'] = r['close'] * (1 - stop_pct / 100)
-                        df_sig.at[i, 'take_profit'] = r['close'] * (1 + target_pct / 100)
+                        df_sig.at[i, 'stop_loss'] = r['close'] - (atr * atr_sl_mult)
+                        df_sig.at[i, 'take_profit'] = r['close'] + (atr * atr_tp_mult)
                     else:
-                        df_sig.at[i, 'stop_loss'] = r['close'] * (1 + stop_pct / 100)
-                        df_sig.at[i, 'take_profit'] = r['close'] * (1 - target_pct / 100)
+                        df_sig.at[i, 'stop_loss'] = r['close'] + (atr * atr_sl_mult)
+                        df_sig.at[i, 'take_profit'] = r['close'] - (atr * atr_tp_mult)
+                    
                     df_sig.at[i, 'position_size'] = position_pct / 100.0
                 else:
                     df_sig.at[i, 'stop_loss'] = np.nan
@@ -278,7 +298,7 @@ def render_strategy_a_tab(loader, symbol_selector):
             cnt = (df_sig['signal'] != 0).sum()
             
             if cnt == 0:
-                st.warning("無SMC信號 - 嘗試關閉某些功能降低門檻")
+                st.warning("無信號 - 降低最少條件")
                 return
             
             long_cnt = (df_sig['signal'] == 1).sum()
@@ -318,13 +338,13 @@ def render_strategy_a_tab(loader, symbol_selector):
             
             st.markdown("---")
             
-            if wr >= 50 and pf >= 1.3:
-                st.success("✅ SMC策略有效")
+            if wr >= 45 and pf >= 1.5:
+                st.success("✅ SMC v2有效!")
                 st.balloons()
             elif ret > 0:
-                st.info("⚠️ 有獲利但需優化")
+                st.info("⚠️ 有獲利")
             else:
-                st.warning("❌ 需調整")
+                st.warning("❌ 調整參數")
             
             st.markdown("---")
             st.subheader("權益")
@@ -342,13 +362,15 @@ def render_strategy_a_tab(loader, symbol_selector):
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("贏", len(wins))
                 c2.metric("輸", len(losses))
-                c3.metric("平均贏", f"${wins['pnl_usdt'].mean():.2f}" if len(wins)>0 else "$0")
-                c4.metric("平均輸", f"${losses['pnl_usdt'].mean():.2f}" if len(losses)>0 else "$0")
+                if len(wins) > 0:
+                    c3.metric("平均贏", f"${wins['pnl_usdt'].mean():.2f}")
+                if len(losses) > 0:
+                    c4.metric("平均輸", f"${losses['pnl_usdt'].mean():.2f}")
                 
                 st.dataframe(trades[['entry_time', 'direction', 'entry_price', 'exit_price', 'pnl_usdt', 'exit_reason']].tail(30), use_container_width=True)
                 
                 csv = trades.to_csv(index=False).encode('utf-8')
-                st.download_button("CSV", csv, f"{symbol}_smc_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
+                st.download_button("CSV", csv, f"{symbol}_smc_v2_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
             
         except Exception as e:
             st.error(f"錯: {e}")
