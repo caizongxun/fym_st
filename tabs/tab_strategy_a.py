@@ -1,4 +1,4 @@
-"""策略A: 純ML預測 - 不依賴傳統指標"""
+"""策略A: 純ML預測 - 不依賰傳統指標"""
 
 import streamlit as st
 import pandas as pd
@@ -21,6 +21,7 @@ class PureMLStrategy:
         self.model_long = None
         self.model_short = None
         self.scaler = StandardScaler()
+        self.feature_cols = None
     
     def create_features(self, df):
         """創建純價格特徵 - 不用任何指標"""
@@ -49,19 +50,21 @@ class PureMLStrategy:
         
         # 價格位置
         for i in [10, 20, 50]:
-            df[f'price_position_{i}'] = (df['close'] - df['close'].rolling(i).min()) / (df['close'].rolling(i).max() - df['close'].rolling(i).min())
+            rolling_min = df['close'].rolling(i).min()
+            rolling_max = df['close'].rolling(i).max()
+            df[f'price_position_{i}'] = (df['close'] - rolling_min) / (rolling_max - rolling_min + 1e-10)
         
         return df
     
     def create_labels(self, df):
-        """創建標籤 - 未來是否上漲/下跌超過閾值"""
+        """創建標籤 - 未來是否上漨/下跌超過閾值"""
         df = df.copy()
         
         # 未來最高/最低價
-        df['future_high'] = df['high'].shift(-self.forward_bars).rolling(self.forward_bars).max()
-        df['future_low'] = df['low'].shift(-self.forward_bars).rolling(self.forward_bars).max()
+        df['future_high'] = df['high'].rolling(self.forward_bars).max().shift(-self.forward_bars)
+        df['future_low'] = df['low'].rolling(self.forward_bars).min().shift(-self.forward_bars)
         
-        # 做多機會: 未來能上漲1%+
+        # 做多機會: 未來能上漨1%+
         df['long_target'] = ((df['future_high'] - df['close']) / df['close'] > 0.01).astype(int)
         
         # 做空機會: 未來會下跌1%+
@@ -75,13 +78,17 @@ class PureMLStrategy:
         df = self.create_labels(df)
         df = df.dropna()
         
-        feature_cols = [c for c in df.columns if c not in ['open', 'high', 'low', 'close', 'volume', 'open_time', 'long_target', 'short_target', 'future_high', 'future_low']]
+        # 只保留數值特徵
+        exclude_cols = ['open', 'high', 'low', 'close', 'volume', 'open_time', 'close_time', 
+                       'long_target', 'short_target', 'future_high', 'future_low']
         
-        X = df[feature_cols]
+        self.feature_cols = [c for c in df.columns if c not in exclude_cols and df[c].dtype in ['float64', 'int64']]
+        
+        X = df[self.feature_cols].values
         X_scaled = self.scaler.fit_transform(X)
         
-        y_long = df['long_target']
-        y_short = df['short_target']
+        y_long = df['long_target'].values
+        y_short = df['short_target'].values
         
         # 訓練做多模型
         self.model_long = RandomForestClassifier(n_estimators=100, max_depth=10, min_samples_split=50, random_state=42)
@@ -95,15 +102,14 @@ class PureMLStrategy:
             'long_samples': int(y_long.sum()),
             'short_samples': int(y_short.sum()),
             'total_samples': len(df),
-            'feature_cols': feature_cols
+            'features': len(self.feature_cols)
         }
     
     def predict(self, df, idx):
         """預測單個時間點"""
         df_test = self.create_features(df.iloc[:idx+1])
-        feature_cols = [c for c in df_test.columns if c not in ['open', 'high', 'low', 'close', 'volume', 'open_time']]
         
-        X = df_test[feature_cols].iloc[-1:]
+        X = df_test[self.feature_cols].iloc[-1:].values
         X_scaled = self.scaler.transform(X)
         
         long_proba = self.model_long.predict_proba(X_scaled)[0][1]
@@ -183,7 +189,7 @@ def render_strategy_a_tab(loader, symbol_selector):
             stat.text("2/4: 訓練ML...")
             strategy = PureMLStrategy(lookback=20, forward_bars=3)
             stats = strategy.train(df_train)
-            st.success(f"L:{stats['long_samples']} S:{stats['short_samples']}")
+            st.success(f"L:{stats['long_samples']} S:{stats['short_samples']} | {stats['features']}特徵")
             prog.progress(60)
             
             stat.text("3/4: 生成信號...")
