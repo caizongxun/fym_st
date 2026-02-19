@@ -1,4 +1,4 @@
-"""策略A: ML驅動的區間震盪交易 - 激進版"""
+"""策略A: ML驅動的區間震盪交易 - 穩健翻倉版"""
 
 import streamlit as st
 import pandas as pd
@@ -14,20 +14,20 @@ from data.binance_loader import BinanceDataLoader
 def render_strategy_a_tab(loader, symbol_selector):
     """渲柔策略A Tab"""
     
-    st.header("策略 A: ML驅動的區間震盪交易 - 激進版")
+    st.header("策略 A: 穩健翻倉策略")
     
     st.info("""
-    **激進翻倉策略**:
+    **穩健翻倉方案**:
     
-    [+] 高槓桿複利 - 獲利後提高槓桿
-    [+] 嚴格進場 - 只做高機率交易
-    [+] 寬止盈 - 3-4x 盈虧比
-    [+] 緊止損 - 0.8-1.0 ATR
-    [+] 目標: 月報酬 100%
+    [+] 中等槓桿 + 高頻率 - 平衡風險報酬
+    [+] 放寬進場 + 嚴格止損 - 多交易控回撤
+    [+] 分批止盈 - 50%先出保證獲利
+    [+] 移動止損 - 保護獲利不回吐
+    [+] 目標: 月報酬 100% | 最大回撤 <30%
     """)
     
     st.markdown("---")
-    st.subheader("策略參數設定")
+    st.subheader("策略參數")
     
     col1, col2, col3 = st.columns(3)
     
@@ -35,310 +35,208 @@ def render_strategy_a_tab(loader, symbol_selector):
         st.markdown("**數據設定**")
         symbol_list = symbol_selector("strategy_a", multi=False)
         symbol = symbol_list[0]
-        
-        train_days = st.slider("訓練數據天數", 30, 180, 120, key="train_days", help="更多數據提高模型準確度")
+        train_days = st.slider("訓練天數", 60, 180, 90, key="train_days")
         test_days = st.slider("回測天數", 7, 60, 30, key="test_days")
     
     with col2:
-        st.markdown("**激進設定**")
-        initial_capital = st.number_input("初始資金 (USDT)", 1000.0, 100000.0, 10000.0, 1000.0, key="capital")
-        base_leverage = st.slider("基礎槓桿", 3, 10, 8, key="leverage", help="高槓桿高報酬")
-        confidence_threshold = st.slider("信心度閾值", 0.5, 0.8, 0.65, 0.05, key="confidence", 
-                                        help="提高閾值=更嚴格進場")
+        st.markdown("**交易設定**")
+        initial_capital = st.number_input("初始資金", 1000.0, 100000.0, 10000.0, 1000.0, key="cap")
+        leverage = st.slider("槓桿倍數", 3, 10, 6, key="lev", help="中等槓桿")
+        confidence_threshold = st.slider("信心度", 0.3, 0.7, 0.48, 0.02, key="conf", help="降低閾值增加交易")
     
     with col3:
         st.markdown("**技術參數**")
-        bb_period = st.number_input("BB週期", 10, 50, 20, key="bb_period")
-        adx_threshold = st.slider("ADX閾值", 20, 40, 35, key="adx", help="提高=更寬鬆盤整")
-        ticks_per_candle = st.select_slider("Tick密度", [50, 100, 200], 100, key="ticks")
+        bb_period = st.number_input("BB週期", 10, 50, 20, key="bb")
+        adx_threshold = st.slider("ADX閾值", 20, 40, 28, key="adx", help="降低=更容易識別盤整")
+        ticks = st.select_slider("Tick密度", [50, 100, 200], 100, key="tk")
     
-    with st.expander("進階: 風險/報酬參數"):
-        col_a1, col_a2, col_a3 = st.columns(3)
-        
+    with st.expander("進階設定"):
+        col_a1, col_a2 = st.columns(2)
         with col_a1:
-            st.markdown("**止損/止盈**")
-            stop_loss_atr = st.slider("止損 ATR", 0.5, 2.0, 0.8, 0.1, key="sl_atr", help="緊止損")
-            profit_factor_target = st.slider("目標盈虧比", 2.0, 5.0, 3.5, 0.5, key="pf_target", help="寬止盈")
+            st.markdown("**風險管理**")
+            stop_loss_atr = st.slider("止損 ATR", 0.8, 2.0, 1.2, 0.2, key="sl")
+            use_trailing_stop = st.checkbox("移動止損", value=True, key="trail")
+            trailing_pct = st.slider("移動止損%", 0.5, 2.0, 1.0, 0.1, key="trail_pct") if use_trailing_stop else 0
         
         with col_a2:
-            st.markdown("**動態仓位**")
-            base_position_pct = st.slider("基礎仓位%", 30, 100, 80, 10, key="base_pos")
-            max_position_pct = st.slider("最大仓位%", 50, 100, 100, 10, key="max_pos")
-        
-        with col_a3:
-            st.markdown("**複利設定**")
-            enable_compound = st.checkbox("啟用複利槓桿", value=True, key="compound",
-                                         help="獲利後提高槓桿")
-            max_leverage = st.slider("最大槓桿", 5, 20, 15, 1, key="max_lev") if enable_compound else base_leverage
-            enable_drawdown_control = st.checkbox("啟用回撤控制", value=True, key="dd_ctrl")
+            st.markdown("**止盈管理**")
+            use_partial_tp = st.checkbox("分批止盈", value=True, key="partial")
+            first_tp_atr = st.slider("第一止盈 ATR", 1.0, 3.0, 1.8, 0.2, key="tp1") if use_partial_tp else 0
+            second_tp_atr = st.slider("第二止盈 ATR", 2.0, 5.0, 3.5, 0.5, key="tp2") if use_partial_tp else 0
     
     st.markdown("---")
     
-    if st.button("開始執行: 訓練 + 回測", key="execute_all", type="primary", use_container_width=True):
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
+    if st.button("開始執行", type="primary", use_container_width=True):
+        progress = st.progress(0)
+        status = st.empty()
         
         try:
-            # Step 1
-            status_text.text("步驟 1/4: 載入數據...")
-            progress_bar.progress(10)
+            # Load data
+            status.text("1/4: 載入數據...")
+            progress.progress(10)
             
             if isinstance(loader, BinanceDataLoader):
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=train_days + test_days)
-                df_all = loader.load_historical_data(symbol, '15m', start_date, end_date)
+                end = datetime.now()
+                start = end - timedelta(days=train_days + test_days)
+                df_all = loader.load_historical_data(symbol, '15m', start, end)
             else:
                 df_all = loader.load_klines(symbol, '15m')
                 df_all = df_all.tail((train_days + test_days) * 96)
             
-            split_idx = len(df_all) - test_days * 96
-            df_train = df_all.iloc[:split_idx].copy()
-            df_test = df_all.iloc[split_idx:].copy()
+            split = len(df_all) - test_days * 96
+            df_train = df_all.iloc[:split].copy()
+            df_test = df_all.iloc[split:].copy()
             
-            st.success(f"載入: 訓練{len(df_train)}根 測試{len(df_test)}根")
-            progress_bar.progress(20)
+            st.success(f"載入: {len(df_train)}+{len(df_test)}根")
+            progress.progress(20)
             
-            # Step 2
-            status_text.text("步驟 2/4: 訓練ML模型...")
+            # Train
+            status.text("2/4: 訓練模型...")
+            strategy = MLRangeBoundStrategy(bb_period=bb_period, bb_std=2.0, adx_period=14, adx_threshold=adx_threshold)
+            stats = strategy.train(df_train, forward_bars=10)
             
-            strategy = MLRangeBoundStrategy(
-                bb_period=bb_period,
-                bb_std=2.0,
-                adx_period=14,
-                adx_threshold=adx_threshold
-            )
+            st.success(f"訓練: {stats['long_samples']}L + {stats['short_samples']}S")
+            progress.progress(50)
             
-            train_stats = strategy.train(df_train, forward_bars=10)
-            
-            st.success("訓練完成!")
-            col_t1, col_t2, col_t3 = st.columns(3)
-            with col_t1:
-                st.metric("總樣本", train_stats['total_samples'])
-            with col_t2:
-                st.metric("做多", f"{train_stats['long_samples']} ({train_stats['long_ratio']})")
-            with col_t3:
-                st.metric("做空", f"{train_stats['short_samples']} ({train_stats['short_ratio']})")
-            
-            progress_bar.progress(50)
-            
-            # Step 3
-            status_text.text("步驟 3/4: 生成交易信號(複利模式)...")
-            
+            # Generate signals
+            status.text("3/4: 生成信號...")
             df_test = strategy.add_indicators(df_test)
-            
             signals = []
-            peak_equity = initial_capital
-            current_equity = initial_capital
-            winning_streak = 0
             
             for i in range(50, len(df_test)):
-                long_proba, short_proba = strategy.predict(df_test, i)
-                
+                long_p, short_p = strategy.predict(df_test, i)
                 row = df_test.iloc[i]
+                
                 signal = 0
-                stop_loss = np.nan
-                take_profit = np.nan
-                position_size = 1.0
-                current_leverage = base_leverage
+                sl = np.nan
+                tp1 = np.nan
+                tp2 = np.nan
                 
-                near_lower = row['close'] <= row['bb_lower'] * 1.003
-                near_upper = row['close'] >= row['bb_upper'] * 0.997
-                is_ranging = row['adx'] < adx_threshold
+                near_lower = row['close'] <= row['bb_lower'] * 1.008
+                near_upper = row['close'] >= row['bb_upper'] * 0.992
+                ranging = row['adx'] < adx_threshold
                 
-                # 複利槓桿: 獲利後提高槓桿
-                if enable_compound and current_equity > initial_capital:
-                    profit_ratio = (current_equity - initial_capital) / initial_capital
-                    leverage_boost = min(profit_ratio * 10, max_leverage - base_leverage)
-                    current_leverage = min(base_leverage + leverage_boost, max_leverage)
-                
-                # 計算動態仓位
-                if long_proba > confidence_threshold or short_proba > confidence_threshold:
-                    proba = max(long_proba, short_proba)
-                    proba_normalized = (proba - confidence_threshold) / (1.0 - confidence_threshold)
-                    position_pct = base_position_pct + (max_position_pct - base_position_pct) * proba_normalized
-                    position_size = position_pct / 100.0
-                    
-                    # 連續獲利加仓
-                    if winning_streak >= 2:
-                        position_size = min(position_size * 1.2, 1.0)
-                    
-                    # 回撤控制
-                    if enable_drawdown_control:
-                        drawdown = (peak_equity - current_equity) / peak_equity
-                        if drawdown > 0.15:
-                            position_size *= 0.4
-                            current_leverage = max(base_leverage * 0.5, 3)
-                        elif drawdown > 0.08:
-                            position_size *= 0.6
-                
-                if long_proba > confidence_threshold and near_lower and is_ranging:
+                if long_p > confidence_threshold and near_lower and ranging:
                     signal = 1
                     entry = row['close']
                     atr = row['atr']
+                    sl = entry - stop_loss_atr * atr
                     
-                    stop_loss = entry - stop_loss_atr * atr
-                    risk = stop_loss_atr * atr
-                    reward = risk * profit_factor_target
-                    take_profit = entry + reward
-                        
-                elif short_proba > confidence_threshold and near_upper and is_ranging:
+                    if use_partial_tp:
+                        tp1 = entry + first_tp_atr * atr
+                        tp2 = entry + second_tp_atr * atr
+                    else:
+                        tp1 = entry + 2.0 * atr
+                        tp2 = entry + 3.0 * atr
+                
+                elif short_p > confidence_threshold and near_upper and ranging:
                     signal = -1
                     entry = row['close']
                     atr = row['atr']
+                    sl = entry + stop_loss_atr * atr
                     
-                    stop_loss = entry + stop_loss_atr * atr
-                    risk = stop_loss_atr * atr
-                    reward = risk * profit_factor_target
-                    take_profit = entry - reward
+                    if use_partial_tp:
+                        tp1 = entry - first_tp_atr * atr
+                        tp2 = entry - second_tp_atr * atr
+                    else:
+                        tp1 = entry - 2.0 * atr
+                        tp2 = entry - 3.0 * atr
                 
                 signals.append({
                     'signal': signal,
-                    'long_proba': long_proba,
-                    'short_proba': short_proba,
-                    'stop_loss': stop_loss,
-                    'take_profit': take_profit,
-                    'position_size': position_size if signal != 0 else 1.0,
-                    'leverage': current_leverage if signal != 0 else base_leverage
+                    'stop_loss': sl,
+                    'take_profit': tp1,
+                    'take_profit_2': tp2,
+                    'use_trailing': use_trailing_stop,
+                    'trailing_pct': trailing_pct
                 })
-                
-                # 簡單更新狀態
-                if i > 50 and len(signals) > 1:
-                    prev_signal = signals[-2]
-                    if prev_signal['signal'] != 0:
-                        if prev_signal['signal'] == 1:
-                            pnl_pct = (row['close'] - df_test.iloc[i-1]['close']) / df_test.iloc[i-1]['close']
-                        else:
-                            pnl_pct = (df_test.iloc[i-1]['close'] - row['close']) / df_test.iloc[i-1]['close']
-                        
-                        pnl = current_equity * pnl_pct * prev_signal.get('leverage', base_leverage) * prev_signal.get('position_size', 1.0)
-                        current_equity += pnl
-                        peak_equity = max(peak_equity, current_equity)
-                        
-                        if pnl > 0:
-                            winning_streak += 1
-                        else:
-                            winning_streak = 0
             
-            signals = [{'signal': 0, 'long_proba': 0, 'short_proba': 0, 'stop_loss': np.nan, 'take_profit': np.nan, 'position_size': 1.0, 'leverage': base_leverage}] * 50 + signals
-            df_signals = pd.DataFrame(signals)
+            signals = [{'signal': 0, 'stop_loss': np.nan, 'take_profit': np.nan, 'take_profit_2': np.nan, 'use_trailing': False, 'trailing_pct': 0}] * 50 + signals
+            df_sig = pd.DataFrame(signals)
             
-            signal_count = (df_signals['signal'] != 0).sum()
-            
-            if signal_count == 0:
-                st.warning("未生成交易信號")
-                st.info("建議: 降低信心度閾值到 0.55")
+            sig_count = (df_sig['signal'] != 0).sum()
+            if sig_count == 0:
+                st.warning("未生成信號 - 降低信心度閾值")
                 return
             
-            avg_lev = df_signals[df_signals['signal'] != 0]['leverage'].mean()
-            st.success(f"信號: {signal_count}個 | 平均槓桿: {avg_lev:.1f}x")
-            progress_bar.progress(70)
+            st.success(f"信號: {sig_count}個")
+            progress.progress(70)
             
-            # Step 4 - 使用動態槓桿回測
-            status_text.text("步驟 4/4: Tick級別回測(複利槓桿)...")
+            # Backtest
+            status.text("4/4: 回測...")
+            engine = TickLevelBacktestEngine(initial_capital, leverage, 0.0006, 0.02, ticks)
+            metrics = engine.run_backtest(df_test, df_sig)
             
-            # 使用基礎槓桿初始化,但signals中包含動態槓桿
-            engine = TickLevelBacktestEngine(
-                initial_capital=initial_capital,
-                leverage=1,  # 設為1,由signals中的leverage控制
-                fee_rate=0.0006,
-                slippage_pct=0.02,
-                ticks_per_candle=ticks_per_candle
-            )
-            
-            metrics = engine.run_backtest_with_dynamic_leverage(df_test, df_signals)
-            
-            progress_bar.progress(100)
-            status_text.text("完成!")
+            progress.progress(100)
+            status.text("完成!")
             
             # Results
             st.markdown("---")
-            st.subheader("回測結果")
+            st.subheader("結果")
             
-            col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+            col1, col2, col3, col4 = st.columns(4)
             
-            with col_r1:
-                profit = metrics['final_equity'] - initial_capital
-                st.metric("最終權益", f"${metrics['final_equity']:,.2f}", delta=f"{profit:+,.2f}")
-                st.metric("交易次數", metrics['total_trades'])
+            with col1:
+                pnl = metrics['final_equity'] - initial_capital
+                st.metric("最終權益", f"${metrics['final_equity']:,.0f}", f"{pnl:+,.0f}")
+                st.metric("交易", metrics['total_trades'])
             
-            with col_r2:
-                return_pct = metrics['total_return_pct']
-                monthly_return = return_pct * 30 / test_days
-                st.metric("總報酬", f"{return_pct:.1f}%")
-                st.metric("月化報酬", f"{monthly_return:.1f}%", delta="目標100%")
+            with col2:
+                ret = metrics['total_return_pct']
+                monthly = ret * 30 / test_days
+                st.metric("總報酬", f"{ret:.1f}%")
+                st.metric("月化", f"{monthly:.1f}%", "vs 100%")
             
-            with col_r3:
+            with col3:
                 st.metric("勝率", f"{metrics['win_rate']:.1f}%")
                 st.metric("盈虧比", f"{metrics['profit_factor']:.2f}")
             
-            with col_r4:
+            with col4:
                 st.metric("最大回撤", f"{metrics['max_drawdown_pct']:.1f}%")
                 st.metric("夏普", f"{metrics['sharpe_ratio']:.2f}")
             
-            # Performance
+            # Evaluation
             st.markdown("---")
-            
-            if monthly_return >= 100:
-                st.success("[目標達成] 月化報酬 100%+")
+            if monthly >= 90 and metrics['max_drawdown_pct'] > -30:
+                st.success("[達標] 月化>90% 回撤<30%")
                 st.balloons()
-            elif monthly_return >= 70:
-                st.success("[接近目標] 月化報酬 70%+")
-            elif monthly_return >= 40:
-                st.warning("[需優化] 月化 40%+, 建議提高槓桿或降低閾值")
+            elif monthly >= 60:
+                st.success("[良好] 月化>60%")
+            elif monthly >= 30:
+                st.warning("[一般] 月化>30%")
             else:
-                st.error("[未達標] 月化<40%, 需重新調整")
+                st.error("[不佳] 需調整")
             
-            # Equity curve
+            # Charts
             st.markdown("---")
             st.subheader("權益曲線")
             fig = engine.plot_equity_curve()
             st.plotly_chart(fig, use_container_width=True)
             
-            # Trades analysis
-            trades_df = engine.get_trades_dataframe()
-            if not trades_df.empty:
+            # Trades
+            trades = engine.get_trades_dataframe()
+            if not trades.empty:
                 st.markdown("---")
                 st.subheader("交易統計")
                 
-                wins = trades_df[trades_df['pnl_usdt'] > 0]
-                losses = trades_df[trades_df['pnl_usdt'] < 0]
+                wins = trades[trades['pnl_usdt'] > 0]
+                losses = trades[trades['pnl_usdt'] < 0]
                 
-                col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-                with col_s1:
-                    st.metric("獲利交易", len(wins))
-                with col_s2:
-                    st.metric("虧損交易", len(losses))
-                with col_s3:
-                    avg_win = wins['pnl_usdt'].mean() if len(wins) > 0 else 0
-                    st.metric("平均獲利", f"${avg_win:.2f}")
-                with col_s4:
-                    avg_loss = losses['pnl_usdt'].mean() if len(losses) > 0 else 0
-                    st.metric("平均虧損", f"${avg_loss:.2f}")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("獲利交易", len(wins))
+                c2.metric("虧損交易", len(losses))
+                c3.metric("平均獲利", f"${wins['pnl_usdt'].mean():.2f}" if len(wins) > 0 else "$0")
+                c4.metric("平均虧損", f"${losses['pnl_usdt'].mean():.2f}" if len(losses) > 0 else "$0")
                 
                 st.markdown("**最近20筆**")
-                display_df = trades_df[['entry_time', 'exit_time', 'direction', 'entry_price', 'exit_price', 'pnl_usdt', 'exit_reason']].tail(20).copy()
-                display_df['pnl_usdt'] = display_df['pnl_usdt'].apply(lambda x: f"${x:.2f}")
-                st.dataframe(display_df, use_container_width=True)
+                disp = trades[['entry_time', 'direction', 'entry_price', 'exit_price', 'pnl_usdt', 'exit_reason']].tail(20)
+                st.dataframe(disp, use_container_width=True)
                 
-                csv = trades_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    "CSV下載",
-                    csv,
-                    f"{symbol}_aggressive_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    "text/csv",
-                    key="dl"
-                )
+                csv = trades.to_csv(index=False).encode('utf-8')
+                st.download_button("CSV", csv, f"{symbol}_{datetime.now():%Y%m%d_%H%M%S}.csv", "text/csv")
             
-            # Save model
-            st.markdown("---")
-            if st.checkbox("保存模型"):
-                model_path = f'models/saved/{symbol}_aggressive_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pkl'
-                strategy.save_models(model_path)
-                st.success(f"已保存: {model_path}")
-                
         except Exception as e:
             st.error(f"錯誤: {str(e)}")
             import traceback
-            with st.expander("詳細錯誤"):
+            with st.expander("詳情"):
                 st.code(traceback.format_exc())
