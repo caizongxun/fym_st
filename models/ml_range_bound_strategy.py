@@ -94,15 +94,9 @@ class MLRangeBoundStrategy:
     
     def _clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Clean infinite and NaN values"""
-        # Replace infinite values with NaN
         df = df.replace([np.inf, -np.inf], np.nan)
-        
-        # Fill NaN with forward fill then backward fill
         df = df.fillna(method='ffill').fillna(method='bfill')
-        
-        # If still has NaN, fill with 0
         df = df.fillna(0)
-        
         return df
     
     def extract_features(self, df: pd.DataFrame, idx: int) -> pd.Series:
@@ -122,24 +116,27 @@ class MLRangeBoundStrategy:
         return df.iloc[idx][feature_names]
     
     def create_labels(self, df: pd.DataFrame, forward_bars: int = 10) -> pd.DataFrame:
-        """Create training labels based on future price movement"""
+        """Create training labels - RELAXED criteria for more training samples"""
         df = df.copy()
         
         # Calculate future max/min
         df['future_max'] = df['high'].shift(-1).rolling(forward_bars).max()
         df['future_min'] = df['low'].shift(-1).rolling(forward_bars).min()
         
-        # Define profitable scenarios
+        # Calculate potential profit
+        df['future_profit_long'] = (df['future_max'] - df['close']) / df['close']
+        df['future_profit_short'] = (df['close'] - df['future_min']) / df['close']
+        
+        # RELAXED labels - only require positive movement, no ADX requirement during training
+        # This allows model to learn the pattern regardless of ADX
         df['label_long'] = (
-            (df['close'] <= df['bb_lower']) &
-            (df['adx'] < self.adx_threshold) &
-            (df['future_max'] > df['close'] + 1.5 * df['atr'])
+            (df['close'] <= df['bb_lower'] * 1.01) &  # Near lower band (within 1%)
+            (df['future_profit_long'] > 0.005)  # At least 0.5% profit potential
         ).astype(int)
         
         df['label_short'] = (
-            (df['close'] >= df['bb_upper']) &
-            (df['adx'] < self.adx_threshold) &
-            (df['future_min'] < df['close'] - 1.5 * df['atr'])
+            (df['close'] >= df['bb_upper'] * 0.99) &  # Near upper band (within 1%)
+            (df['future_profit_short'] > 0.005)  # At least 0.5% profit potential
         ).astype(int)
         
         return df
@@ -163,42 +160,59 @@ class MLRangeBoundStrategy:
         
         # Prepare data
         df_clean = df[feature_names + ['label_long', 'label_short']].dropna()
-        
-        # Remove any remaining infinite values
         df_clean = df_clean.replace([np.inf, -np.inf], np.nan).dropna()
+        
+        if len(df_clean) == 0:
+            raise ValueError("No valid training data after cleaning")
         
         X = df_clean[feature_names]
         X_scaled = self.scaler.fit_transform(X)
         
         # Train long model
         y_long = df_clean['label_long']
+        long_positive = y_long.sum()
+        
+        if long_positive == 0:
+            raise ValueError(f"No positive long samples found. Try relaxing label criteria or using more data.")
+        
         self.long_model = lgb.LGBMClassifier(
-            n_estimators=200,
-            max_depth=6,
-            learning_rate=0.05,
+            n_estimators=100,
+            max_depth=5,
+            learning_rate=0.1,
             num_leaves=31,
+            min_child_samples=20,
             random_state=42,
-            verbosity=-1
+            verbosity=-1,
+            class_weight='balanced'  # Handle imbalanced data
         )
         self.long_model.fit(X_scaled, y_long)
         
         # Train short model
         y_short = df_clean['label_short']
+        short_positive = y_short.sum()
+        
+        if short_positive == 0:
+            raise ValueError(f"No positive short samples found. Try relaxing label criteria or using more data.")
+        
         self.short_model = lgb.LGBMClassifier(
-            n_estimators=200,
-            max_depth=6,
-            learning_rate=0.05,
+            n_estimators=100,
+            max_depth=5,
+            learning_rate=0.1,
             num_leaves=31,
+            min_child_samples=20,
             random_state=42,
-            verbosity=-1
+            verbosity=-1,
+            class_weight='balanced'
         )
         self.short_model.fit(X_scaled, y_short)
         
         return {
-            'long_samples': int(y_long.sum()),
-            'short_samples': int(y_short.sum()),
+            'long_samples': int(long_positive),
+            'short_samples': int(short_positive),
             'total_samples': len(df_clean),
-            'feature_names': feature_names
+            'feature_names': feature_names,
+            'long_ratio': f"{long_positive / len(df_clean) * 100:.2f}%",
+            'short_ratio': f"{short_positive / len(df_clean) * 100:.2f}%"
         }
     
     def predict(self, df: pd.DataFrame, idx: int) -> Tuple[float, float]:
@@ -209,7 +223,6 @@ class MLRangeBoundStrategy:
         try:
             features = self.extract_features(df, idx).values.reshape(1, -1)
             
-            # Check for infinite or NaN values
             if np.any(np.isnan(features)) or np.any(np.isinf(features)):
                 return 0.0, 0.0
             
@@ -219,7 +232,7 @@ class MLRangeBoundStrategy:
             short_proba = self.short_model.predict_proba(features_scaled)[0][1]
             
             return float(long_proba), float(short_proba)
-        except:
+        except Exception as e:
             return 0.0, 0.0
     
     def _calculate_adx(self, df: pd.DataFrame) -> pd.Series:
