@@ -1,1 +1,17 @@
-"""\nStreamlit Tabs Module\nExport all tab render functions\n"""\n\nfrom tabs.tab_bb_visualization import render_bb_visualization_tab\nfrom tabs.tab_reversal_training import render_reversal_training_tab\nfrom tabs.tab_trend_filter import render_trend_filter_tab\nfrom tabs.tab_backtest import render_backtest_tab\nfrom tabs.tab_live_monitor import render_live_monitor_tab\nfrom tabs.tab_range_bound_backtest import render_range_bound_backtest_tab\n\n__all__ = [\n    'render_bb_visualization_tab',\n    'render_reversal_training_tab',\n    'render_trend_filter_tab',\n    'render_backtest_tab',\n    'render_live_monitor_tab',\n    'render_range_bound_backtest_tab',\n]\n
+"""Streamlit Tabs Module - Export all tab render functions"""
+
+from tabs.tab_bb_visualization import render_bb_visualization_tab
+from tabs.tab_reversal_training import render_reversal_training_tab
+from tabs.tab_trend_filter import render_trend_filter_tab
+from tabs.tab_backtest import render_backtest_tab
+from tabs.tab_live_monitor import render_live_monitor_tab
+from tabs.tab_range_bound_backtest import render_range_bound_backtest_tab
+
+__all__ = [
+    'render_bb_visualization_tab',
+    'render_reversal_training_tab',
+    'render_trend_filter_tab',
+    'render_backtest_tab',
+    'render_live_monitor_tab',
+    'render_range_bound_backtest_tab',
+]
