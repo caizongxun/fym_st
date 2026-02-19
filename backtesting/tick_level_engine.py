@@ -1,4 +1,4 @@
-"""Tick-Level Backtest Engine with Dynamic Leverage Support"""
+"""Tick-Level Backtest Engine with Dynamic Leverage Support - Fixed"""
 
 import pandas as pd
 import numpy as np
@@ -14,7 +14,7 @@ class TickLevelBacktestEngine:
         initial_capital: float = 10000.0,
         leverage: float = 3.0,
         fee_rate: float = 0.0006,
-        slippage_pct: float = 0.02,
+        slippage_pct: float = 0.01,  # Fixed: 0.01% is more realistic
         ticks_per_candle: int = 100
     ):
         self.initial_capital = initial_capital
@@ -82,10 +82,18 @@ class TickLevelBacktestEngine:
                              (position['type'] == 'short' and tick_price <= position['tp']))
                     
                     if hit_sl:
-                        exit_price = position['sl'] * (1 - self.slippage_pct / 100)
+                        # Fixed: Stop loss slips in unfavorable direction
+                        if position['type'] == 'long':
+                            exit_price = position['sl'] * (1 - self.slippage_pct / 100)
+                        else:
+                            exit_price = position['sl'] * (1 + self.slippage_pct / 100)
                         exit_reason = 'SL'
                     elif hit_tp:
-                        exit_price = position['tp'] * (1 - self.slippage_pct / 100)
+                        # Fixed: Take profit slips in unfavorable direction
+                        if position['type'] == 'long':
+                            exit_price = position['tp'] * (1 - self.slippage_pct / 100)
+                        else:
+                            exit_price = position['tp'] * (1 + self.slippage_pct / 100)
                         exit_reason = 'TP'
                     else:
                         continue
@@ -194,8 +202,19 @@ class TickLevelBacktestEngine:
                              (position['type'] == 'short' and tick_price <= position['tp']))
                     
                     if hit_sl or hit_tp:
-                        exit_price = (position['sl'] if hit_sl else position['tp']) * (1 - self.slippage_pct / 100)
-                        exit_reason = 'SL' if hit_sl else 'TP'
+                        # Fixed: Apply correct slippage direction
+                        if hit_sl:
+                            if position['type'] == 'long':
+                                exit_price = position['sl'] * (1 - self.slippage_pct / 100)
+                            else:
+                                exit_price = position['sl'] * (1 + self.slippage_pct / 100)
+                            exit_reason = 'SL'
+                        else:
+                            if position['type'] == 'long':
+                                exit_price = position['tp'] * (1 - self.slippage_pct / 100)
+                            else:
+                                exit_price = position['tp'] * (1 + self.slippage_pct / 100)
+                            exit_reason = 'TP'
                         
                         if position['type'] == 'long':
                             pnl = (exit_price - position['entry']) * position['size']
@@ -224,7 +243,6 @@ class TickLevelBacktestEngine:
                 signal = signal_row.get('signal', 0)
                 
                 if signal != 0:
-                    # Use dynamic leverage from signal
                     dynamic_leverage = signal_row.get('leverage', self.leverage)
                     position_size_pct = signal_row.get('position_size', 1.0)
                     
