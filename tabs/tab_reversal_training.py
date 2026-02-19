@@ -26,6 +26,7 @@ def render_reversal_training_tab(loader):
     **訓練邏輯**: 使用前 N 根已完成 K 棒的資料,預測當前 K 棒觸碰 BB 軌道時是否會反彈
     - 特徵: 基於歷史 K 棒 (不包含當前)
     - 標籤: 當前 K 棒是否觸碰 + 未來是否反彈
+    - 訓練完成後會自動保存模型
     """)
     
     training_mode = st.radio(
@@ -177,22 +178,16 @@ def train_manual_model(loader, symbol, train_days, lookback_candles, future_cand
                 test_size, xgb_params, probability_threshold
             )
             
-            # 儲存到 session_state
-            st.session_state['trained_models'] = {
-                'upper': upper_result,
-                'lower': lower_result,
-                'symbol': symbol,
-                'params': {
-                    'bb_period': bb_period,
-                    'bb_std': bb_std,
-                    'lookback_candles': lookback_candles,
-                    'future_candles': future_candles,
-                    'volatility_multiplier': volatility_multiplier,
-                    'probability_threshold': probability_threshold
-                }
-            }
-            
+            # 顯示結果
             display_results(upper_result, lower_result)
+            
+            # 自動保存
+            save_model(
+                symbol, upper_result['model'], lower_result['model'],
+                bb_period, bb_std, lookback_candles, future_candles,
+                volatility_multiplier, probability_threshold,
+                upper_result['metrics'], lower_result['metrics']
+            )
             
         except Exception as e:
             st.error(f"訓練失敗: {str(e)}")
@@ -223,23 +218,17 @@ def train_with_bayesian(loader, symbol, train_days, lookback_candles, future_can
                 test_size, n_trials, probability_threshold
             )
             
-            # 儲存到 session_state
-            st.session_state['trained_models'] = {
-                'upper': upper_best,
-                'lower': lower_best,
-                'symbol': symbol,
-                'params': {
-                    'bb_period': bb_period,
-                    'bb_std': bb_std,
-                    'lookback_candles': lookback_candles,
-                    'future_candles': future_candles,
-                    'volatility_multiplier': volatility_multiplier,
-                    'probability_threshold': probability_threshold
-                }
-            }
-            
+            # 顯示結果
             st.success("優化完成!")
             display_bayesian_results(upper_best, lower_best)
+            
+            # 自動保存
+            save_model(
+                symbol, upper_best['model'], lower_best['model'],
+                bb_period, bb_std, lookback_candles, future_candles,
+                volatility_multiplier, probability_threshold,
+                upper_best['metrics'], lower_best['metrics']
+            )
             
         except Exception as e:
             st.error(f"優化失敗: {str(e)}")
@@ -482,11 +471,6 @@ def display_results(upper_result, lower_result):
         st.subheader("下軌模型")
         display_metrics(lower_result['metrics'])
         st.plotly_chart(plot_importance(lower_result['importance'], "下軌"), use_container_width=True)
-    
-    # 使用 form 來解決狀態問題
-    if 'trained_models' in st.session_state:
-        if st.button("保存模型", key="save_manual_models", type="primary"):
-            save_trained_models()
 
 def display_bayesian_results(upper_best, lower_best):
     col1, col2 = st.columns(2)
@@ -520,10 +504,6 @@ def display_bayesian_results(upper_best, lower_best):
             ))
             fig.update_layout(title="優化進度", xaxis_title="Trial", yaxis_title="Score")
             st.plotly_chart(fig, use_container_width=True)
-    
-    if 'trained_models' in st.session_state:
-        if st.button("保存模型", key="save_bayes_models", type="primary"):
-            save_trained_models()
 
 def display_metrics(metrics):
     col1, col2, col3 = st.columns(3)
@@ -545,48 +525,41 @@ def plot_importance(importance, title):
     fig.update_layout(title=f"{title}特徵重要性", height=350)
     return fig
 
-def save_trained_models():
-    if 'trained_models' not in st.session_state:
-        st.error("沒有可保存的模型")
-        return
-    
-    model_data = st.session_state['trained_models']
-    symbol = model_data['symbol']
-    params = model_data['params']
-    
+def save_model(symbol, upper_model, lower_model, bb_period, bb_std,
+              lookback_candles, future_candles, volatility_multiplier,
+              prob_threshold, upper_metrics, lower_metrics):
     model_dir = 'models/saved'
     os.makedirs(model_dir, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    model_name = f"{symbol}_bb_{timestamp}.pkl"
+    
+    # 使用固定檔名, 直接覆蓋
+    model_name = f"{symbol}_bb_model.pkl"
     model_path = os.path.join(model_dir, model_name)
     
     try:
         joblib.dump({
-            'upper_model': model_data['upper']['model'],
-            'lower_model': model_data['lower']['model'],
+            'upper_model': upper_model,
+            'lower_model': lower_model,
             'params': {
-                'bb_period': int(params['bb_period']),
-                'bb_std': float(params['bb_std']),
-                'lookback_candles': int(params['lookback_candles']),
-                'future_candles': int(params['future_candles']),
-                'volatility_multiplier': float(params['volatility_multiplier']),
-                'probability_threshold': float(params['probability_threshold'])
+                'bb_period': int(bb_period),
+                'bb_std': float(bb_std),
+                'lookback_candles': int(lookback_candles),
+                'future_candles': int(future_candles),
+                'volatility_multiplier': float(volatility_multiplier),
+                'probability_threshold': float(prob_threshold)
             },
             'metrics': {
-                'upper': model_data['upper']['metrics'],
-                'lower': model_data['lower']['metrics']
-            }
+                'upper': upper_metrics,
+                'lower': lower_metrics
+            },
+            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }, model_path)
         
-        st.success(f"模型已保存: {model_name}")
+        st.success(f"模型已自動保存: {model_name}")
         st.info(f"完整路徑: {os.path.abspath(model_path)}")
         
-        # 檢查檔案是否存在
         if os.path.exists(model_path):
             file_size = os.path.getsize(model_path)
-            st.success(f"確認檔案存在, 大小: {file_size / 1024:.2f} KB")
-        else:
-            st.error("檔案保存失敗!")
+            st.info(f"檔案大小: {file_size / 1024:.2f} KB")
         
     except Exception as e:
         st.error(f"保存失敗: {str(e)}")
