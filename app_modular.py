@@ -9,13 +9,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.title("🤖 策略 A - ML驅動的區間震盪交易系統")
+st.title("策略 A - ML驅動的區間震盪交易系統")
 st.caption("目標: 無RSI限制的智能交易策略 | Tick級別回測 | 一鍵執行")
 
-st.sidebar.title("⚙️ 系統設定")
+st.sidebar.title("系統設定")
 
 st.sidebar.markdown("""
-### 🎯 策略A 核心優勢
+### 策略A 核心優勢
 
 **1. 智能進場**
 - 無固定RSI限制
@@ -41,21 +41,21 @@ st.sidebar.markdown("""
 """)
 
 data_source = st.sidebar.radio(
-    "📊 資料源",
+    "資料源",
     ["HuggingFace (38幣種)", "Binance API (即時)"],
     help="HuggingFace: 離線資料\nBinance: 即時資料"
 )
 
 if data_source == "HuggingFace (38幣種)":
     loader = HuggingFaceKlineLoader()
-    st.sidebar.success("✅ 使用 HuggingFace 離線資料")
+    st.sidebar.success("使用 HuggingFace 離線資料")
 else:
     loader = BinanceDataLoader()
-    st.sidebar.info("🔄 使用 Binance 即時資料")
+    st.sidebar.info("使用 Binance 即時資料")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("""
-### 🚀 使用流程
+### 使用流程
 
 1. **選擇幣種** - 選擇要交易的幣種
 2. **設定參數** - 調整訓練/交易參數
@@ -63,11 +63,11 @@ st.sidebar.markdown("""
 4. **查看結果** - 分析績效指標
 
 **一鍵執行內容**:
-- ✅ 載入資料
-- ✅ 訓練ML模型
-- ✅ 生成交易信號
-- ✅ Tick級別回測
-- ✅ 顯示結果
+- [+] 載入資料
+- [+] 訓練ML模型
+- [+] 生成交易信號
+- [+] Tick級別回測
+- [+] 顯示結果
 """)
 
 st.sidebar.markdown("---")
@@ -164,7 +164,7 @@ render_strategy_a_tab(loader, symbol_selector)
 
 st.sidebar.markdown("---")
 st.sidebar.info("""
-### 📊 預期表現
+### 預期表現
 
 **相比傳統策略**:
 - 交易次數: +200%
