@@ -1,10 +1,12 @@
-"""ML-Based Range-Bound Strategy - Strategy D"""
+"""ML-Based Range-Bound Strategy - Strategy A"""
 
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional, Tuple
 import lightgbm as lgb
 from sklearn.preprocessing import StandardScaler
+import warnings
+warnings.filterwarnings('ignore')
 
 
 class MLRangeBoundStrategy:
@@ -64,7 +66,7 @@ class MLRangeBoundStrategy:
         
         df['volatility_rank'] = df['volatility_20'].rank(pct=True) * 100
         
-        # Volume features (without RSI)
+        # Volume features
         df['volume_ma'] = df['volume'].rolling(20).mean()
         df['volume_ratio'] = df['volume'] / df['volume_ma']
         df['volume_change'] = df['volume'].pct_change()
@@ -84,6 +86,22 @@ class MLRangeBoundStrategy:
         df['ema_12'] = df['close'].ewm(span=12).mean()
         df['ema_26'] = df['close'].ewm(span=26).mean()
         df['ema_trend'] = (df['ema_12'] > df['ema_26']).astype(int)
+        
+        # Clean infinite and NaN values
+        df = self._clean_data(df)
+        
+        return df
+    
+    def _clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Clean infinite and NaN values"""
+        # Replace infinite values with NaN
+        df = df.replace([np.inf, -np.inf], np.nan)
+        
+        # Fill NaN with forward fill then backward fill
+        df = df.fillna(method='ffill').fillna(method='bfill')
+        
+        # If still has NaN, fill with 0
+        df = df.fillna(0)
         
         return df
     
@@ -112,14 +130,12 @@ class MLRangeBoundStrategy:
         df['future_min'] = df['low'].shift(-1).rolling(forward_bars).min()
         
         # Define profitable scenarios
-        # Long at lower band: future_max > entry + 1.5 * ATR
         df['label_long'] = (
             (df['close'] <= df['bb_lower']) &
             (df['adx'] < self.adx_threshold) &
             (df['future_max'] > df['close'] + 1.5 * df['atr'])
         ).astype(int)
         
-        # Short at upper band: future_min < entry - 1.5 * ATR
         df['label_short'] = (
             (df['close'] >= df['bb_upper']) &
             (df['adx'] < self.adx_threshold) &
@@ -147,6 +163,10 @@ class MLRangeBoundStrategy:
         
         # Prepare data
         df_clean = df[feature_names + ['label_long', 'label_short']].dropna()
+        
+        # Remove any remaining infinite values
+        df_clean = df_clean.replace([np.inf, -np.inf], np.nan).dropna()
+        
         X = df_clean[feature_names]
         X_scaled = self.scaler.fit_transform(X)
         
@@ -157,7 +177,8 @@ class MLRangeBoundStrategy:
             max_depth=6,
             learning_rate=0.05,
             num_leaves=31,
-            random_state=42
+            random_state=42,
+            verbosity=-1
         )
         self.long_model.fit(X_scaled, y_long)
         
@@ -168,13 +189,14 @@ class MLRangeBoundStrategy:
             max_depth=6,
             learning_rate=0.05,
             num_leaves=31,
-            random_state=42
+            random_state=42,
+            verbosity=-1
         )
         self.short_model.fit(X_scaled, y_short)
         
         return {
-            'long_samples': y_long.sum(),
-            'short_samples': y_short.sum(),
+            'long_samples': int(y_long.sum()),
+            'short_samples': int(y_short.sum()),
             'total_samples': len(df_clean),
             'feature_names': feature_names
         }
@@ -184,13 +206,21 @@ class MLRangeBoundStrategy:
         if self.long_model is None or self.short_model is None:
             return 0.0, 0.0
         
-        features = self.extract_features(df, idx).values.reshape(1, -1)
-        features_scaled = self.scaler.transform(features)
-        
-        long_proba = self.long_model.predict_proba(features_scaled)[0][1]
-        short_proba = self.short_model.predict_proba(features_scaled)[0][1]
-        
-        return long_proba, short_proba
+        try:
+            features = self.extract_features(df, idx).values.reshape(1, -1)
+            
+            # Check for infinite or NaN values
+            if np.any(np.isnan(features)) or np.any(np.isinf(features)):
+                return 0.0, 0.0
+            
+            features_scaled = self.scaler.transform(features)
+            
+            long_proba = self.long_model.predict_proba(features_scaled)[0][1]
+            short_proba = self.short_model.predict_proba(features_scaled)[0][1]
+            
+            return float(long_proba), float(short_proba)
+        except:
+            return 0.0, 0.0
     
     def _calculate_adx(self, df: pd.DataFrame) -> pd.Series:
         """Calculate ADX"""
@@ -212,7 +242,7 @@ class MLRangeBoundStrategy:
         plus_di = 100 * (plus_dm.rolling(window=self.adx_period).mean() / atr)
         minus_di = 100 * (minus_dm.rolling(window=self.adx_period).mean() / atr)
         
-        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
         adx = dx.rolling(window=self.adx_period).mean()
         
         return adx
@@ -234,6 +264,8 @@ class MLRangeBoundStrategy:
     def save_models(self, path: str):
         """Save trained models"""
         import joblib
+        import os
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         joblib.dump({
             'long_model': self.long_model,
             'short_model': self.short_model,
