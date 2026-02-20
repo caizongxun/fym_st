@@ -17,26 +17,46 @@ class RealtimePredictor:
         if use_last_n_bars is not None:
             df = df.iloc[-use_last_n_bars:].copy()
         
-        df_features = self.feature_engineer.build_features(df)
+        if self.model_trainer.feature_names is None:
+            raise ValueError("Model feature names not defined. Load or train a model first.")
         
-        if self.model_trainer.feature_columns is None:
-            raise ValueError("Model feature columns not defined. Load or train a model first.")
+        exclude_cols = [
+            'open_time', 'close_time', 'open', 'high', 'low', 'close', 'volume',
+            'label', 'exit_type', 'exit_price', 'exit_bars', 'return', 'ignore'
+        ]
         
-        X_pred = df_features[self.model_trainer.feature_columns]
+        available_features = [col for col in df.columns if col not in exclude_cols]
+        
+        missing_features = [f for f in self.model_trainer.feature_names if f not in available_features]
+        if missing_features:
+            logger.warning(f"Missing features: {missing_features[:5]}... ({len(missing_features)} total)")
+        
+        common_features = [f for f in self.model_trainer.feature_names if f in available_features]
+        
+        if len(common_features) == 0:
+            raise ValueError("No common features found between model and data")
+        
+        X_pred = df[common_features].copy()
+        X_pred = X_pred.fillna(0)
+        X_pred = X_pred.replace([np.inf, -np.inf], 0)
+        
+        for col in X_pred.select_dtypes(include=['bool']).columns:
+            X_pred[col] = X_pred[col].astype(int)
         
         probabilities = self.model_trainer.predict_proba(X_pred)
         
-        df_features['win_probability'] = probabilities[:, 1]
+        df = df.copy()
+        df['win_probability'] = probabilities
         
-        df_features['position_size'] = df_features['win_probability'].apply(
+        df['position_size'] = df['win_probability'].apply(
             lambda p: self.kelly_calculator.calculate_position_size(p)
         )
         
-        df_features['signal'] = (df_features['position_size'] > 0).astype(int)
+        df['signal'] = (df['position_size'] > 0).astype(int)
         
-        logger.info(f"Predictions complete: {df_features['signal'].sum()} signals generated")
+        logger.info(f"Predictions complete: {df['signal'].sum()} signals generated")
         
-        return df_features
+        return df
     
     def get_latest_signal(self, df: pd.DataFrame) -> Optional[Dict]:
         predictions = self.predict_from_completed_bars(df, use_last_n_bars=100)
@@ -54,7 +74,7 @@ class RealtimePredictor:
             'price': latest['close'],
             'win_probability': latest['win_probability'],
             'position_size': latest['position_size'],
-            'atr': latest['atr'],
-            'rsi': latest['rsi'],
-            'macd': latest['macd']
+            'atr': latest.get('atr', 0),
+            'rsi': latest.get('rsi', 0),
+            'macd': latest.get('macd', 0)
         }
