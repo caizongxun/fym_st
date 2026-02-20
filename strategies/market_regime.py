@@ -13,7 +13,7 @@ Market Regime Detector - 市場狀態識別器
 
 import pandas as pd
 import numpy as np
-from typing import Tuple
+from typing import Tuple, Optional
 
 try:
     from xgboost import XGBClassifier
@@ -36,6 +36,7 @@ class MarketRegimeDetector:
     
     def __init__(self):
         self.model = None
+        self.trained = False
         if XGBOOST_AVAILABLE:
             self.model = XGBClassifier(
                 n_estimators=100,
@@ -191,26 +192,45 @@ class MarketRegimeDetector:
         y = labels[mask]
         
         self.model.fit(X, y)
+        self.trained = True
         return self.model
     
-    def predict(self, features: pd.DataFrame) -> Tuple[pd.Series, pd.DataFrame]:
+    def predict(self, features: pd.DataFrame) -> Tuple[pd.Series, Optional[pd.DataFrame]]:
         """
         預測市場狀態
         返回: (狀態標籤, 機率分佈)
         """
-        if self.model is None:
+        if self.model is None or not self.trained:
             # 如果沒有訓練模型，使用規則
-            return self.label_regimes(features), None
+            regime_codes = self.label_regimes(features)
+            regime_names = regime_codes.map(self.REGIMES)
+            return regime_names, None
         
         predictions = self.model.predict(features)
         probas = self.model.predict_proba(features)
         
-        regime_names = pd.Series(predictions).map(self.REGIMES)
-        proba_df = pd.DataFrame(
-            probas,
-            columns=[self.REGIMES[i] for i in range(4)],
-            index=features.index
-        )
+        # 處理 XGBoost 可能輸出的類別數不匹配問題
+        regime_names = pd.Series([self.REGIMES.get(p, 'RANGE_BOUND') for p in predictions], index=features.index)
+        
+        # 建立機率 DataFrame，填充缺失的類別
+        n_classes = probas.shape[1]
+        proba_dict = {}
+        
+        # 獲取 XGBoost 實際輸出的類別
+        trained_classes = self.model.classes_
+        
+        # 為所有 4 種狀態建立機率欄位
+        for i in range(4):
+            regime_name = self.REGIMES[i]
+            if i in trained_classes:
+                # 找到對應的機率欄位
+                class_idx = np.where(trained_classes == i)[0][0]
+                proba_dict[regime_name] = probas[:, class_idx]
+            else:
+                # 缺失的類別填充0
+                proba_dict[regime_name] = np.zeros(len(probas))
+        
+        proba_df = pd.DataFrame(proba_dict, index=features.index)
         
         return regime_names, proba_df
     
