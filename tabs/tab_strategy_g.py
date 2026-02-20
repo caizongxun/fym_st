@@ -13,7 +13,7 @@ v1.2 革命性改進:
    - 止損拖延 → 持續懲罰
    - 浮盈不跑 → 貪婪懲罰
    - 連虧開倉 → 風控懲罰
-3. 1h/1d週期: 相容 HuggingFace 資料集
+3. 1h週期: 平衡噪音與數據量
 """
 
 import streamlit as st
@@ -489,7 +489,7 @@ def render_strategy_g_tab(loader, symbol_selector):
         - 虧損重罰 2.5x
         - 強制學習「大贏小輸」
         
-        💡 **建議**: HuggingFace 用 1h，Binance API 可用 4h
+        💡 **最大週期**: 1h (平衡噪音與數據量)
         """)
 
     st.markdown("---")
@@ -502,14 +502,13 @@ def render_strategy_g_tab(loader, symbol_selector):
         train_days = st.slider("訓練天數", 60, 240, 120, key="train_g")
         test_days = st.slider("測試天數", 14, 60, 30, key="test_g")
         
-        # v1.2: 根據資料源調整選項
+        # v1.2: 鎖定 1h 為最大週期
         if isinstance(loader, BinanceDataLoader):
-            timeframe = st.selectbox("時間周期", ['1h', '4h'], index=1, key="tf_g")
+            timeframe = st.selectbox("時間周期", ['15m', '1h'], index=1, key="tf_g")
         else:
-            timeframe = st.selectbox("時間周期", ['15m', '1h', '1d'], index=1, key="tf_g")
-            st.caption("💡 HuggingFace 不支援 4h，切換到 Binance API 可用")
+            timeframe = st.selectbox("時間周期", ['15m', '1h'], index=1, key="tf_g")
         
-        bars_per_day = {'15m': 96, '1h': 24, '4h': 6, '1d': 1}.get(timeframe, 24)
+        bars_per_day = {'15m': 96, '1h': 24}.get(timeframe, 24)
 
     with col2:
         st.markdown("**RL 參數**")
