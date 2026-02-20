@@ -10,6 +10,7 @@ from .signal_filters import SignalFilter
 from .strategy_optimizer import StrategyOptimizer
 from .probability_calibration import ProbabilityCalibrator, ModelCalibrationAnalyzer
 from .event_filter import EventFilter
+from .liquidity_sweep_detector import LiquiditySweepDetector
 
 __all__ = [
     'CryptoDataLoader',
@@ -26,5 +27,6 @@ __all__ = [
     'StrategyOptimizer',
     'ProbabilityCalibrator',
     'ModelCalibrationAnalyzer',
-    'EventFilter'
+    'EventFilter',
+    'LiquiditySweepDetector'
 ]
