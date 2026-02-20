@@ -1,154 +1,214 @@
 import pandas as pd
 import numpy as np
-from lightgbm import LGBMClassifier
+import xgboost as xgb
 from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.calibration import CalibratedClassifierCV
 import joblib
-import logging
-from typing import Optional, Tuple, List
 import os
+import logging
+from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 class PurgedKFold:
-    def __init__(self, n_splits: int = 5, purge_gap: int = 10):
+    def __init__(self, n_splits=5, embargo_pct=0.01):
         self.n_splits = n_splits
-        self.purge_gap = purge_gap
+        self.embargo_pct = embargo_pct
     
-    def split(self, X: pd.DataFrame, y: pd.Series = None, groups: pd.Series = None):
+    def split(self, X, y=None, groups=None):
         n_samples = len(X)
+        fold_size = n_samples // self.n_splits
+        embargo_size = int(fold_size * self.embargo_pct)
+        
         indices = np.arange(n_samples)
         
-        test_size = n_samples // self.n_splits
-        
         for i in range(self.n_splits):
-            test_start = i * test_size
-            test_end = test_start + test_size if i < self.n_splits - 1 else n_samples
+            test_start = i * fold_size
+            test_end = (i + 1) * fold_size if i < self.n_splits - 1 else n_samples
             
             test_indices = indices[test_start:test_end]
             
-            purge_start = max(0, test_start - self.purge_gap)
-            purge_end = min(n_samples, test_end + self.purge_gap)
-            
             train_indices = np.concatenate([
-                indices[:purge_start],
-                indices[purge_end:]
+                indices[:max(0, test_start - embargo_size)],
+                indices[min(n_samples, test_end + embargo_size):]
             ])
             
-            if len(train_indices) > 0 and len(test_indices) > 0:
-                yield train_indices, test_indices
+            yield train_indices, test_indices
 
 class ModelTrainer:
-    def __init__(self, model_save_path: str = "trading_system/models"):
-        self.model_save_path = model_save_path
-        os.makedirs(model_save_path, exist_ok=True)
+    def __init__(self, use_calibration=True):
         self.model = None
-        self.feature_columns = None
+        self.calibrated_model = None
+        self.use_calibration = use_calibration
+        self.feature_names = None
+        self.training_metrics = {}
     
-    def prepare_training_data(self, df: pd.DataFrame, target_column: str = 'label') -> Tuple[pd.DataFrame, pd.Series, List[str]]:
-        exclude_columns = [
-            'open_time', 'close_time', 'label', 'label_return', 'hit_time',
-            'primary_signal', 'ignore'
-        ]
+    def train(self, 
+              X_train: pd.DataFrame, 
+              y_train: pd.Series,
+              X_val: Optional[pd.DataFrame] = None,
+              y_val: Optional[pd.Series] = None,
+              params: Optional[Dict] = None) -> Dict:
         
-        feature_columns = [col for col in df.columns if col not in exclude_columns]
+        self.feature_names = X_train.columns.tolist()
         
-        X = df[feature_columns]
-        y = df[target_column]
+        default_params = {
+            'objective': 'binary:logistic',
+            'max_depth': 6,
+            'learning_rate': 0.05,
+            'n_estimators': 200,
+            'min_child_weight': 3,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'gamma': 0.1,
+            'reg_alpha': 0.1,
+            'reg_lambda': 1.0,
+            'scale_pos_weight': 1.0,
+            'random_state': 42,
+            'eval_metric': 'logloss'
+        }
         
-        logger.info(f"Prepared training data: {X.shape[0]} samples, {X.shape[1]} features")
-        logger.info(f"Feature columns: {feature_columns}")
+        if params:
+            default_params.update(params)
         
-        return X, y, feature_columns
+        logger.info(f"Training XGBoost model with {len(X_train)} samples")
+        
+        self.model = xgb.XGBClassifier(**default_params)
+        
+        if X_val is not None and y_val is not None:
+            eval_set = [(X_train, y_train), (X_val, y_val)]
+            self.model.fit(
+                X_train, y_train,
+                eval_set=eval_set,
+                verbose=False
+            )
+        else:
+            self.model.fit(X_train, y_train)
+        
+        train_metrics = self._evaluate(X_train, y_train, "Training")
+        
+        if X_val is not None and y_val is not None:
+            val_metrics = self._evaluate(X_val, y_val, "Validation")
+            self.training_metrics = {**train_metrics, **val_metrics}
+        else:
+            self.training_metrics = train_metrics
+        
+        if self.use_calibration:
+            logger.info("Calibrating model probabilities...")
+            self.calibrated_model = CalibratedClassifierCV(
+                self.model, 
+                method='isotonic', 
+                cv='prefit'
+            )
+            
+            if X_val is not None and y_val is not None:
+                self.calibrated_model.fit(X_val, y_val)
+                logger.info("Model calibrated on validation set")
+            else:
+                self.calibrated_model.fit(X_train, y_train)
+                logger.info("Model calibrated on training set (not ideal)")
+        
+        return self.training_metrics
     
-    def train_with_purged_cv(self, 
-                              X: pd.DataFrame, 
-                              y: pd.Series, 
-                              sample_weights: Optional[np.ndarray] = None,
-                              n_splits: int = 5,
-                              purge_gap: int = 24) -> dict:
+    def train_with_purged_kfold(self,
+                                X: pd.DataFrame,
+                                y: pd.Series,
+                                n_splits: int = 5,
+                                embargo_pct: float = 0.01,
+                                params: Optional[Dict] = None) -> Dict:
         
-        logger.info(f"Training with purged {n_splits}-fold cross-validation")
+        logger.info(f"Training with Purged K-Fold CV: {n_splits} splits")
         
-        cv = PurgedKFold(n_splits=n_splits, purge_gap=purge_gap)
+        pkf = PurgedKFold(n_splits=n_splits, embargo_pct=embargo_pct)
         
         cv_scores = []
         
-        for fold, (train_idx, test_idx) in enumerate(cv.split(X, y)):
-            X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
-            y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+        for fold, (train_idx, val_idx) in enumerate(pkf.split(X)):
+            logger.info(f"Training fold {fold + 1}/{n_splits}")
             
-            if sample_weights is not None:
-                weights_train = sample_weights[train_idx]
-            else:
-                weights_train = None
+            X_train_fold = X.iloc[train_idx]
+            y_train_fold = y.iloc[train_idx]
+            X_val_fold = X.iloc[val_idx]
+            y_val_fold = y.iloc[val_idx]
             
-            model = LGBMClassifier(
-                n_estimators=200,
-                learning_rate=0.05,
-                max_depth=5,
-                num_leaves=31,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                random_state=42,
-                n_jobs=-1
-            )
-            
-            model.fit(
-                X_train, y_train,
-                sample_weight=weights_train,
-                eval_set=[(X_test, y_test)],
-                callbacks=[]
-            )
-            
-            score = model.score(X_test, y_test)
-            cv_scores.append(score)
-            logger.info(f"Fold {fold+1} accuracy: {score:.4f}")
+            metrics = self.train(X_train_fold, y_train_fold, X_val_fold, y_val_fold, params)
+            cv_scores.append(metrics)
         
-        logger.info(f"Cross-validation complete. Mean accuracy: {np.mean(cv_scores):.4f} +/- {np.std(cv_scores):.4f}")
+        avg_metrics = {}
+        for key in cv_scores[0].keys():
+            if 'val_' in key:
+                values = [score[key] for score in cv_scores]
+                avg_metrics[f"cv_{key}"] = np.mean(values)
+                avg_metrics[f"cv_{key}_std"] = np.std(values)
         
-        self.model = LGBMClassifier(
-            n_estimators=200,
-            learning_rate=0.05,
-            max_depth=5,
-            num_leaves=31,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            n_jobs=-1
-        )
+        logger.info(f"Cross-validation complete. Avg val accuracy: {avg_metrics.get('cv_val_accuracy', 0):.4f}")
         
-        self.model.fit(X, y, sample_weight=sample_weights)
-        self.feature_columns = X.columns.tolist()
+        return avg_metrics
+    
+    def _evaluate(self, X: pd.DataFrame, y: pd.Series, dataset_name: str) -> Dict:
+        y_pred = self.model.predict(X)
+        y_prob = self.model.predict_proba(X)[:, 1]
         
-        return {
-            'cv_scores': cv_scores,
-            'mean_score': np.mean(cv_scores),
-            'std_score': np.std(cv_scores)
+        metrics = {
+            f"{dataset_name.lower()}_accuracy": accuracy_score(y, y_pred),
+            f"{dataset_name.lower()}_precision": precision_score(y, y_pred, zero_division=0),
+            f"{dataset_name.lower()}_recall": recall_score(y, y_pred, zero_division=0),
+            f"{dataset_name.lower()}_f1": f1_score(y, y_pred, zero_division=0),
+            f"{dataset_name.lower()}_auc": roc_auc_score(y, y_prob)
         }
+        
+        logger.info(f"{dataset_name} - Accuracy: {metrics[f'{dataset_name.lower()}_accuracy']:.4f}, "
+                   f"AUC: {metrics[f'{dataset_name.lower()}_auc']:.4f}")
+        
+        return metrics
+    
+    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+        if X.shape[1] != len(self.feature_names):
+            raise ValueError(f"Expected {len(self.feature_names)} features, got {X.shape[1]}")
+        
+        if self.use_calibration and self.calibrated_model is not None:
+            return self.calibrated_model.predict_proba(X)[:, 1]
+        else:
+            return self.model.predict_proba(X)[:, 1]
     
     def save_model(self, filename: str):
-        if self.model is None:
-            raise ValueError("No model to save. Train a model first.")
+        os.makedirs("trading_system/models", exist_ok=True)
+        filepath = os.path.join("trading_system/models", filename)
         
-        filepath = os.path.join(self.model_save_path, filename)
-        joblib.dump({
+        model_data = {
             'model': self.model,
-            'feature_columns': self.feature_columns
-        }, filepath)
+            'calibrated_model': self.calibrated_model if self.use_calibration else None,
+            'feature_names': self.feature_names,
+            'training_metrics': self.training_metrics,
+            'use_calibration': self.use_calibration
+        }
+        
+        joblib.dump(model_data, filepath)
         logger.info(f"Model saved to {filepath}")
     
     def load_model(self, filename: str):
-        filepath = os.path.join(self.model_save_path, filename)
-        data = joblib.load(filepath)
-        self.model = data['model']
-        self.feature_columns = data['feature_columns']
+        filepath = os.path.join("trading_system/models", filename)
+        
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Model file not found: {filepath}")
+        
+        model_data = joblib.load(filepath)
+        self.model = model_data['model']
+        self.calibrated_model = model_data.get('calibrated_model')
+        self.feature_names = model_data['feature_names']
+        self.training_metrics = model_data.get('training_metrics', {})
+        self.use_calibration = model_data.get('use_calibration', False)
+        
         logger.info(f"Model loaded from {filepath}")
     
-    def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
+    def get_feature_importance(self) -> pd.DataFrame:
         if self.model is None:
-            raise ValueError("No model loaded. Train or load a model first.")
+            raise ValueError("Model not trained yet")
         
-        if self.feature_columns is not None:
-            X = X[self.feature_columns]
+        importance_df = pd.DataFrame({
+            'feature': self.feature_names,
+            'importance': self.model.feature_importances_
+        }).sort_values('importance', ascending=False)
         
-        return self.model.predict_proba(X)
+        return importance_df

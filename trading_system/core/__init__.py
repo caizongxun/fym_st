@@ -8,6 +8,7 @@ from .backtester import Backtester
 from .predictor import RealtimePredictor
 from .signal_filters import SignalFilter
 from .strategy_optimizer import StrategyOptimizer
+from .probability_calibration import ProbabilityCalibrator, ModelCalibrationAnalyzer
 
 __all__ = [
     'CryptoDataLoader',
@@ -21,5 +22,7 @@ __all__ = [
     'Backtester',
     'RealtimePredictor',
     'SignalFilter',
-    'StrategyOptimizer'
+    'StrategyOptimizer',
+    'ProbabilityCalibrator',
+    'ModelCalibrationAnalyzer'
 ]
