@@ -19,9 +19,9 @@ def render():
     st.markdown("""
     在歷史數據上測試你的模型績效:
     - 模擬真實交易手續費和滑點
+    - ATR 基礎風險管理 (每筆風險固定)
     - 機率門檻控制 (基於校準分析)
     - 嚴格事件過濾 (與訓練一致)
-    - 完整的績效指標和資金曲線
     """)
     
     st.markdown("---")
@@ -155,9 +155,6 @@ def render():
             df_filtered = df_filtered.copy()
             df_filtered['win_probability'] = probabilities
             
-            # 根據風險百分比計算 position_size
-            df_filtered['position_size'] = risk_per_trade / 100.0
-            
             signals = df_filtered[df_filtered['win_probability'] >= probability_threshold].copy()
             st.info(f"生成 {len(signals)} 個交易信號 (門檻: {probability_threshold})")
             
@@ -168,7 +165,12 @@ def render():
             status_text.text("執行回測...")
             progress_bar.progress(60)
             
-            backtester = Backtester(initial_capital, commission_rate, slippage)
+            backtester = Backtester(
+                initial_capital=initial_capital,
+                commission_rate=commission_rate,
+                slippage=slippage,
+                risk_per_trade=risk_per_trade / 100.0
+            )
             results = backtester.run_backtest(
                 signals,
                 tp_multiplier=tp_multiplier,
@@ -289,11 +291,11 @@ def render():
                          delta=f"{100*timeout_count/len(trades_df):.1f}%")
             
             st.markdown("### 近期交易紀錄")
-            display_cols = ['entry_time', 'entry_price', 'exit_price', 'exit_reason', 'exit_bars', 
+            display_cols = ['entry_time', 'entry_price', 'exit_price', 'position_value', 'exit_reason', 'exit_bars', 
                           'pnl_dollar', 'total_commission', 'capital']
             display_df = trades_df[display_cols].tail(50).copy()
             display_df['entry_time'] = display_df['entry_time'].dt.strftime('%Y-%m-%d %H:%M')
-            display_df.columns = ['進場時間', '進場價', '出場價', '退出原因', '持倉時間', '損益', '手續費', '累計資金']
+            display_df.columns = ['進場時間', '進場價', '出場價', '倉位金額', '退出原因', '持倉時間', '損益', '手續費', '累計資金']
             st.dataframe(display_df, use_container_width=True)
             
             csv = trades_df.to_csv(index=False)
