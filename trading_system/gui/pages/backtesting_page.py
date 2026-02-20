@@ -43,8 +43,17 @@ def render():
             symbol = st.selectbox("測試交易對", loader.get_available_symbols(), index=10)
             timeframe = st.selectbox("時間框架", loader.get_available_timeframes(), index=1)
             
-            use_recent_data = st.checkbox("只使用2024+數據 (OOS)", value=True,
-                                         help="Out-of-Sample 測試")
+            data_source = st.radio(
+                "數據來源",
+                ["Binance API (最新)", "HuggingFace (快速)"],
+                help="Binance API 獲取最新數據,HuggingFace 使用緩存"
+            )
+            
+            if data_source == "Binance API (最新)":
+                backtest_days = st.number_input("回測天數", value=90, min_value=7, max_value=365, step=7,
+                                               help="從 Binance 直接抽取最近 N 天數據")
+            else:
+                use_recent_data = st.checkbox("只使用2024+數據 (OOS)", value=True)
         
         with col2:
             initial_capital = st.number_input("初始資金", value=10000.0, step=1000.0)
@@ -85,18 +94,23 @@ def render():
             
             status_text.text("載入數據...")
             progress_bar.progress(20)
-            df = loader.load_klines(symbol, timeframe)
             
-            if use_recent_data:
-                df = df[df['open_time'] >= '2024-01-01'].copy()
-                st.info(f"Out-of-Sample 測試: {len(df)} 筆 (2024-01-01 至今)")
+            if data_source == "Binance API (最新)":
+                st.info(f"從 Binance 抽取最近 {backtest_days} 天數據...")
+                df = loader.fetch_latest_klines(symbol, timeframe, days=int(backtest_days))
+            else:
+                df = loader.load_klines(symbol, timeframe)
+                if use_recent_data:
+                    df = df[df['open_time'] >= '2024-01-01'].copy()
+                    st.info(f"Out-of-Sample 測試: {len(df)} 筆 (2024-01-01 至今)")
+            
+            st.info(f"載入 {len(df)} 筆數據,時間範圍: {df['open_time'].min()} 至 {df['open_time'].max()}")
             
             status_text.text("建立特徵...")
             progress_bar.progress(30)
             feature_engineer = FeatureEngineer()
             df_features = feature_engineer.build_features(df)
             
-            # 應用事件過濾
             if use_event_filter:
                 status_text.text("應用事件過濾...")
                 progress_bar.progress(35)
@@ -141,7 +155,9 @@ def render():
             df_filtered = df_filtered.copy()
             df_filtered['win_probability'] = probabilities
             
-            # 應用機率門檻
+            # 根據風險百分比計算 position_size
+            df_filtered['position_size'] = risk_per_trade / 100.0
+            
             signals = df_filtered[df_filtered['win_probability'] >= probability_threshold].copy()
             st.info(f"生成 {len(signals)} 個交易信號 (門檻: {probability_threshold})")
             
@@ -156,9 +172,7 @@ def render():
             results = backtester.run_backtest(
                 signals,
                 tp_multiplier=tp_multiplier,
-                sl_multiplier=sl_multiplier,
-                risk_per_trade_pct=risk_per_trade / 100,
-                max_holding_bars=int(max_holding_bars)
+                sl_multiplier=sl_multiplier
             )
             
             progress_bar.progress(100)
@@ -169,7 +183,6 @@ def render():
             stats = results['statistics']
             trades_df = results['trades']
             
-            # 績效摘要
             st.markdown("### 績效摘要")
             
             col1, col2, col3, col4, col5 = st.columns(5)
@@ -178,7 +191,6 @@ def render():
             with col2:
                 st.metric("最終資金", f"${stats['final_capital']:,.0f}")
             with col3:
-                pnl_color = "normal" if stats['net_pnl'] >= 0 else "inverse"
                 st.metric("淨損益", f"${stats['net_pnl']:,.0f}", 
                          delta=f"{stats['total_return']*100:.1f}%")
             with col4:
@@ -187,7 +199,6 @@ def render():
                 ev_actual = (stats['win_rate'] * tp_multiplier) - ((1 - stats['win_rate']) * sl_multiplier)
                 st.metric("實際期望值", f"{ev_actual:.3f}R")
             
-            # 績效指標
             st.markdown("### 績效指標")
             
             col1, col2, col3, col4 = st.columns(4)
@@ -204,7 +215,6 @@ def render():
                 st.metric("盈虧比", f"{stats['profit_factor']:.2f}")
                 st.metric("Sharpe 比率", f"{stats['sharpe_ratio']:.2f}")
             
-            # 風險指標
             st.markdown("### 風險指標")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -216,7 +226,6 @@ def render():
             with col4:
                 st.metric("總虧損金額", f"${stats['total_loss']:,.0f}")
             
-            # 資金曲線
             fig = make_subplots(
                 rows=2, cols=1,
                 subplot_titles=("資金曲線", "回撤曲線"),
@@ -263,7 +272,6 @@ def render():
             
             st.plotly_chart(fig, use_container_width=True)
             
-            # 退出原因分布
             st.markdown("### 退出原因分布")
             exit_counts = trades_df['exit_reason'].value_counts()
             col1, col2, col3 = st.columns(3)
@@ -280,7 +288,6 @@ def render():
                 st.metric("超時出場", timeout_count,
                          delta=f"{100*timeout_count/len(trades_df):.1f}%")
             
-            # 近期交易紀錄
             st.markdown("### 近期交易紀錄")
             display_cols = ['entry_time', 'entry_price', 'exit_price', 'exit_reason', 'exit_bars', 
                           'pnl_dollar', 'total_commission', 'capital']
@@ -289,7 +296,6 @@ def render():
             display_df.columns = ['進場時間', '進場價', '出場價', '退出原因', '持倉時間', '損益', '手續費', '累計資金']
             st.dataframe(display_df, use_container_width=True)
             
-            # 下載
             csv = trades_df.to_csv(index=False)
             st.download_button(
                 label="下載完整交易紀錄 (CSV)",
@@ -298,7 +304,6 @@ def render():
                 mime="text/csv"
             )
             
-            # 建議
             st.markdown("### 建議")
             if stats['total_return'] > 0.5 and stats['sharpe_ratio'] > 1.5:
                 st.success("優秀的回測結果! 可以考慮實盤測試")
