@@ -6,6 +6,8 @@ from .model_trainer import ModelTrainer, PurgedKFold
 from .position_sizing import KellyCriterion, RiskManager
 from .backtester import Backtester
 from .predictor import RealtimePredictor
+from .signal_filters import SignalFilter
+from .strategy_optimizer import StrategyOptimizer
 
 __all__ = [
     'CryptoDataLoader',
@@ -17,5 +19,7 @@ __all__ = [
     'KellyCriterion',
     'RiskManager',
     'Backtester',
-    'RealtimePredictor'
+    'RealtimePredictor',
+    'SignalFilter',
+    'StrategyOptimizer'
 ]
