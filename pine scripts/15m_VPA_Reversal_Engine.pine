@@ -8,7 +8,7 @@ indicator("15m VPA Reversal Engine [FTM]", shorttitle="VPA Rev 15m", overlay=fal
 // - Climactic volume at highs/lows (Buying/Selling Climaxes)
 // - Stopping volume (wide range + ultra-high volume + failure to continue)
 // - Up-thrust / Down-thrust bars (wide spread, strong rejection)
-// - No-demand / No-supply (narrow range, low volume after a push)
+// - No-demand / No-supply bars (narrow range, low volume after a push)
 //
 // It outputs:
 // - An oscillator: net balance of bullish vs bearish VPA signals (-10 .. +10)
@@ -127,9 +127,13 @@ vpa_osc = ta.ema(net_score, 3)
 bull_early = buying_climax or downthrust
 bear_early = selling_climax or upthrust
 
+// Recent cumulative scores over last 3 bars (avoid ta.sum dependency)
+bull_recent_sum = bull_score_bar + bull_score_bar[1] + bull_score_bar[2]
+bear_recent_sum = bear_score_bar + bear_score_bar[1] + bear_score_bar[2]
+
 // Confirmation: combination over recent few bars
-bull_confirm = (bull_score_bar >= 3 and ta.sum(bull_score_bar, 3) >= 4) and vpa_osc > 0
-bear_confirm = (bear_score_bar >= 3 and ta.sum(bear_score_bar, 3) >= 4) and vpa_osc < 0
+bull_confirm = (bull_score_bar >= 3 and bull_recent_sum >= 4) and vpa_osc > 0
+bear_confirm = (bear_score_bar >= 3 and bear_recent_sum >= 4) and vpa_osc < 0
 
 // ==========================================
 // 6. PLOTTING
