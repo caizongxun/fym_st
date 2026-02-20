@@ -4,11 +4,11 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from gui.pages import training_page, backtesting_page, live_prediction_page, dashboard_page
+from gui.pages import training_page, backtesting_page, live_prediction_page, dashboard_page, optimization_page
 
 st.set_page_config(
     page_title="Crypto Trading System",
-    page_icon="📈",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -18,13 +18,15 @@ def main():
     
     page = st.sidebar.radio(
         "Select Page",
-        ["Dashboard", "Model Training", "Backtesting", "Live Prediction"]
+        ["Dashboard", "Model Training", "Strategy Optimization", "Backtesting", "Live Prediction"]
     )
     
     if page == "Dashboard":
         dashboard_page.render()
     elif page == "Model Training":
         training_page.render()
+    elif page == "Strategy Optimization":
+        optimization_page.render()
     elif page == "Backtesting":
         backtesting_page.render()
     elif page == "Live Prediction":
