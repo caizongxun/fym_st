@@ -96,16 +96,23 @@ def render():
             status_text.text("準備訓練數據中...")
             progress_bar.progress(35)
             
-            feature_cols = [col for col in df_labeled.columns if col not in [
-                'open_time', 'open', 'high', 'low', 'close', 'volume',
-                'label', 'exit_type', 'exit_price', 'exit_bars', 'return'
-            ]]
+            exclude_cols = [
+                'open_time', 'close_time', 'open', 'high', 'low', 'close', 'volume',
+                'label', 'exit_type', 'exit_price', 'exit_bars', 'return', 'ignore'
+            ]
+            
+            feature_cols = [col for col in df_labeled.columns if col not in exclude_cols]
+            
+            feature_cols = [col for col in feature_cols if df_labeled[col].dtype in ['int64', 'float64', 'bool']]
             
             X = df_labeled[feature_cols].copy()
             y = df_labeled['label'].copy()
             
             X = X.fillna(0)
             X = X.replace([np.inf, -np.inf], 0)
+            
+            for col in X.select_dtypes(include=['bool']).columns:
+                X[col] = X[col].astype(int)
             
             st.info(f"訓練數據: {len(X)} 個樣本,{len(feature_cols)} 個特徵")
             
