@@ -17,10 +17,10 @@ def render():
     
     st.markdown("""
     使用進階機器學習訓練交易模型:
-    - **事件驅動抽樣** - 過濾無效盤整期 (關鍵)
+    - **嚴格事件過濾** - 保留10-15%有效樣本 (關鍵)
+    - **禁用權重失衡** - 強制 1:1 平衡,避免濾發信號
     - **時間平移標記** - 修正時間洩漏
-    - **MAE 追蹤** - 記錄最大不利偏移
-    - **樣本質量加權** - 快速低回撤的交易權重更高
+    - **樣本質量加權** - 快速低回撤權重高
     """)
     
     st.markdown("---")
@@ -34,9 +34,9 @@ def render():
             timeframe = st.selectbox("時間框架", loader.get_available_timeframes(), index=1)
             
             tp_multiplier = st.number_input("止盈倍數 (ATR)", value=2.5, step=0.5, 
-                                           help="建議: 2.5-3.0")
+                                           help="建議: 2.5-3.0,必須 > 止損")
             sl_multiplier = st.number_input("止損倍數 (ATR)", value=1.5, step=0.25,
-                                           help="建議: 1.5")
+                                           help="建議: 1.5-2.0")
         
         with col2:
             max_holding_bars = st.number_input("最大持倉根數", value=24, step=1)
@@ -44,51 +44,57 @@ def render():
             embargo_pct = st.number_input("禁止區百分比", value=0.01, step=0.01, format="%.3f")
             use_calibration = st.checkbox("啟用機率校準", value=True)
     
-    with st.expander("事件過濾器", expanded=True):
+    with st.expander("嚴格事件過濾", expanded=True):
         st.markdown("""
-        **核心功能**: 過濾無交易機會的盤整期,只保留10-20%有效樣本
-        這是將 AUC 從 0.5 提升到 0.6+ 的關鍵
+        **三重確認 (AND 邏輯)**:
+        1. 成交量爆增 > 1.5倍
+        2. 價格突破 20期高/低點
+        3. 波動率從壓縮區爆發
+        
+        **目標**: 保留10-15%樣本
         """)
         
-        use_event_filter = st.checkbox("啟用事件過濾器", value=True,
-                                       help="強烈建議啟用以提升 AUC")
+        use_event_filter = st.checkbox("啟用嚴格過濾", value=True,
+                                       help="強烈建議啟用")
         
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
-            use_volatility = st.checkbox("波動率突破", value=True,
-                                        help="VSR > 1.2")
-            use_volume = st.checkbox("成交量爆增", value=True,
-                                    help="Volume Ratio > 1.5")
+            min_volume_ratio = st.number_input("最小成交量比率", value=1.5, step=0.1,
+                                              help="> 1.5倏 = 150%")
+            min_vsr = st.number_input("最小波動率比率", value=1.0, step=0.1)
         with col2:
-            use_trend = st.checkbox("趨勢對齊", value=True,
-                                   help="EMA9 > EMA21 > EMA50")
-            use_bb_squeeze = st.checkbox("BB壓縮突破", value=True,
-                                        help="布林帶壓縮後爆發")
-        with col3:
-            filter_aggressiveness = st.selectbox(
-                "過濾強度",
-                ["標準 (15-25%)", "激進 (10%)", "寬鬆 (30%)"],
-                index=0
-            )
+            use_strict = st.checkbox("嚴格模式 (AND)", value=True,
+                                    help="必須同時滿足所有條件")
+            bb_squeeze = st.number_input("BB壓縮門檻", value=0.5, step=0.1,
+                                        help="0.5 = 低於中位數")
     
     with st.expander("進階配置", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
             slippage = st.number_input("滑點", value=0.001, step=0.0001, format="%.4f")
             time_decay_lambda = st.number_input("時間衰減系數", value=2.0, step=0.5)
-        with col2:
             quality_alpha = st.number_input("質量權重系數", value=2.0, step=0.5)
+        with col2:
+            use_class_weight = st.checkbox("使用類別權重平衡", value=False,
+                                          help="交易中不建議啟用,會導致濾發信號")
     
-    with st.expander("模型超參數", expanded=False):
+    with st.expander("模型超參數 (防過擬合)", expanded=False):
+        st.info("數據減少到8000筆後,需要限制模型複雜度")
         col1, col2 = st.columns(2)
         with col1:
-            max_depth = st.number_input("最大深度", value=6, min_value=3, max_value=10)
-            learning_rate = st.number_input("學習率", value=0.05, step=0.01, format="%.3f")
-            n_estimators = st.number_input("樹的數量", value=200, step=50)
+            max_depth = st.number_input("最大深度", value=4, min_value=3, max_value=6,
+                                       help="數據少時使用4-5")
+            learning_rate = st.number_input("學習率", value=0.02, step=0.01, format="%.3f",
+                                           help="降低到0.01-0.02")
+            n_estimators = st.number_input("樹的數量", value=300, step=50,
+                                          help="300-500")
         with col2:
-            min_child_weight = st.number_input("最小子節點權重", value=3, min_value=1, max_value=10)
-            subsample = st.number_input("子樣本比例", value=0.8, step=0.1, format="%.2f")
-            colsample_bytree = st.number_input("特徵採樣比例", value=0.8, step=0.1, format="%.2f")
+            min_child_weight = st.number_input("最小子節點權重", value=5, min_value=3, max_value=10,
+                                              help="增加到5-7")
+            subsample = st.number_input("子樣本比例", value=0.7, step=0.1, format="%.2f",
+                                       help="降低到0.7-0.8")
+            colsample_bytree = st.number_input("特徵採樣比例", value=0.6, step=0.1, format="%.2f",
+                                              help="降低到0.6-0.7")
     
     model_name = st.text_input("模型名稱", value=f"{symbol}_{timeframe}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl")
     
@@ -108,29 +114,32 @@ def render():
             df_features = feature_engineer.build_features(df)
             st.info(f"已建立 {len(df_features.columns)} 個特徵")
             
-            # 事件過濾
+            # 嚴格事件過濾
             if use_event_filter:
-                status_text.text("應用事件過濾器...")
+                status_text.text("應用嚴格事件過濾...")
                 progress_bar.progress(15)
                 
                 event_filter = EventFilter(
-                    use_volatility_breakout=use_volatility,
-                    use_volume_surge=use_volume,
-                    use_trend_alignment=use_trend,
-                    use_bb_squeeze=use_bb_squeeze,
-                    min_events_ratio=0.05
+                    use_strict_mode=use_strict,
+                    min_volume_ratio=min_volume_ratio,
+                    min_vsr=min_vsr,
+                    bb_squeeze_threshold=bb_squeeze,
+                    lookback_period=20
                 )
                 
-                if "激進" in filter_aggressiveness:
-                    df_filtered = event_filter.apply_aggressive_filter(df_features, target_ratio=0.10)
-                elif "寬鬆" in filter_aggressiveness:
-                    event_filter.min_events_ratio = 0.30
-                    df_filtered = event_filter.filter_events(df_features)
-                else:
-                    df_filtered = event_filter.filter_events(df_features)
+                df_filtered = event_filter.filter_events(df_features)
                 
-                st.info(f"事件過濾: {len(df)} → {len(df_filtered)} ({100*len(df_filtered)/len(df):.1f}%)")
+                filter_ratio = len(df_filtered) / len(df)
+                st.info(f"事件過濾: {len(df)} → {len(df_filtered)} ({100*filter_ratio:.1f}%)")
+                
+                if filter_ratio > 0.25:
+                    st.warning(f"過濾後仍保留 {filter_ratio*100:.0f}%,建議提高 min_volume_ratio")
+                elif filter_ratio < 0.05:
+                    st.warning(f"過濾過嚴只保留 {filter_ratio*100:.1f}%,可能樣本不足")
+                
                 df_features = df_filtered
+            else:
+                st.error("未啟用事件過濾器! AUC 可能無法超過 0.55")
             
             status_text.text("應用三重屏障標記...")
             progress_bar.progress(25)
@@ -163,8 +172,8 @@ def render():
                 'taker_buy_base_asset_volume',
                 'label', 'label_return', 'hit_time', 'exit_type', 'sample_weight', 'mae_ratio',
                 'exit_price', 'exit_bars', 'return', 'ignore',
-                'bb_middle', 'bb_upper', 'bb_lower', 'bb_std',  # 排除絕對價格
-                'volume_ma_20'  # 排除絕對成交量
+                'bb_middle', 'bb_upper', 'bb_lower', 'bb_std',
+                'volume_ma_20'
             ]
             
             feature_cols = [col for col in df_labeled.columns if col not in exclude_cols]
@@ -188,7 +197,13 @@ def render():
             
             trainer = ModelTrainer(use_calibration=use_calibration)
             
-            scale_pos_weight = negative_count / positive_count if positive_count > 0 else 1.0
+            # 關鍵修正: 強制 scale_pos_weight = 1.0 (禁用權重失衡)
+            if use_class_weight:
+                scale_pos_weight = negative_count / positive_count if positive_count > 0 else 1.0
+                st.warning(f"已啟用類別權重: {scale_pos_weight:.2f} (可能導致濾發信號)")
+            else:
+                scale_pos_weight = 1.0
+                st.info("類別權重: 1.0 (禁用失衡,避免濾發信號)")
             
             params = {
                 'max_depth': int(max_depth),
@@ -197,7 +212,9 @@ def render():
                 'min_child_weight': int(min_child_weight),
                 'subsample': float(subsample),
                 'colsample_bytree': float(colsample_bytree),
-                'scale_pos_weight': scale_pos_weight
+                'scale_pos_weight': scale_pos_weight,
+                'reg_alpha': 0.1,
+                'reg_lambda': 1.0
             }
             
             cv_metrics = trainer.train_with_purged_kfold(
@@ -234,14 +251,18 @@ def render():
             
             auc = cv_metrics.get('cv_val_auc', 0)
             prec = cv_metrics.get('cv_val_precision', 0)
+            recall = cv_metrics.get('cv_val_recall', 0)
             
-            if auc >= 0.60 and prec >= 0.40:
-                st.success("模型表現優秀! AUC >= 0.60 且精確率 >= 40%")
-            elif auc >= 0.56:
-                st.info("模型表現合格,可進行回測")
+            if auc >= 0.60 and prec >= 0.45:
+                st.success(f"模型優秀! AUC={auc:.3f}, 精確率={prec:.1%}")
+            elif auc >= 0.56 and prec >= 0.40:
+                st.info(f"模型合格! AUC={auc:.3f}, 精確率={prec:.1%}")
             elif auc < 0.55:
-                st.error(f"模型 AUC {auc:.4f} < 0.55,預測能力不佳")
-                st.warning("建議: 1) 確認事件過濾器已啟用 2) 調整 TP/SL")
+                st.error(f"AUC {auc:.3f} < 0.55,預測能力不佳")
+            
+            if recall > 0.70 and prec < 0.40:
+                st.warning(f"召回率過高({recall:.1%})但精確率低({prec:.1%}),模型濾發信號")
+                st.info("建議: 關閉類別權重平衡")
             
             st.markdown("### 特徵重要性 (前 20 名)")
             feature_importance = trainer.get_feature_importance()
