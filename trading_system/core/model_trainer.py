@@ -166,7 +166,7 @@ class ModelTrainer:
         return metrics
     
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
-        if X.shape[1] != len(self.feature_names):
+        if self.feature_names and X.shape[1] != len(self.feature_names):
             raise ValueError(f"Expected {len(self.feature_names)} features, got {X.shape[1]}")
         
         if self.use_calibration and self.calibrated_model is not None:
@@ -196,17 +196,39 @@ class ModelTrainer:
             raise FileNotFoundError(f"Model file not found: {filepath}")
         
         model_data = joblib.load(filepath)
-        self.model = model_data['model']
-        self.calibrated_model = model_data.get('calibrated_model')
-        self.feature_names = model_data['feature_names']
-        self.training_metrics = model_data.get('training_metrics', {})
-        self.use_calibration = model_data.get('use_calibration', False)
+        
+        if isinstance(model_data, dict):
+            self.model = model_data.get('model')
+            self.calibrated_model = model_data.get('calibrated_model')
+            self.feature_names = model_data.get('feature_names')
+            self.training_metrics = model_data.get('training_metrics', {})
+            self.use_calibration = model_data.get('use_calibration', False)
+        else:
+            self.model = model_data
+            self.calibrated_model = None
+            self.feature_names = None
+            self.training_metrics = {}
+            self.use_calibration = False
+            logger.warning("Loaded old model format without metadata. Feature validation disabled.")
+        
+        if self.model is None:
+            raise ValueError("Failed to load model")
+        
+        if self.feature_names is None and hasattr(self.model, 'feature_names_in_'):
+            self.feature_names = self.model.feature_names_in_.tolist()
+            logger.info("Extracted feature names from model")
         
         logger.info(f"Model loaded from {filepath}")
     
     def get_feature_importance(self) -> pd.DataFrame:
         if self.model is None:
             raise ValueError("Model not trained yet")
+        
+        if self.feature_names is None:
+            if hasattr(self.model, 'feature_names_in_'):
+                self.feature_names = self.model.feature_names_in_.tolist()
+            else:
+                self.feature_names = [f"feature_{i}" for i in range(len(self.model.feature_importances_))]
         
         importance_df = pd.DataFrame({
             'feature': self.feature_names,
