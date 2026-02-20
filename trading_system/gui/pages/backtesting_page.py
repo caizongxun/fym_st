@@ -14,78 +14,78 @@ from core import (
 )
 
 def render():
-    st.title("Backtesting")
+    st.title("回測分析")
     
     st.markdown("""
-    Test your trained model on historical data with realistic trading conditions:
-    - Commission and slippage simulation
-    - Dynamic position sizing via Kelly Criterion
-    - Performance metrics and equity curve
+    在歷史數據上測試你的模型績效:
+    - 模擬真實交易手續費和滑點
+    - Kelly Criterion 動態倉位管理
+    - 完整的績效指標和資金曲線
     """)
     
     st.markdown("---")
     
-    with st.expander("Backtest Configuration", expanded=True):
+    with st.expander("回測配置", expanded=True):
         col1, col2, col3 = st.columns(3)
         
         with col1:
             model_files = [f for f in os.listdir("trading_system/models") if f.endswith('.pkl')] if os.path.exists("trading_system/models") else []
             
             if len(model_files) == 0:
-                st.warning("No trained models found. Train a model first.")
+                st.warning("未找到已訓練的模型。請先訓練模型。")
                 return
             
-            model_file = st.selectbox("Select Model", model_files)
+            model_file = st.selectbox("選擇模型", model_files)
             
             loader = CryptoDataLoader()
-            symbol = st.selectbox("Test Symbol", loader.get_available_symbols(), index=10)
-            timeframe = st.selectbox("Timeframe", loader.get_available_timeframes(), index=1)
+            symbol = st.selectbox("測試交易對", loader.get_available_symbols(), index=10)
+            timeframe = st.selectbox("時間框架", loader.get_available_timeframes(), index=1)
             
-            backtest_days = st.number_input("Backtest Days (0 = All data)", value=90, min_value=0, step=30)
+            backtest_days = st.number_input("回測天數 (0 = 全部數據)", value=90, min_value=0, step=30)
         
         with col2:
-            initial_capital = st.number_input("Initial Capital", value=10000.0, step=1000.0)
-            commission_rate = st.number_input("Commission Rate", value=0.001, step=0.0001, format="%.4f")
-            slippage = st.number_input("Slippage", value=0.0005, step=0.0001, format="%.4f")
+            initial_capital = st.number_input("初始資金", value=10000.0, step=1000.0)
+            commission_rate = st.number_input("手續費率", value=0.001, step=0.0001, format="%.4f")
+            slippage = st.number_input("滑點", value=0.0005, step=0.0001, format="%.4f")
         
         with col3:
-            tp_multiplier = st.number_input("TP Multiplier", value=2.5, step=0.1)
-            sl_multiplier = st.number_input("SL Multiplier", value=1.5, step=0.1)
-            kelly_fraction = st.number_input("Kelly Fraction", value=0.5, step=0.1)
+            tp_multiplier = st.number_input("止盈倍數", value=4.0, step=0.1)
+            sl_multiplier = st.number_input("止損倍數", value=2.0, step=0.1)
+            kelly_fraction = st.number_input("Kelly 分數", value=0.5, step=0.1)
     
-    if st.button("Run Backtest", type="primary"):
+    if st.button("運行回測", type="primary"):
         progress_bar = st.progress(0)
         status_text = st.empty()
         
         try:
-            status_text.text("Loading model...")
+            status_text.text("載入模型中...")
             progress_bar.progress(10)
             trainer = ModelTrainer()
             trainer.load_model(model_file)
             
-            status_text.text("Loading data...")
+            status_text.text("載入數據中...")
             progress_bar.progress(20)
             df = loader.load_klines(symbol, timeframe)
             
-            status_text.text("Building features...")
+            status_text.text("建立特徵中...")
             progress_bar.progress(35)
             feature_engineer = FeatureEngineer()
             df_features = feature_engineer.build_features(df)
             
-            status_text.text("Generating predictions...")
+            status_text.text("生成預測中...")
             progress_bar.progress(50)
             kelly = KellyCriterion(tp_multiplier, sl_multiplier, kelly_fraction)
             predictor = RealtimePredictor(trainer, feature_engineer, kelly)
             predictions = predictor.predict_from_completed_bars(df_features)
             
             signals = predictions[predictions['signal'] == 1].copy()
-            st.info(f"Generated {len(signals)} trading signals from {predictions['open_time'].min()} to {predictions['open_time'].max()}")
+            st.info(f"生成 {len(signals)} 個交易信號,時間範圍: {predictions['open_time'].min()} 至 {predictions['open_time'].max()}")
             
             if len(signals) == 0:
-                st.warning("No signals generated. Try adjusting parameters.")
+                st.warning("未生成任何信號。請調整參數。")
                 return
             
-            status_text.text("Running backtest...")
+            status_text.text("執行回測中...")
             progress_bar.progress(70)
             backtester = Backtester(initial_capital, commission_rate, slippage)
             
@@ -99,57 +99,57 @@ def render():
             )
             
             progress_bar.progress(100)
-            status_text.text("Backtest complete")
+            status_text.text("回測完成")
             
-            st.success("Backtest completed successfully")
+            st.success("回測執行成功")
             
             stats = results['statistics']
             trades_df = results['trades']
             
-            st.markdown("### Performance Summary")
+            st.markdown("### 績效摘要")
             
             col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
-                st.metric("Initial Capital", f"${initial_capital:,.2f}")
+                st.metric("初始資金", f"${initial_capital:,.2f}")
             with col2:
-                st.metric("Final Capital", f"${stats['final_capital']:,.2f}")
+                st.metric("最終資金", f"${stats['final_capital']:,.2f}")
             with col3:
-                st.metric("Net PnL", f"${stats['net_pnl']:,.2f}")
+                st.metric("淨損益", f"${stats['net_pnl']:,.2f}")
             with col4:
-                st.metric("Total Return", f"{stats['total_return']*100:.2f}%")
+                st.metric("總回報", f"{stats['total_return']*100:.2f}%")
             with col5:
-                st.metric("Total Commission", f"${stats['total_commission']:,.2f}")
+                st.metric("總手續費", f"${stats['total_commission']:,.2f}")
             
-            st.markdown("### Performance Metrics")
+            st.markdown("### 績效指標")
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("Total Trades", stats['total_trades'])
-                st.metric("Win Rate", f"{stats['win_rate']*100:.2f}%")
+                st.metric("總交易次數", stats['total_trades'])
+                st.metric("勝率", f"{stats['win_rate']*100:.2f}%")
             with col2:
-                st.metric("Winning Trades", stats['winning_trades'])
-                st.metric("Losing Trades", stats['losing_trades'])
+                st.metric("獲利次數", stats['winning_trades'])
+                st.metric("虧損次數", stats['losing_trades'])
             with col3:
-                st.metric("Avg Win", f"${stats['avg_win']:.2f}")
-                st.metric("Avg Loss", f"${stats['avg_loss']:.2f}")
+                st.metric("平均獲利", f"${stats['avg_win']:.2f}")
+                st.metric("平均虧損", f"${stats['avg_loss']:.2f}")
             with col4:
-                st.metric("Profit Factor", f"{stats['profit_factor']:.2f}")
-                st.metric("Sharpe Ratio", f"{stats['sharpe_ratio']:.2f}")
+                st.metric("盈虧比", f"{stats['profit_factor']:.2f}")
+                st.metric("Sharpe 比率", f"{stats['sharpe_ratio']:.2f}")
             
-            st.markdown("### Risk Metrics")
+            st.markdown("### 風險指標")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("Max Drawdown", f"{stats['max_drawdown']*100:.2f}%")
+                st.metric("最大回撤", f"{stats['max_drawdown']*100:.2f}%")
             with col2:
-                st.metric("Avg Trade Duration", f"{stats['avg_trade_duration']:.1f} bars")
+                st.metric("平均持倉時間", f"{stats['avg_trade_duration']:.1f} 根")
             with col3:
-                st.metric("Total Win Amount", f"${stats['total_win']:,.2f}")
+                st.metric("總獲利金額", f"${stats['total_win']:,.2f}")
             with col4:
-                st.metric("Total Loss Amount", f"${stats['total_loss']:,.2f}")
+                st.metric("總虧損金額", f"${stats['total_loss']:,.2f}")
             
             fig = make_subplots(
                 rows=2, cols=1,
-                subplot_titles=("Equity Curve", "Drawdown"),
+                subplot_titles=("資金曲線", "回撤曲線"),
                 vertical_spacing=0.15,
                 row_heights=[0.7, 0.3]
             )
@@ -159,7 +159,7 @@ def render():
                     x=list(range(len(trades_df))),
                     y=trades_df['capital'],
                     mode='lines',
-                    name='Capital',
+                    name='資金',
                     line=dict(color='blue', width=2)
                 ),
                 row=1, col=1
@@ -169,7 +169,7 @@ def render():
                 y=initial_capital,
                 line_dash="dash",
                 line_color="gray",
-                annotation_text="Initial Capital",
+                annotation_text="初始資金",
                 row=1, col=1
             )
             
@@ -178,47 +178,48 @@ def render():
                     x=list(range(len(trades_df))),
                     y=trades_df['drawdown_pct'] * 100,
                     mode='lines',
-                    name='Drawdown',
+                    name='回撤',
                     fill='tozeroy',
                     line=dict(color='red', width=1)
                 ),
                 row=2, col=1
             )
             
-            fig.update_xaxes(title_text="Trade Number", row=2, col=1)
-            fig.update_yaxes(title_text="Capital ($)", row=1, col=1)
-            fig.update_yaxes(title_text="Drawdown (%)", row=2, col=1)
+            fig.update_xaxes(title_text="交易次數", row=2, col=1)
+            fig.update_yaxes(title_text="資金 ($)", row=1, col=1)
+            fig.update_yaxes(title_text="回撤 (%)", row=2, col=1)
             
             fig.update_layout(height=700, showlegend=True)
             
             st.plotly_chart(fig, use_container_width=True)
             
-            st.markdown("### Exit Reason Distribution")
+            st.markdown("### 退出原因分布")
             exit_counts = trades_df['exit_reason'].value_counts()
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("Take Profit", exit_counts.get('TP', 0))
+                st.metric("止盈出場", exit_counts.get('TP', 0))
             with col2:
-                st.metric("Stop Loss", exit_counts.get('SL', 0))
+                st.metric("止損出場", exit_counts.get('SL', 0))
             with col3:
-                st.metric("Timeout", exit_counts.get('Timeout', 0))
+                st.metric("超時出場", exit_counts.get('Timeout', 0))
             
-            st.markdown("### Recent Trade History")
+            st.markdown("### 近期交易紀錄")
             display_cols = ['entry_time', 'entry_price', 'exit_price', 'exit_reason', 'exit_bars', 
                           'pnl_dollar', 'total_commission', 'capital']
             display_df = trades_df[display_cols].tail(50).copy()
             display_df['entry_time'] = display_df['entry_time'].dt.strftime('%Y-%m-%d %H:%M')
+            display_df.columns = ['進場時間', '進場價', '出場價', '退出原因', '持倉時間', '損益', '手續費', '累計資金']
             st.dataframe(display_df, use_container_width=True)
             
             csv = trades_df.to_csv(index=False)
             st.download_button(
-                label="Download Full Trade History (CSV)",
+                label="下載完整交易紀錄 (CSV)",
                 data=csv,
                 file_name=f"backtest_{symbol}_{timeframe}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv"
             )
             
         except Exception as e:
-            st.error(f"Backtest failed: {str(e)}")
+            st.error(f"回測失敗: {str(e)}")
             import traceback
             st.code(traceback.format_exc())
