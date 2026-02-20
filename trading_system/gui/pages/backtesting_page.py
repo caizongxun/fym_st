@@ -124,6 +124,8 @@ def render():
             trainer = ModelTrainer()
             trainer.load_model(model_file)
             
+            st.info(f"模型特徵: {len(trainer.feature_names)} 個")
+            
             status_text.text("載入數據...")
             progress_bar.progress(20)
             
@@ -160,19 +162,29 @@ def render():
             status_text.text("生成預測...")
             progress_bar.progress(45)
             
+            # 關鍵修正: 只排除基礎欄位和標籤欄位
             exclude_cols = [
                 'open_time', 'close_time', 'open', 'high', 'low', 'close', 'volume',
                 'quote_volume', 'trades', 'taker_buy_volume', 'taker_buy_quote_volume',
-                'taker_buy_base_asset_volume', 'bb_middle', 'bb_upper', 'bb_lower', 'bb_std',
-                'volume_ma_20'
+                'taker_buy_base_asset_volume',
+                'label', 'label_return', 'hit_time', 'exit_type', 'exit_price', 'exit_bars', 'return'
             ]
             
             X_pred = pd.DataFrame(index=df_filtered.index)
+            missing_features = []
+            
             for feature_name in trainer.feature_names:
                 if feature_name in df_filtered.columns and feature_name not in exclude_cols:
                     X_pred[feature_name] = df_filtered[feature_name]
                 else:
+                    # 警告但不停止
+                    if feature_name not in df_filtered.columns:
+                        missing_features.append(feature_name)
                     X_pred[feature_name] = 0
+            
+            if len(missing_features) > 0:
+                st.warning(f"缺失特徵 ({len(missing_features)}): {', '.join(missing_features[:5])}...")
+                st.info("建議: 重新訓練模型以移除非平穩特徵 (bb_middle, volume_ma_20 等)")
             
             X_pred = X_pred.fillna(0).replace([np.inf, -np.inf], 0)
             
@@ -183,11 +195,16 @@ def render():
             df_filtered = df_filtered.copy()
             df_filtered['win_probability'] = probabilities
             
+            # 顯示機率分布
+            prob_dist = df_filtered['win_probability'].describe()
+            st.info(f"機率分布: min={prob_dist['min']:.3f}, mean={prob_dist['mean']:.3f}, max={prob_dist['max']:.3f}")
+            
             signals = df_filtered[df_filtered['win_probability'] >= probability_threshold].copy()
             st.info(f"信號: {len(signals)} 個 (門檻: {probability_threshold})")
             
             if len(signals) == 0:
                 st.warning("無信號,請降低門檻或增加回測天數")
+                st.info(f"提示: 最高機率為 {prob_dist['max']:.3f}, 建議門檻 < {prob_dist['75%']:.3f}")
                 return
             
             status_text.text("執行回測...")
@@ -222,7 +239,7 @@ def render():
             
             # 計算年化指標
             days_in_test = (trades_df.iloc[-1]['entry_time'] - trades_df.iloc[0]['entry_time']).days
-            days_in_test = max(days_in_test, 1)  # 避免除以 0
+            days_in_test = max(days_in_test, 1)
             annualized_return = stats['total_return'] * (365 / days_in_test)
             
             # 手續費佔收益比
@@ -245,7 +262,6 @@ def render():
             with col5:
                 st.metric("年化報酸", f"{annualized_return*100:.1f}%")
             
-            # 期望值分析
             col1, col2 = st.columns(2)
             with col1:
                 ev_theory = (stats['win_rate'] * tp_multiplier) - ((1 - stats['win_rate']) * sl_multiplier)
@@ -341,19 +357,21 @@ def render():
                 mime="text/csv"
             )
             
-            # 優化建議
             st.markdown("### 優化建議")
             
             suggestions = []
             
+            if len(missing_features) > 0:
+                suggestions.append(f"偵測到 {len(missing_features)} 個缺失特徵,強烈建議重新訓練模型")
+            
             if fee_to_profit_ratio > 0.3:
-                suggestions.append(f"手續費佔利潤 {fee_to_profit_ratio*100:.1f}% 過高,建議提高 TP 至 {tp_multiplier+0.5:.1f}-{tp_multiplier+1:.1f}")
+                suggestions.append(f"手續費佔利潤 {fee_to_profit_ratio*100:.1f}% 過高,建議提高 TP 至 {tp_multiplier+0.5:.1f}")
             
             if trades_per_week < 2:
                 suggestions.append(f"週均交易 {trades_per_week:.1f} 筆過少,建議降低門檻至 {probability_threshold-0.03:.2f}")
             
             if stats['avg_loss'] and abs(stats['avg_loss']) > stats['avg_win']:
-                suggestions.append("平均虧損 > 平均獲利,考慮提高 TP 或縮小 SL")
+                suggestions.append("平均虧損 > 平均獲利,考慮提高 TP")
             
             if stats['total_return'] > 0.3 and stats['sharpe_ratio'] > 2.0:
                 suggestions.append("優秀的績效! 可以考慮實盤測試")
@@ -362,7 +380,7 @@ def render():
                 for s in suggestions:
                     st.info(s)
             else:
-                st.success("參數設定良好,繼續保持!")
+                st.success("參數設定良好!")
             
         except Exception as e:
             st.error(f"錯誤: {str(e)}")
