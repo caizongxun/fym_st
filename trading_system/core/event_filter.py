@@ -6,143 +6,130 @@ logger = logging.getLogger(__name__)
 
 class EventFilter:
     """
-    事件驅動抽樣: 過濾無效的盤整期,只保留有交易機會的K線
-    這是解決 AUC 接近 0.5 的關鍵
+    事件驅動抽樣: 過濾無效的盤整期,只保留10-15%有交易機會的K線
+    關鍵: 必須同時滿足多個條件 (AND 邏輯)
     """
     
     def __init__(self, 
-                 use_volatility_breakout: bool = True,
-                 use_volume_surge: bool = True,
-                 use_trend_alignment: bool = True,
-                 use_macd_cross: bool = False,
-                 use_bb_squeeze: bool = True,
-                 min_events_ratio: float = 0.05):
+                 use_strict_mode: bool = True,
+                 min_volume_ratio: float = 1.5,
+                 min_vsr: float = 1.0,
+                 bb_squeeze_threshold: float = 0.5,
+                 lookback_period: int = 20):
         """
         參數:
-            use_volatility_breakout: 波動率突破 (VSR > 1.2)
-            use_volume_surge: 成交量爆增 (volume_ratio > 1.5)
-            use_trend_alignment: 趨勢對齊 (EMA 多頭排列)
-            use_macd_cross: MACD 交叉
-            use_bb_squeeze: 布林帶壓縮後的突破
-            min_events_ratio: 最少保留樣本比例 (0.05 = 5%)
+            use_strict_mode: 嚴格模式 (必須同時滿足多個條件)
+            min_volume_ratio: 最小成交量比率 (1.5 = 150%)
+            min_vsr: 最小波動率比率
+            bb_squeeze_threshold: 布林帶壓縮門檻 (0.5 = 低於中位數)
+            lookback_period: 回期期數
         """
-        self.use_volatility_breakout = use_volatility_breakout
-        self.use_volume_surge = use_volume_surge
-        self.use_trend_alignment = use_trend_alignment
-        self.use_macd_cross = use_macd_cross
-        self.use_bb_squeeze = use_bb_squeeze
-        self.min_events_ratio = min_events_ratio
+        self.use_strict_mode = use_strict_mode
+        self.min_volume_ratio = min_volume_ratio
+        self.min_vsr = min_vsr
+        self.bb_squeeze_threshold = bb_squeeze_threshold
+        self.lookback_period = lookback_period
     
     def filter_events(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        應用多個事件過濾器,只保留符合條件的K線
+        嚴格事件過濾: 同時滿足三個條件
+        1. 成交量爆增 (volume_ratio > 1.5)
+        2. 價格突破 (創遞期高/低點)
+        3. 波動率突破 (從壓縮區爆發)
         """
-        logger.info(f"應用事件過濾器,原始數據: {len(df)} 筆")
+        logger.info(f"應用嚴格事件過濾器,原始數據: {len(df)} 筆")
         
-        conditions = []
-        condition_names = []
+        result = df.copy()
         
-        # 1. 波動率突破: VSR > 1.2 (盤整壓縮後的爆發)
-        if self.use_volatility_breakout and 'vsr' in df.columns:
-            vsr_condition = df['vsr'] > 1.2
-            conditions.append(vsr_condition)
-            condition_names.append('VSR突破')
-            logger.info(f"VSR突破: {vsr_condition.sum()} 事件 ({100*vsr_condition.sum()/len(df):.1f}%)")
+        # 條件 1: 成交量爆增
+        if 'volume_ratio' not in result.columns:
+            if 'volume' in result.columns:
+                result['volume_ma_20'] = result['volume'].rolling(window=self.lookback_period).mean()
+                result['volume_ratio'] = result['volume'] / result['volume_ma_20']
+            else:
+                logger.error("缺少 volume 欄位")
+                return df
         
-        # 2. 成交量爆增: volume_ratio > 1.5
-        if self.use_volume_surge and 'volume_ratio' in df.columns:
-            volume_condition = df['volume_ratio'] > 1.5
-            conditions.append(volume_condition)
-            condition_names.append('成交量爆增')
-            logger.info(f"成交量爆增: {volume_condition.sum()} 事件 ({100*volume_condition.sum()/len(df):.1f}%)")
+        volume_surge = result['volume_ratio'] > self.min_volume_ratio
+        logger.info(f"成交量爆增 (>{self.min_volume_ratio}): {volume_surge.sum()} 事件 ({100*volume_surge.sum()/len(df):.1f}%)")
         
-        # 3. 趨勢對齊: EMA9 > EMA21 > EMA50 (明確多頭)
-        if self.use_trend_alignment:
-            if 'ema_9_21_ratio' in df.columns and 'ema_21_50_ratio' in df.columns:
-                trend_condition = (df['ema_9_21_ratio'] > 1.0) & (df['ema_21_50_ratio'] > 1.0)
-                conditions.append(trend_condition)
-                condition_names.append('趨勢對齊')
-                logger.info(f"趨勢對齊: {trend_condition.sum()} 事件 ({100*trend_condition.sum()/len(df):.1f}%)")
-        
-        # 4. MACD 交叉: macd_hist 由負轉正
-        if self.use_macd_cross and 'macd_hist' in df.columns:
-            macd_cross = (df['macd_hist'] > 0) & (df['macd_hist'].shift(1) <= 0)
-            conditions.append(macd_cross)
-            condition_names.append('MACD交叉')
-            logger.info(f"MACD交叉: {macd_cross.sum()} 事件 ({100*macd_cross.sum()/len(df):.1f}%)")
-        
-        # 5. 布林帶壓縮突破: bb_width_pct 先低於 0.02 再突破
-        if self.use_bb_squeeze and 'bb_width_pct' in df.columns:
-            bb_squeeze = df['bb_width_pct'].rolling(window=20).min() < 0.02
-            bb_breakout = df['bb_width_pct'] > df['bb_width_pct'].shift(1)
-            bb_condition = bb_squeeze & bb_breakout
-            conditions.append(bb_condition)
-            condition_names.append('BB壓縮突破')
-            logger.info(f"BB壓縮突破: {bb_condition.sum()} 事件 ({100*bb_condition.sum()/len(df):.1f}%)")
-        
-        if len(conditions) == 0:
-            logger.warning("未啟用任何事件過濾器,返回全部數據")
-            return df
-        
-        # 組合條件: 只要滿足任意一個條件 (OR 邏輯)
-        combined_condition = conditions[0]
-        for condition in conditions[1:]:
-            combined_condition = combined_condition | condition
-        
-        filtered_df = df[combined_condition].copy()
-        
-        # 確保保留至少 min_events_ratio 的數據
-        min_events = int(len(df) * self.min_events_ratio)
-        if len(filtered_df) < min_events:
-            logger.warning(f"過濾後樣本太少 ({len(filtered_df)}),放寬條件以保留至少 {min_events} 筆")
-            # 使用更寬鬆的條件
-            fallback_condition = (df['volume_ratio'] > 1.2) | (df['vsr'] > 1.0) if 'vsr' in df.columns else (df['volume_ratio'] > 1.2)
-            filtered_df = df[fallback_condition].copy()
+        # 條件 2: 價格突破 (創新高或新低)
+        if 'close' in result.columns:
+            rolling_high = result['close'].rolling(window=self.lookback_period).max()
+            rolling_low = result['close'].rolling(window=self.lookback_period).min()
             
-            if len(filtered_df) < min_events:
-                # 最後保障: 根據成交量排序,保留前 N%
-                df_sorted = df.nlargest(min_events, 'volume_ratio') if 'volume_ratio' in df.columns else df
-                filtered_df = df_sorted.copy()
+            # 突破新高 或 跌破新低
+            breakout_high = result['close'] >= rolling_high.shift(1)
+            breakout_low = result['close'] <= rolling_low.shift(1)
+            price_breakout = breakout_high | breakout_low
+        else:
+            price_breakout = pd.Series([True] * len(result), index=result.index)
+        
+        logger.info(f"價格突破 ({self.lookback_period}期): {price_breakout.sum()} 事件 ({100*price_breakout.sum()/len(df):.1f}%)")
+        
+        # 條件 3: 波動率突破 (從壓縮區爆發)
+        if 'bb_width_pct' in result.columns:
+            bb_width_median = result['bb_width_pct'].rolling(window=50).median()
+            # 前一根處於壓縮狀態 (低於中位數)
+            was_squeezed = result['bb_width_pct'].shift(1) < (bb_width_median.shift(1) * self.bb_squeeze_threshold)
+            # 當前波動率擴大
+            is_expanding = result['bb_width_pct'] > result['bb_width_pct'].shift(1)
+            volatility_breakout = was_squeezed & is_expanding
+        elif 'vsr' in result.columns:
+            volatility_breakout = result['vsr'] > self.min_vsr
+        else:
+            volatility_breakout = pd.Series([True] * len(result), index=result.index)
+        
+        logger.info(f"波動率突破: {volatility_breakout.sum()} 事件 ({100*volatility_breakout.sum()/len(df):.1f}%)")
+        
+        # 嚴格模式: 必須同時滿足所有條件 (AND)
+        if self.use_strict_mode:
+            combined_condition = volume_surge & price_breakout & volatility_breakout
+            logger.info("使用嚴格模式 (AND 邏輯)")
+        else:
+            # 寬鬆模式: 滿足任意兩個 (OR with minimum 2)
+            condition_count = volume_surge.astype(int) + price_breakout.astype(int) + volatility_breakout.astype(int)
+            combined_condition = condition_count >= 2
+            logger.info("使用寬鬆模式 (滿足任意2個條件)")
+        
+        filtered_df = result[combined_condition].copy()
+        
+        # 如果過濾太嚴格 (少於5%),放寬到只要求成交量+任意一個
+        min_samples = int(len(df) * 0.05)
+        if len(filtered_df) < min_samples:
+            logger.warning(f"過濾太嚴 ({len(filtered_df)} < {min_samples}),放寬條件")
+            combined_condition = volume_surge & (price_breakout | volatility_breakout)
+            filtered_df = result[combined_condition].copy()
+            
+            # 最後保障
+            if len(filtered_df) < min_samples:
+                logger.warning(f"仍然太少,使用成交量排序取前{min_samples}筆")
+                filtered_df = result.nlargest(min_samples, 'volume_ratio')
+        
+        # 如果過濾太寬鬆 (超過25%),再加入趨勢篩選
+        max_samples = int(len(df) * 0.25)
+        if len(filtered_df) > max_samples:
+            logger.info(f"篩選過多 ({len(filtered_df)} > {max_samples}),加入趨勢篩選")
+            # 只保留趨勢明確的 (多頭排列)
+            if 'ema_9_21_ratio' in filtered_df.columns and 'ema_21_50_ratio' in filtered_df.columns:
+                trend_aligned = (filtered_df['ema_9_21_ratio'] > 1.0) & (filtered_df['ema_21_50_ratio'] > 1.0)
+                filtered_with_trend = filtered_df[trend_aligned]
+                if len(filtered_with_trend) >= min_samples:
+                    filtered_df = filtered_with_trend
+                    logger.info(f"趨勢篩選後: {len(filtered_df)} 筆")
+            
+            # 如果還是太多,按波動率排序
+            if len(filtered_df) > max_samples:
+                if 'vsr' in filtered_df.columns:
+                    filtered_df = filtered_df.nlargest(max_samples, 'vsr')
+                else:
+                    filtered_df = filtered_df.nlargest(max_samples, 'volume_ratio')
+                logger.info(f"按波動率排序後: {len(filtered_df)} 筆")
         
         filtered_ratio = len(filtered_df) / len(df)
         logger.info(f"事件過濾完成: 保留 {len(filtered_df)}/{len(df)} 筆 ({100*filtered_ratio:.1f}%)")
-        logger.info(f"啟用的過濾器: {', '.join(condition_names)}")
         
-        return filtered_df
-    
-    def apply_aggressive_filter(self, df: pd.DataFrame, target_ratio: float = 0.10) -> pd.DataFrame:
-        """
-        更激進的過濾: 只保留10%最有機會的K線
-        同時滿足多個條件 (AND 邏輯)
-        """
-        logger.info(f"應用激進過濾器,目標保留 {target_ratio*100:.0f}%")
-        
-        # 必須同時滿足:
-        # 1. 成交量 > 1.3倍
-        # 2. 波動率 > 1.0倍
-        # 3. RSI 不在極端區 (30-70)
-        
-        conditions = pd.Series([True] * len(df), index=df.index)
-        
-        if 'volume_ratio' in df.columns:
-            conditions &= df['volume_ratio'] > 1.3
-        
-        if 'vsr' in df.columns:
-            conditions &= df['vsr'] > 1.0
-        
-        if 'rsi' in df.columns:
-            conditions &= (df['rsi'] > 30) & (df['rsi'] < 70)
-        
-        filtered_df = df[conditions].copy()
-        
-        # 如果還是太多,按波動率排序取前 N%
-        if len(filtered_df) > len(df) * target_ratio * 2:
-            target_count = int(len(df) * target_ratio)
-            if 'vsr' in filtered_df.columns:
-                filtered_df = filtered_df.nlargest(target_count, 'vsr')
-            else:
-                filtered_df = filtered_df.nlargest(target_count, 'volume_ratio')
-        
-        logger.info(f"激進過濾完成: 保留 {len(filtered_df)}/{len(df)} 筆 ({100*len(filtered_df)/len(df):.1f}%)")
+        if filtered_ratio > 0.30:
+            logger.warning(f"警告: 保留比例 {filtered_ratio*100:.1f}% > 30%,過濾器可能過於寬鬆")
         
         return filtered_df
