@@ -16,11 +16,11 @@ def render():
     st.title("模型訓練")
     
     st.markdown("""
-    使用機器學習訓練交易模型:
-    - 三重屏障法標記訓練數據
-    - **自動機率校準**(新功能)
-    - Purged K-Fold 交叉驗證
-    - XGBoost 優化參數
+    使用進階機器學習訓練交易模型:
+    - **時間平移三重屏障** - 修正時間洩漏
+    - **MAE 追蹤** - 記錄最大不利偏移
+    - **樣本質量加權** - 快速低回撤的交易權重更高
+    - **機率校準** - Isotonic Regression
     """)
     
     st.markdown("---")
@@ -33,19 +33,27 @@ def render():
             symbol = st.selectbox("訓練交易對", loader.get_available_symbols(), index=10)
             timeframe = st.selectbox("時間框架", loader.get_available_timeframes(), index=1)
             
-            tp_multiplier = st.number_input("止盈倍數 (ATR)", value=4.0, step=0.5, 
-                                           help="優化建議值: 4.0")
-            sl_multiplier = st.number_input("止損倍數 (ATR)", value=2.0, step=0.25,
-                                           help="優化建議值: 2.0")
+            tp_multiplier = st.number_input("止盈倍數 (ATR)", value=3.0, step=0.5, 
+                                           help="建議: 3.0-4.0")
+            sl_multiplier = st.number_input("止損倍數 (ATR)", value=1.5, step=0.25,
+                                           help="建議: 1.5-2.0")
         
         with col2:
-            max_holding_bars = st.number_input("最大持倉根數", value=24, step=1,
-                                              help="最大持倉時間(根K線)")
+            max_holding_bars = st.number_input("最大持倉根數", value=24, step=1)
             n_splits = st.number_input("交叉驗證折數", value=5, step=1, min_value=3, max_value=10)
-            embargo_pct = st.number_input("禁止區百分比", value=0.01, step=0.01, format="%.3f",
-                                         help="Purged K-Fold 的空白期百分比")
-            use_calibration = st.checkbox("啟用機率校準", value=True,
-                                         help="校準模型預測的機率,強烈建議啟用")
+            embargo_pct = st.number_input("禁止區百分比", value=0.01, step=0.01, format="%.3f")
+            use_calibration = st.checkbox("啟用機率校準", value=True)
+    
+    with st.expander("進階配置", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            slippage = st.number_input("滑點", value=0.001, step=0.0001, format="%.4f",
+                                      help="模擬實際交易的價格滑點")
+            time_decay_lambda = st.number_input("時間衰減系數", value=2.0, step=0.5,
+                                               help="控制持倉時間懲罰強度")
+        with col2:
+            quality_alpha = st.number_input("質量權重系數", value=2.0, step=0.5,
+                                           help="高質量樣本的權重放大倍數")
     
     with st.expander("模型超參數", expanded=False):
         col1, col2 = st.columns(2)
@@ -65,51 +73,57 @@ def render():
         status_text = st.empty()
         
         try:
-            status_text.text("載入數據中...")
+            status_text.text("載入數據...")
             progress_bar.progress(5)
             df = loader.load_klines(symbol, timeframe)
             st.info(f"載入 {len(df)} 筆數據,時間範圍: {df['open_time'].min()} 至 {df['open_time'].max()}")
             
-            status_text.text("建立技術特徵中...")
+            status_text.text("建立特徵...")
             progress_bar.progress(15)
             feature_engineer = FeatureEngineer()
             df_features = feature_engineer.build_features(df)
             st.info(f"已建立 {len(df_features.columns)} 個特徵")
             
-            status_text.text("應用三重屏障標記中...")
+            status_text.text("應用進階三重屏障標記...")
             progress_bar.progress(25)
             labeler = TripleBarrierLabeling(
                 tp_multiplier=tp_multiplier,
                 sl_multiplier=sl_multiplier,
-                max_holding_bars=int(max_holding_bars)
+                max_holding_bars=int(max_holding_bars),
+                slippage=slippage,
+                time_decay_lambda=time_decay_lambda,
+                quality_weight_alpha=quality_alpha
             )
             df_labeled = labeler.apply_triple_barrier(df_features)
             
             positive_count = (df_labeled['label'] == 1).sum()
             negative_count = (df_labeled['label'] == 0).sum()
             positive_pct = positive_count / len(df_labeled) * 100
+            
+            avg_weight_pos = df_labeled[df_labeled['label'] == 1]['sample_weight'].mean()
+            avg_weight_neg = df_labeled[df_labeled['label'] == 0]['sample_weight'].mean()
+            
             st.info(f"標籤分布: {positive_pct:.1f}% 正樣本 ({positive_count} 勝, {negative_count} 負)")
+            st.info(f"樣本權重 - 正類: {avg_weight_pos:.2f}, 負類: {avg_weight_neg:.2f}")
             
-            if positive_pct < 20 or positive_pct > 80:
-                st.warning(f"標籤不平衡: {positive_pct:.1f}% 正樣本。已自動調整類別權重。")
-            
-            status_text.text("準備訓練數據中...")
+            status_text.text("準備訓練數據...")
             progress_bar.progress(35)
             
             exclude_cols = [
                 'open_time', 'close_time', 'open', 'high', 'low', 'close', 'volume',
                 'quote_volume', 'trades', 'taker_buy_volume', 'taker_buy_quote_volume',
-                'label', 'label_return', 'hit_time',
-                'exit_type', 'exit_price', 'exit_bars', 'return', 'ignore'
+                'taker_buy_base_asset_volume',
+                'label', 'label_return', 'hit_time', 'exit_type', 'sample_weight', 'mae_ratio',
+                'exit_price', 'exit_bars', 'return', 'ignore'
             ]
             
             feature_cols = [col for col in df_labeled.columns if col not in exclude_cols]
-            
             feature_cols = [col for col in feature_cols 
                           if df_labeled[col].dtype in ['int64', 'float64', 'bool', 'int32', 'float32']]
             
             X = df_labeled[feature_cols].copy()
             y = df_labeled['label'].copy()
+            sample_weights = df_labeled['sample_weight'].values
             
             X = X.fillna(0)
             X = X.replace([np.inf, -np.inf], 0)
@@ -117,13 +131,9 @@ def render():
             for col in X.select_dtypes(include=['bool']).columns:
                 X[col] = X[col].astype(int)
             
-            st.info(f"訓練數據: {len(X)} 個樣本,{len(feature_cols)} 個特徵")
+            st.info(f"訓練數據: {len(X)} 樣本, {len(feature_cols)} 特徵")
             
-            if len(feature_cols) < 10:
-                st.error("特徵數量太少,請檢查特徵工程是否正常運行")
-                return
-            
-            status_text.text(f"使用 Purged K-Fold 交叉驗證訓練中({n_splits} 折)...")
+            status_text.text(f"Purged K-Fold 交叉驗證訓練...")
             if use_calibration:
                 st.info("機率校準: 已啟用")
             progress_bar.progress(50)
@@ -131,7 +141,6 @@ def render():
             trainer = ModelTrainer(use_calibration=use_calibration)
             
             scale_pos_weight = negative_count / positive_count if positive_count > 0 else 1.0
-            st.info(f"類別權重: {scale_pos_weight:.2f} (自動調整以平衡樣本)")
             
             params = {
                 'max_depth': int(max_depth),
@@ -145,14 +154,14 @@ def render():
             
             cv_metrics = trainer.train_with_purged_kfold(
                 X, y,
+                sample_weights=sample_weights,
                 n_splits=int(n_splits),
                 embargo_pct=float(embargo_pct),
                 params=params
             )
             
             progress_bar.progress(90)
-            
-            status_text.text("保存模型中...")
+            status_text.text("保存模型...")
             trainer.save_model(model_name)
             
             progress_bar.progress(100)
@@ -172,32 +181,40 @@ def render():
             with col4:
                 st.metric("召回率", f"{cv_metrics.get('cv_val_recall', 0):.4f}")
             
-            if cv_metrics.get('cv_val_auc', 0) < 0.55:
-                st.error("模型 AUC < 0.55,預測能力不佳。建議調整特徵或參數。")
-            elif cv_metrics.get('cv_val_accuracy', 0) > 0.85:
-                st.warning("準確率異常高 (>85%),可能存在數據洩漏。請檢查特徵是否包含未來資訊。")
-            elif cv_metrics.get('cv_val_recall', 0) < 0.1:
-                st.warning("召回率太低 (<10%),模型過於保守。考慮增加 scale_pos_weight 或降低預測門檻。")
+            auc = cv_metrics.get('cv_val_auc', 0)
+            acc = cv_metrics.get('cv_val_accuracy', 0)
+            recall = cv_metrics.get('cv_val_recall', 0)
+            
+            if auc >= 0.65 and recall >= 0.25:
+                st.success("模型表現優秀! AUC >= 0.65 且召回率良好")
+            elif auc >= 0.60:
+                st.info("模型表現合格,可進行回測")
+            elif auc < 0.55:
+                st.error("模型 AUC < 0.55,預測能力不佳")
+            
+            if acc > 0.85:
+                st.warning("準確率 > 85%,可能存在數據洩漏")
+            
+            if recall < 0.1:
+                st.warning("召回率 < 10%,模型過於保守")
             
             st.markdown("### 特徵重要性 (前 20 名)")
             feature_importance = trainer.get_feature_importance()
             st.dataframe(feature_importance.head(20), use_container_width=True)
             
-            st.markdown("### 下一步操作")
-            
-            if cv_metrics.get('cv_val_auc', 0) >= 0.60 and cv_metrics.get('cv_val_recall', 0) >= 0.20:
+            st.markdown("### 下一步")
+            if auc >= 0.60:
                 st.info("""
-                模型表現良好,可以繼續:
-                1. 前往 **機率校準分析** 檢查機率校準效果
-                2. 前往 **策略優化** 尋找最佳參數
-                3. 前往 **回測分析** 測試 TP=4.0, SL=2.0
+                1. 前往 **機率校準分析** 檢查校準效果
+                2. 前往 **回測分析** 測試策略績效
+                3. 前往 **策略優化** 尋找最佳參數
                 """)
             else:
                 st.warning("""
                 模型表現不佳,建議:
-                1. 調整 TP/SL 倍數 (例如 3.0/1.5)
-                2. 修改最大持倉時間
-                3. 或換一個交易對/時間框架再試
+                1. 調整 TP/SL 倍數
+                2. 修改時間框架或交易對
+                3. 檢查特徵工程
                 """)
             
         except Exception as e:
