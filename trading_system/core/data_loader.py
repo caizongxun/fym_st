@@ -5,6 +5,7 @@ import logging
 from binance.client import Client
 from datetime import datetime, timedelta
 import os
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +23,8 @@ class CryptoDataLoader:
             "UNIUSDT", "XRPUSDT", "ZRXUSDT"
         ]
         self.timeframes = ["15m", "1h", "1d"]
-        
-        # Binance API client (使用公開 API,不需要 key)
         self.binance_client = None
+        self.binance_futures_base_url = "https://fapi.binance.com"
     
     def _get_binance_client(self):
         """Lazy initialization of Binance client"""
@@ -34,24 +34,152 @@ class CryptoDataLoader:
             self.binance_client = Client(api_key, api_secret)
         return self.binance_client
     
-    def fetch_latest_klines(self, symbol: str, timeframe: str, days: int = 90) -> pd.DataFrame:
+    def fetch_open_interest(self, symbol: str, timeframe: str, days: int = 90) -> pd.DataFrame:
         """
-        從 Binance API 直接獲取最新 N 天的 K 線數據
+        從 Binance Futures API 獲取歷史 Open Interest 數據
+        
+        Args:
+            symbol: 交易對 (e.g., BTCUSDT)
+            timeframe: 15m, 1h, 1d
+            days: 往前抽取多少天
+        
+        Returns:
+            DataFrame with columns: ['timestamp', 'open_interest']
+        """
+        interval_map = {
+            '15m': '15m',
+            '1h': '1h',
+            '1d': '1d'
+        }
+        
+        period = interval_map.get(timeframe, '1h')
+        
+        # 計算開始時間戳
+        end_time = int(datetime.now().timestamp() * 1000)
+        start_time = int((datetime.now() - timedelta(days=days)).timestamp() * 1000)
+        
+        url = f"{self.binance_futures_base_url}/futures/data/openInterestHist"
+        
+        all_data = []
+        limit = 500  # Binance API 每次最多返回 500 筆
+        
+        try:
+            while start_time < end_time:
+                params = {
+                    'symbol': symbol,
+                    'period': period,
+                    'limit': limit,
+                    'startTime': start_time,
+                    'endTime': end_time
+                }
+                
+                response = requests.get(url, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                
+                if not data:
+                    break
+                
+                all_data.extend(data)
+                
+                # 更新開始時間為最後一筆數據的時間
+                start_time = data[-1]['timestamp'] + 1
+                
+                if len(data) < limit:
+                    break
+            
+            df = pd.DataFrame(all_data)
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df['open_interest'] = pd.to_numeric(df['sumOpenInterest'])
+            df['open_interest_value'] = pd.to_numeric(df['sumOpenInterestValue'])
+            
+            df = df[['timestamp', 'open_interest', 'open_interest_value']]
+            df = df.sort_values('timestamp').reset_index(drop=True)
+            
+            logger.info(f"Fetched {len(df)} OI records for {symbol} {timeframe}")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch OI data: {str(e)}")
+            # 返回空 DataFrame
+            return pd.DataFrame(columns=['timestamp', 'open_interest', 'open_interest_value'])
+    
+    def fetch_funding_rate(self, symbol: str, days: int = 90) -> pd.DataFrame:
+        """
+        獲取資金費率歷史數據
+        
+        Args:
+            symbol: 交易對
+            days: 往前抽取多少天
+        
+        Returns:
+            DataFrame with columns: ['timestamp', 'funding_rate']
+        """
+        url = f"{self.binance_futures_base_url}/fapi/v1/fundingRate"
+        
+        start_time = int((datetime.now() - timedelta(days=days)).timestamp() * 1000)
+        end_time = int(datetime.now().timestamp() * 1000)
+        
+        all_data = []
+        limit = 1000
+        
+        try:
+            while start_time < end_time:
+                params = {
+                    'symbol': symbol,
+                    'startTime': start_time,
+                    'endTime': end_time,
+                    'limit': limit
+                }
+                
+                response = requests.get(url, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                
+                if not data:
+                    break
+                
+                all_data.extend(data)
+                start_time = data[-1]['fundingTime'] + 1
+                
+                if len(data) < limit:
+                    break
+            
+            df = pd.DataFrame(all_data)
+            df['timestamp'] = pd.to_datetime(df['fundingTime'], unit='ms')
+            df['funding_rate'] = pd.to_numeric(df['fundingRate'])
+            
+            df = df[['timestamp', 'funding_rate']]
+            df = df.sort_values('timestamp').reset_index(drop=True)
+            
+            logger.info(f"Fetched {len(df)} funding rate records for {symbol}")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch funding rate: {str(e)}")
+            return pd.DataFrame(columns=['timestamp', 'funding_rate'])
+    
+    def fetch_latest_klines(self, symbol: str, timeframe: str, days: int = 90, 
+                           include_oi: bool = False, include_funding: bool = False) -> pd.DataFrame:
+        """
+        從 Binance API 獲取最新 K 線數據,可選加入 OI 和資金費率
         
         Args:
             symbol: 交易對 (e.g., BTCUSDT)
             timeframe: 時間框架 (15m, 1h, 1d)
             days: 往前抽取多少天
+            include_oi: 是否包含 OI 數據
+            include_funding: 是否包含資金費率
         
         Returns:
-            DataFrame with OHLCV data
+            DataFrame with OHLCV + OI + Funding Rate
         """
         if symbol not in self.symbols:
             raise ValueError(f"Symbol {symbol} not supported. Available: {self.symbols}")
         if timeframe not in self.timeframes:
             raise ValueError(f"Timeframe {timeframe} not supported. Available: {self.timeframes}")
         
-        logger.info(f"Fetching latest {days} days of {symbol} {timeframe} from Binance...")
+        logger.info(f"Fetching {symbol} {timeframe} (OI={include_oi}, Funding={include_funding})")
         
         # 計算開始時間
         end_time = datetime.now()
@@ -93,6 +221,42 @@ class CryptoDataLoader:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             
             df['trades'] = pd.to_numeric(df['trades'], errors='coerce').astype(int)
+            
+            # 加入 OI 數據
+            if include_oi:
+                df_oi = self.fetch_open_interest(symbol, timeframe, days)
+                if len(df_oi) > 0:
+                    df = pd.merge_asof(
+                        df.sort_values('open_time'),
+                        df_oi.sort_values('timestamp'),
+                        left_on='open_time',
+                        right_on='timestamp',
+                        direction='nearest',
+                        tolerance=pd.Timedelta('5min')
+                    )
+                    df = df.drop(columns=['timestamp'], errors='ignore')
+                    logger.info("Merged OI data successfully")
+                else:
+                    df['open_interest'] = 0
+                    df['open_interest_value'] = 0
+            
+            # 加入資金費率
+            if include_funding:
+                df_funding = self.fetch_funding_rate(symbol, days)
+                if len(df_funding) > 0:
+                    df = pd.merge_asof(
+                        df.sort_values('open_time'),
+                        df_funding.sort_values('timestamp'),
+                        left_on='open_time',
+                        right_on='timestamp',
+                        direction='backward',
+                        tolerance=pd.Timedelta('8h')
+                    )
+                    df = df.drop(columns=['timestamp'], errors='ignore')
+                    df['funding_rate'] = df['funding_rate'].fillna(method='ffill')
+                    logger.info("Merged funding rate data successfully")
+                else:
+                    df['funding_rate'] = 0
             
             df = df.sort_values('open_time').reset_index(drop=True)
             
