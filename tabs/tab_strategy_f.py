@@ -87,10 +87,10 @@ class MomentumMLv6:
         df['plus_di'] = plus_di
         df['minus_di'] = minus_di
         
-        # 成交量趨勢
+        # 成交量趨勢 (簡化版 - 用均值差取代 polyfit)
         df['volume_ma'] = df['volume'].rolling(20).mean()
         df['volume_ratio'] = df['volume'] / (df['volume_ma'] + 1e-8)
-        df['volume_trend'] = df['volume'].rolling(10).apply(lambda x: np.polyfit(np.arange(len(x)), x, 1)[0] if len(x) == 10 else 0, raw=True)
+        df['volume_trend'] = (df['volume'].rolling(10).mean() - df['volume'].rolling(10).mean().shift(5)) / (df['volume'].rolling(10).mean() + 1e-8)
         
         # BB
         df['bb_mid'] = df['close'].rolling(20).mean()
@@ -113,6 +113,9 @@ class MomentumMLv6:
         df['macd_signal'] = df['macd'].ewm(span=9).mean()
         df['macd_hist'] = df['macd'] - df['macd_signal']
         
+        # 填充所有 NaN
+        df.fillna(0, inplace=True)
+        
         return df
 
     def momentum_features_row(self, df, i):
@@ -122,11 +125,14 @@ class MomentumMLv6:
         row = df.iloc[i]
         o, h, l, c = row['open'], row['high'], row['low'], row['close']
         body = c - o
+        atr = row.get('atr', 1.0)
+        if np.isnan(atr) or atr <= 0:
+            atr = 1.0
         
         return [
             1 if body > 0 else -1,  # 當前K棒方向
             abs(body) / (h - l + 1e-8),  # 實體比例
-            (h - l) / (row['atr'] + 1e-8),  # 波動幅度
+            (h - l) / atr,  # 波動幅度
         ]
 
     def build_sequence_features(self, df):
@@ -172,7 +178,10 @@ class MomentumMLv6:
         self.feature_names = feature_names
         all_features, valid_indices = [], []
         
-        for i in range(self.lookback, len(df)):
+        # 確保有足夠的數據點
+        start_idx = max(self.lookback, 60)  # 至少要 60 根K棒才開始提取特徵
+        
+        for i in range(start_idx, len(df)):
             row_feats = []
             
             # 回顧序列
@@ -203,7 +212,7 @@ class MomentumMLv6:
                 else:
                     consec_bear += 1; consec_bull = 0; max_bear = max(max_bear, consec_bear)
             
-            bull_ratio = sum(directions) / len(directions)
+            bull_ratio = sum(directions) / max(len(directions), 1)
             bear_ratio = 1 - bull_ratio
             
             high_breakout_count = int(last_10['breakout_high'].sum())
@@ -219,6 +228,8 @@ class MomentumMLv6:
             valid_indices.append(i)
         
         X = pd.DataFrame(all_features, columns=feature_names)
+        # 再次確認無 NaN
+        X.fillna(0, inplace=True)
         df_aligned = df.iloc[valid_indices].reset_index(drop=True)
         return X, df_aligned
 
@@ -360,8 +371,10 @@ class MomentumMLv6:
                 'position_size': pos_pct if sig != 0 else 1.0,
             })
         
+        # 確保 lookback 與 build_sequence_features 的 start_idx 一致
+        start_idx = max(self.lookback, 60)
         empty = [{'signal': 0, 'reason': '', 'stop_loss': np.nan,
-                  'take_profit': np.nan, 'position_size': 1.0}] * self.lookback
+                  'take_profit': np.nan, 'position_size': 1.0}] * start_idx
         return pd.DataFrame(empty + signals), df_aligned
 
     def get_feature_importance(self, model='long', top_n=15):
@@ -513,7 +526,9 @@ def render_strategy_f_tab(loader, symbol_selector):
 
             prog.progress(75)
             stat.text("回測...")
-            df_for_bt = pd.concat([df_test.iloc[:lookback].reset_index(drop=True), df_aligned]).reset_index(drop=True)
+            # 使用 start_idx 確保對齊
+            start_idx = max(lookback, 60)
+            df_for_bt = pd.concat([df_test.iloc[:start_idx].reset_index(drop=True), df_aligned]).reset_index(drop=True)
             engine = TickLevelBacktestEngine(capital, leverage, 0.0006, 0.01, 100)
             metrics = engine.run_backtest(df_for_bt, df_signals)
             prog.progress(100)
