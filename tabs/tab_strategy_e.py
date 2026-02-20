@@ -1,13 +1,14 @@
 """
-策略E: Candle Pattern ML v5.1
+策略E v5.2 - 精簡版
 
-核心診斷: 模型有效但手續費吃掉邊際利潤
+診斷: 過濾太強導致實際勝率 << 模型預期
 
 修正:
-1. 方向控制 (Long/Short/Both) - 做空模型明顯較強,可單獨運行
-2. 回測結果分拆多/空方向勝率,精確診斷哪邊在賺哪邊在虧
-3. 提高預設 TP:SL = 3.0/1.0 (突破手續費盈虧平衡點)
-4. 顯示理論期望值 vs 實際,讓手續費影響可見
+1. 移除冷卻期 (直接用高信心度過濾)
+2. 移除 EMA 趨勢過濾 (已經被特徵學到)
+3. 只保留: 信心度 + 機率差
+4. 預設 TP:SL = 4:1 (目標單筆獲利 > 手續費)
+5. 預設只用做空模型 (Short Only)
 """
 
 import streamlit as st
@@ -64,8 +65,6 @@ class CandlePatternMLv5:
         df['price_vs_ema20'] = (df['close'] - df['ema20']) / (df['atr'] + 1e-8)
         df['ema_trend'] = (df['ema20'] - df['ema50']) / (df['atr'] + 1e-8)
         df['ema_short_trend'] = (df['ema8'] - df['ema20']) / (df['atr'] + 1e-8)
-        df['ema_aligned_bull'] = ((df['ema8'] > df['ema20']) & (df['ema20'] > df['ema50'])).astype(int)
-        df['ema_aligned_bear'] = ((df['ema8'] < df['ema20']) & (df['ema20'] < df['ema50'])).astype(int)
         low14 = df['low'].rolling(14).min()
         high14 = df['high'].rolling(14).max()
         df['stoch_k'] = 100 * (df['close'] - low14) / (high14 - low14 + 1e-8)
@@ -101,8 +100,7 @@ class CandlePatternMLv5:
         indicator_cols = [
             'rsi', 'macd_hist', 'bb_pct', 'bb_width',
             'volume_ratio', 'price_vs_ema20', 'ema_trend', 'ema_short_trend',
-            'stoch_k', 'stoch_d', 'cci', 'williams_r',
-            'ema_aligned_bull', 'ema_aligned_bear', 'vol_surge'
+            'stoch_k', 'stoch_d', 'cci', 'williams_r', 'vol_surge'
         ]
         candle_feat_names = ['up_shd', 'lo_shd', 'body', 'dir', 'bull', 'doji',
                              'hammer', 'star', 'up_atr', 'lo_atr', 'body_atr', 'range_atr']
@@ -146,7 +144,7 @@ class CandlePatternMLv5:
         df_aligned = df.iloc[valid_indices].reset_index(drop=True)
         return X, df_aligned
 
-    def build_trade_outcome_labels(self, df_aligned, sl_atr_mult=1.0, tp_atr_mult=3.0, max_lookahead=20):
+    def build_trade_outcome_labels(self, df_aligned, sl_atr_mult=1.0, tp_atr_mult=4.0, max_lookahead=30):
         y_long, y_short, is_valid = [], [], []
         highs = df_aligned['high'].values
         lows = df_aligned['low'].values
@@ -178,7 +176,7 @@ class CandlePatternMLv5:
                 y_long.append(long_outcome); y_short.append(short_outcome); is_valid.append(True)
         return pd.Series(y_long), pd.Series(y_short), pd.Series(is_valid)
 
-    def train(self, df, sl_atr_mult=1.0, tp_atr_mult=3.0, max_lookahead=20, model_type='GBM'):
+    def train(self, df, sl_atr_mult=1.0, tp_atr_mult=4.0, max_lookahead=30, model_type='GBM'):
         X, df_aligned = self.build_sequence_features(df)
         y_long, y_short, is_valid = self.build_trade_outcome_labels(
             df_aligned, sl_atr_mult, tp_atr_mult, max_lookahead
@@ -231,51 +229,48 @@ class CandlePatternMLv5:
 
     def generate_signals(
         self, df, leverage: float,
-        direction='Both',
-        conf_long=0.55, conf_short=0.55,
-        prob_margin=0.05,
+        direction='Short',
+        conf_long=0.60, conf_short=0.60,
+        prob_margin=0.08,
         sizing_mode='Risk',
         fixed_position_pct=0.3,
         risk_per_trade_pct=0.5,
         max_position_pct=0.5,
         stop_atr_mult=1.0,
-        tp_atr_mult=3.0,
-        cooldown_bars=5,
-        use_trend_filter=True,
+        tp_atr_mult=4.0,
     ):
+        """
+        v5.2: 移除冷卻期 + EMA趨勢過濾, 只保留信心度 + 機率差
+        """
         X, df_aligned = self.build_sequence_features(df)
         Xl = self.scaler_long.transform(X)
         Xs = self.scaler_short.transform(X)
         proba_long = self.model_long.predict_proba(Xl)[:, 1]
         proba_short = self.model_short.predict_proba(Xs)[:, 1]
         signals = []
-        last_signal_bar = -cooldown_bars
+        
         for i in range(len(df_aligned)):
             atr = float(df_aligned.iloc[i]['atr'])
             close = float(df_aligned.iloc[i]['close'])
             pl = float(proba_long[i])
             ps = float(proba_short[i])
-            bull_trend = df_aligned.iloc[i]['ema_aligned_bull'] == 1
-            bear_trend = df_aligned.iloc[i]['ema_aligned_bear'] == 1
             sig = 0; sl = np.nan; tp = np.nan; reason = ""; pos_pct = 1.0
-            if (i - last_signal_bar) >= cooldown_bars and atr > 0 and close > 0:
+            
+            if atr > 0 and close > 0:
                 long_ok = (direction in ('Both', 'Long')) and (pl >= conf_long) and ((pl - ps) >= prob_margin)
                 short_ok = (direction in ('Both', 'Short')) and (ps >= conf_short) and ((ps - pl) >= prob_margin)
-                if use_trend_filter:
-                    long_ok = long_ok and bull_trend
-                    short_ok = short_ok and bear_trend
+                
                 if long_ok and pl >= ps:
                     sig = 1
                     sl = close - atr * stop_atr_mult
                     tp = close + atr * tp_atr_mult
-                    reason = f"LONG(p={pl:.2f},差={pl-ps:.2f})"
-                    last_signal_bar = i
+                    reason = f"L(p={pl:.2f})"
                 elif short_ok and ps > pl:
                     sig = -1
                     sl = close + atr * stop_atr_mult
                     tp = close - atr * tp_atr_mult
-                    reason = f"SHORT(p={ps:.2f},差={ps-pl:.2f})"
-                    last_signal_bar = i
+                    reason = f"S(p={ps:.2f})"
+                
                 if sig != 0:
                     if sizing_mode == 'Fixed':
                         pos_pct = float(fixed_position_pct)
@@ -283,11 +278,13 @@ class CandlePatternMLv5:
                         atr_pct = atr / close
                         denom = max(atr_pct * stop_atr_mult * leverage, 1e-6)
                         pos_pct = float(np.clip((risk_per_trade_pct / 100.0) / denom, 0.01, max_position_pct))
+            
             signals.append({
                 'signal': sig, 'reason': reason,
                 'stop_loss': sl, 'take_profit': tp,
                 'position_size': pos_pct if sig != 0 else 1.0,
             })
+        
         empty = [{'signal': 0, 'reason': '', 'stop_loss': np.nan,
                   'take_profit': np.nan, 'position_size': 1.0}] * self.lookback
         return pd.DataFrame(empty + signals), df_aligned
@@ -299,31 +296,26 @@ class CandlePatternMLv5:
 
 
 def _expected_pf(wr: float, tp: float, sl: float) -> float:
-    """理論盈虧比 (未含手續費)"""
     if (1 - wr) * sl < 1e-9: return float('inf')
     return (wr * tp) / ((1 - wr) * sl)
 
 
 def render_strategy_e_tab(loader, symbol_selector):
-    st.header("策略 E: K棒影線 AI v5.1")
+    st.header("策略 E: K棒影線 AI v5.2 (精簡版)")
 
-    with st.expander("v5 診斷與 v5.1 修正", expanded=False):
+    with st.expander("ℹ️ v5.2 核心改進", expanded=True):
         st.markdown("""
-        **v5 結果分析**
-        - 模型有效: 勝率 41.1% > 基準 35% ✓
-        - 但仍虧損, 盈虧比 0.91 < 1.0
+        **v5.1 診斷**: 過濾太強導致實際勝率 28.3% << 模型預期 35.4%
         
-        **根本原因: 手續費吃掉邊際利潤**
-        ```
-        理論盈虧比 (TP=2.5, SL=1.5, WR=41.1%): 1.16
-        實際盈虧比:                               0.91
-        差距 0.25 = 手續費 + 滑點 + 同根K棒模糊
-        ```
+        **v5.2 修正**:
+        - ✖️ 移除冷卻期 (直接用高信心度控制信號數)
+        - ✖️ 移除 EMA 趨勢過濾 (EMA 已被特徵學到)
+        - ✅ 只保留: 信心度 + 機率差
+        - ✅ TP:SL 預設 4:1 (單筆獲利 > 手續費)
+        - ✅ 預設方向: Short Only
+        - ✅ 最大尋找增加到 30 根 K 棒 (適應 4:1)
         
-        **v5.1 修正**
-        1. TP:SL 預設改為 3.0:1.0 (盈虧平衡點 WR=25%,費後仍有空間)
-        2. 方向選擇: Long/Short/Both (做空模型 55% >> 做多 43%)
-        3. 回測結果分拆多/空方向,看哪邊在賺
+        **目標**: 讓實際勝率 ≈ 模型 Precision
         """)
 
     st.markdown("---")
@@ -342,39 +334,32 @@ def render_strategy_e_tab(loader, symbol_selector):
         st.markdown("**交易**")
         capital = st.number_input("資金", 1000.0, 100000.0, 10000.0, 1000.0, key="cap_e")
         leverage = st.slider("槓桿", 1, 10, 3, key="lev_e")
-        direction = st.radio("交易方向", ["Both", "Long", "Short"], index=0, key="dir_e",
-                             help="做空模型通常較強,可先試 Short Only")
-        sizing_mode = st.radio("倉位模式", ["Risk", "Fixed"], index=0, key="sz_mode")
+        direction = st.radio("方向", ["Short", "Long", "Both"], index=0, key="dir_e")
+        sizing_mode = st.radio("倉位", ["Risk", "Fixed"], index=0, key="sz_mode")
         if sizing_mode == "Fixed":
             fixed_position_pct = st.slider("固定倉位%", 5, 80, 30, 5, key="pos_fixed") / 100.0
             risk_per_trade_pct = 0.5
         else:
             fixed_position_pct = 0.3
-            risk_per_trade_pct = st.slider("每筆風險% (打到SL)", 0.1, 2.0, 0.5, 0.1, key="risk_pct")
+            risk_per_trade_pct = st.slider("每筆風險%", 0.1, 2.0, 0.5, 0.1, key="risk_pct")
         max_position_pct = st.slider("最大倉位%", 10, 90, 50, 5, key="max_pos") / 100.0
 
     with col3:
-        st.markdown("**AI + 風控**")
+        st.markdown("**AI**")
         model_type = st.radio("模型", ["GBM", "RandomForest"], key="model_e")
         lookback = st.slider("回顧K棒", 5, 20, 10, key="lb_e")
-        st.markdown("*訓練標籤 & 回測共用 SL/TP*")
         sl_atr = st.slider("止損ATR", 0.5, 3.0, 1.0, 0.5, key="sl_e")
-        tp_atr = st.slider("止盈ATR", 1.0, 6.0, 3.0, 0.5, key="tp_e")
-        max_lookahead = st.slider("最大尋找K棒數", 5, 40, 20, 5, key="ml_e")
-        st.markdown("*信號過濾*")
-        conf_long = st.slider("做多信心度", 0.45, 0.90, 0.55, 0.01, key="cl_e")
-        conf_short = st.slider("做空信心度", 0.45, 0.90, 0.55, 0.01, key="cs_e")
-        prob_margin = st.slider("機率差門檻", 0.00, 0.25, 0.05, 0.01, key="pm_e")
-        cooldown = st.slider("冷卻期(K棒)", 1, 30, 5, key="cd_e")
-        trend_filter = st.checkbox("開啟EMA趨勢過濾", value=True, key="emf_e")
+        tp_atr = st.slider("止盈ATR", 2.0, 8.0, 4.0, 0.5, key="tp_e")
+        max_lookahead = st.slider("最大尋找K棒", 10, 50, 30, 5, key="ml_e")
+        st.markdown("**過濾**")
+        conf_long = st.slider("做多信心度", 0.50, 0.90, 0.60, 0.01, key="cl_e")
+        conf_short = st.slider("做空信心度", 0.50, 0.90, 0.60, 0.01, key="cs_e")
+        prob_margin = st.slider("機率差門檻", 0.00, 0.30, 0.08, 0.01, key="pm_e")
 
-    # 即時顯示費後盈虧平衡點
     breakeven_wr = sl_atr / (sl_atr + tp_atr)
-    fee_drag = 0.0012  # 0.06% × 2 估計
     st.info(
-        f"**TP={tp_atr}x ATR / SL={sl_atr}x ATR** | "
-        f"盈虧平衡勝率: **{breakeven_wr*100:.1f}%** | "
-        f"估計手續費損耗/筆: ~{fee_drag*leverage*100:.2f}% (槓桿{leverage}x)"
+        f"**TP={tp_atr}x / SL={sl_atr}x** | 盈虧平衡勝率: **{breakeven_wr*100:.1f}%** | "
+        f"估計手續費損耗: ~{0.0012*leverage*100:.2f}%/筆 (槓桿{leverage}x)"
     )
     st.markdown("---")
 
@@ -407,30 +392,23 @@ def render_strategy_e_tab(loader, symbol_selector):
             prog.progress(55)
 
             st.markdown("### 訓練結果")
-            st.caption("ℹ️ Precision 現在直接等於模型預期勝率")
             c1, c2 = st.columns(2)
             with c1:
-                st.markdown(f"**做多模型** (基準: {result['long_base_rate']:.1f}%)")
+                st.markdown(f"**做多** (基準: {result['long_base_rate']:.1f}%)")
                 lc1, lc2 = st.columns(2)
                 lc1.metric("Precision", f"{result['long_prec']:.2%}")
                 lc2.metric("Recall", f"{result['long_rec']:.2%}")
                 epf_long = _expected_pf(result['long_prec'], tp_atr, sl_atr)
-                if result['long_prec'] > result['long_base_rate'] / 100:
-                    st.success(f"有效 | 理論PF={epf_long:.2f}")
-                else:
-                    st.warning(f"無效 | Precision <= 基準")
+                st.caption(f"理論PF={epf_long:.2f} | {'\u2705' if result['long_prec'] > result['long_base_rate']/100 else '\u274c'}")
             with c2:
-                st.markdown(f"**做空模型** (基準: {result['short_base_rate']:.1f}%)")
+                st.markdown(f"**做空** (基準: {result['short_base_rate']:.1f}%)")
                 sc1, sc2 = st.columns(2)
                 sc1.metric("Precision", f"{result['short_prec']:.2%}")
                 sc2.metric("Recall", f"{result['short_rec']:.2%}")
                 epf_short = _expected_pf(result['short_prec'], tp_atr, sl_atr)
-                if result['short_prec'] > result['short_base_rate'] / 100:
-                    st.success(f"有效 | 理論PF={epf_short:.2f}")
-                else:
-                    st.warning(f"無效 | Precision <= 基準")
+                st.caption(f"理論PF={epf_short:.2f} | {'\u2705' if result['short_prec'] > result['short_base_rate']/100 else '\u274c'}")
 
-            with st.expander("特徵重要度 Top15"):
+            with st.expander("特徵重要度"):
                 tc1, tc2 = st.columns(2)
                 for col_ui, mname, title in [(tc1, 'long', '做多'), (tc2, 'short', '做空')]:
                     imp = strategy.get_feature_importance(mname)
@@ -447,13 +425,12 @@ def render_strategy_e_tab(loader, symbol_selector):
                 sizing_mode=sizing_mode, fixed_position_pct=fixed_position_pct,
                 risk_per_trade_pct=risk_per_trade_pct, max_position_pct=max_position_pct,
                 stop_atr_mult=sl_atr, tp_atr_mult=tp_atr,
-                cooldown_bars=cooldown, use_trend_filter=trend_filter,
             )
             lc = (df_signals['signal'] == 1).sum()
             sc = (df_signals['signal'] == -1).sum()
             st.info(f"信號: {lc+sc} (L:{lc} S:{sc})")
             if lc + sc == 0:
-                st.warning("無信號 - 降低信心度或機率差")
+                st.warning("無信號 - 降低信心度")
                 prog.progress(100); return
 
             prog.progress(75)
@@ -475,7 +452,7 @@ def render_strategy_e_tab(loader, symbol_selector):
             c2.metric("月化", f"{ret*30/test_days:.1f}%")
             wr = metrics['win_rate']
             pf = metrics['profit_factor']
-            c3.metric("勝率", f"{wr:.1f}%", delta=f"盈虧平衡 {breakeven_wr*100:.1f}%")
+            c3.metric("勝率", f"{wr:.1f}%", delta=f"vs 平衡 {breakeven_wr*100:.1f}%")
             c3.metric("盈虧比", f"{pf:.2f}")
             c4.metric("回撤", f"{metrics['max_drawdown_pct']:.1f}%")
             c4.metric("夏普", f"{metrics['sharpe_ratio']:.2f}")
@@ -485,8 +462,8 @@ def render_strategy_e_tab(loader, symbol_selector):
 
             trades = engine.get_trades_dataframe()
             if not trades.empty:
-                st.subheader("交易明細 (分方向)")
-                for direction_label, dir_key in [('做多 (Long)', 'Long'), ('做空 (Short)', 'Short')]:
+                st.subheader("分方向分析")
+                for direction_label, dir_key in [('做多', 'Long'), ('做空', 'Short')]:
                     dir_trades = trades[trades['direction'] == dir_key]
                     if len(dir_trades) == 0: continue
                     dir_wins = dir_trades[dir_trades['pnl_usdt'] > 0]
@@ -495,7 +472,20 @@ def render_strategy_e_tab(loader, symbol_selector):
                     dir_tp = (dir_trades['exit_reason'] == 'TP').sum()
                     dir_sl = (dir_trades['exit_reason'] == 'SL').sum()
                     status = "✅" if dir_pnl > 0 else "❌"
-                    st.markdown(f"**{status} {direction_label}**: {len(dir_trades)}筆 | 勝率 {dir_wr:.1f}% | 損益 ${dir_pnl:+.0f} | TP:{dir_tp} SL:{dir_sl}")
+                    
+                    # 模型預期 vs 實際
+                    if dir_key == 'Long':
+                        model_prec = result['long_prec']
+                    else:
+                        model_prec = result['short_prec']
+                    diff = dir_wr - model_prec * 100
+                    diff_str = f"(模型預期 {model_prec*100:.1f}%, 差 {diff:+.1f}%)"
+                    
+                    st.markdown(
+                        f"**{status} {direction_label}**: {len(dir_trades)}筆 | "
+                        f"勝率 **{dir_wr:.1f}%** {diff_str} | "
+                        f"損益 ${dir_pnl:+.0f} | TP:{dir_tp} SL:{dir_sl}"
+                    )
 
                 wins = trades[trades['pnl_usdt'] > 0]
                 losses = trades[trades['pnl_usdt'] < 0]
@@ -509,7 +499,7 @@ def render_strategy_e_tab(loader, symbol_selector):
                     use_container_width=True
                 )
                 csv = trades.to_csv(index=False).encode('utf-8')
-                st.download_button("CSV", csv, f"{symbol}_ml_v51_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
+                st.download_button("CSV", csv, f"{symbol}_ml_v52_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
 
         except Exception as e:
             st.error(f"錯: {e}")
