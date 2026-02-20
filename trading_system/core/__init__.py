@@ -9,6 +9,7 @@ from .predictor import RealtimePredictor
 from .signal_filters import SignalFilter
 from .strategy_optimizer import StrategyOptimizer
 from .probability_calibration import ProbabilityCalibrator, ModelCalibrationAnalyzer
+from .event_filter import EventFilter
 
 __all__ = [
     'CryptoDataLoader',
@@ -24,5 +25,6 @@ __all__ = [
     'SignalFilter',
     'StrategyOptimizer',
     'ProbabilityCalibrator',
-    'ModelCalibrationAnalyzer'
+    'ModelCalibrationAnalyzer',
+    'EventFilter'
 ]
