@@ -98,12 +98,15 @@ def render():
             
             exclude_cols = [
                 'open_time', 'close_time', 'open', 'high', 'low', 'close', 'volume',
-                'label', 'exit_type', 'exit_price', 'exit_bars', 'return', 'ignore'
+                'quote_volume', 'trades', 'taker_buy_volume', 'taker_buy_quote_volume',
+                'label', 'label_return', 'hit_time',
+                'exit_type', 'exit_price', 'exit_bars', 'return', 'ignore'
             ]
             
             feature_cols = [col for col in df_labeled.columns if col not in exclude_cols]
             
-            feature_cols = [col for col in feature_cols if df_labeled[col].dtype in ['int64', 'float64', 'bool']]
+            feature_cols = [col for col in feature_cols 
+                          if df_labeled[col].dtype in ['int64', 'float64', 'bool', 'int32', 'float32']]
             
             X = df_labeled[feature_cols].copy()
             y = df_labeled['label'].copy()
@@ -115,6 +118,10 @@ def render():
                 X[col] = X[col].astype(int)
             
             st.info(f"訓練數據: {len(X)} 個樣本,{len(feature_cols)} 個特徵")
+            
+            if len(feature_cols) < 10:
+                st.error("特徵數量太少,請檢查特徵工程是否正常運行")
+                return
             
             status_text.text(f"使用 Purged K-Fold 交叉驗證訓練中({n_splits} 折)...")
             if use_calibration:
@@ -160,6 +167,9 @@ def render():
                 st.metric("精確率", f"{cv_metrics.get('cv_val_precision', 0):.4f}")
             with col4:
                 st.metric("召回率", f"{cv_metrics.get('cv_val_recall', 0):.4f}")
+            
+            if cv_metrics.get('cv_val_accuracy', 0) > 0.85:
+                st.warning("準確率異常高 (>85%),可能存在數據洩漏。請檢查特徵是否包含未來資訊。")
             
             st.markdown("### 特徵重要性 (前 20 名)")
             feature_importance = trainer.get_feature_importance()
