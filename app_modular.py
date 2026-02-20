@@ -8,6 +8,7 @@ from tabs.tab_strategy_d import render_strategy_d_tab
 from tabs.tab_strategy_e import render_strategy_e_tab
 from tabs.tab_strategy_f import render_strategy_f_tab
 from tabs.tab_strategy_g import render_strategy_g_tab
+from tabs.tab_strategy_h import render_strategy_h_tab
 
 st.set_page_config(
     page_title="多策略交易系統",
@@ -16,7 +17,7 @@ st.set_page_config(
 )
 
 st.title("多策略交易系統")
-st.caption("策略A:SMC | B:SSL+AI | C:斐波那契 | D:AI網格 | E:K棒AI影線 | F:AI動量 | G:RL Agent")
+st.caption("策略A:SMC | B:SSL+AI | C:斐波那契 | D:AI網格 | E:K棒AI影線 | F:AI動量 | G:RL Agent | H:混合智能 🚀")
 
 st.sidebar.title("系統設定")
 
@@ -29,13 +30,35 @@ strategy_choice = st.sidebar.radio(
         "D: AI動態網格",
         "E: K棒影線 AI",
         "F: 動量趨勢 AI",
-        "G: 強化學習 Agent 🤖"
+        "G: 強化學習 Agent 🤖",
+        "H: 混合智能系統 🚀"
     ]
 )
 
 st.sidebar.markdown("---")
 
-if strategy_choice.startswith("G"):
+if strategy_choice.startswith("H"):
+    st.sidebar.markdown("""
+### 策略H: 混合智能 🚀✨
+
+**三層決策架構**:
+- 🧠 市場狀態識別 (ML)
+- 🎯 自適應信號 (指標)
+- ⚡ 智能風控 (待加入)
+
+**核心優勢**:
+- 不再單邊 (多/空自動切換)
+- 多時間框架共振 (15m/1h/1d)
+- 量價確認 (過濾假信號)
+- 動態 TP/SL (適應市場)
+
+**vs 策略G**:
+- G: 黑盒，不可解釋
+- H: 白盒，每步可追蹤
+
+---
+    """)
+elif strategy_choice.startswith("G"):
     st.sidebar.markdown("""
 ### 策略G: 強化學習 Agent 🤖💥
 
@@ -209,8 +232,10 @@ elif strategy_choice.startswith("E"):
     render_strategy_e_tab(loader, symbol_selector)
 elif strategy_choice.startswith("F"):
     render_strategy_f_tab(loader, symbol_selector)
-else:
+elif strategy_choice.startswith("G"):
     render_strategy_g_tab(loader, symbol_selector)
+else:
+    render_strategy_h_tab(loader, symbol_selector)
 
 st.sidebar.markdown("---")
 st.sidebar.info("""
@@ -223,4 +248,5 @@ st.sidebar.info("""
 **E (K棒AI)**: 所有市場 ⭐⭐
 **F (動量AI)**: 所有市場 ⭐⭐⭐
 **G (RL Agent)**: 自主學習 🤖💥
+**H (混合智能)**: 終極方案 🚀✨
 """)
