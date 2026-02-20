@@ -131,8 +131,8 @@ class ParameterOptimizer:
             'position_size': 0.5,
             'tp_multiplier': 2.5,
             'sl_multiplier': 1.0,
-            'rsi_threshold': 35,
-            'adx_threshold': 35
+            'rsi_threshold': 50,  # 放寬: 35 → 50
+            'adx_threshold': 25   # 放寬: 35 → 25
         }
 
 
@@ -183,7 +183,7 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 class EnvironmentSpecificStrategy:
     """
-    分環境策略
+    分環境策略 - 放寬版
     """
     
     def __init__(self, environment: str, params: Dict):
@@ -191,35 +191,37 @@ class EnvironmentSpecificStrategy:
         self.params = params
     
     def generate_signals(self, df: pd.DataFrame) -> pd.Series:
-        """生成交易信號"""
+        """生成交易信號 - 放寬條件"""
         signals = pd.Series(0, index=df.index)
         
         if 'BULL' in self.environment:
-            # 牛市只做多
-            long_conditions = (
-                (df['close'] > df['ema50']) &
-                (df['rsi'] < self.params['rsi_threshold']) &
-                (df['adx'] > self.params['adx_threshold']) &
-                (df['macd_hist'] > 0)
-            )
+            # 牛市做多 - 放宽條件，只需 2/3 条件
+            cond1 = df['close'] > df['ema50']  # 價格在 EMA50 上方
+            cond2 = df['rsi'] < self.params['rsi_threshold']  # RSI < 50 (放寬)
+            cond3 = df['macd_hist'] > 0  # MACD 金叉
+            
+            # 只需滿足 2/3 条件
+            long_conditions = (cond1.astype(int) + cond2.astype(int) + cond3.astype(int)) >= 2
             signals[long_conditions] = 1
         
         elif 'BEAR' in self.environment:
-            # 熊市只做空
-            short_conditions = (
-                (df['close'] < df['ema50']) &
-                (df['rsi'] > (100 - self.params['rsi_threshold'])) &
-                (df['adx'] > self.params['adx_threshold']) &
-                (df['macd_hist'] < 0)
-            )
+            # 熊市做空 - 放宽條件
+            cond1 = df['close'] < df['ema50']
+            cond2 = df['rsi'] > (100 - self.params['rsi_threshold'])
+            cond3 = df['macd_hist'] < 0
+            
+            short_conditions = (cond1.astype(int) + cond2.astype(int) + cond3.astype(int)) >= 2
             signals[short_conditions] = -1
         
-        else:  # RANGE
-            # 震盪市網格
-            bb_upper = df['bb_upper']
-            bb_lower = df['bb_lower']
-            signals[df['close'] >= bb_upper] = -1
-            signals[df['close'] <= bb_lower] = 1
+        else:  # RANGE - 震盪市
+            # 網格策略 - 更寬鬆
+            bb_mid = df['bb_mid']
+            bb_std = (df['bb_upper'] - df['bb_mid']) / 2
+            
+            # 價格在上軒 1.5 倍標準差以上時做空
+            signals[df['close'] >= bb_mid + 1.5 * bb_std] = -1
+            # 價格在下軒 1.5 倍標準差以下時做多
+            signals[df['close'] <= bb_mid - 1.5 * bb_std] = 1
         
         return signals
 
@@ -230,6 +232,9 @@ def backtest_with_params(df: pd.DataFrame, signals: pd.Series, params: Dict) -> 
     equity = capital
     position = 0
     trades = []
+    entry_price = 0
+    tp = 0
+    sl = 0
     
     for i in range(len(df)):
         current_price = df.iloc[i]['close']
@@ -241,6 +246,9 @@ def backtest_with_params(df: pd.DataFrame, signals: pd.Series, params: Dict) -> 
             entry_time = df.index[i]
             
             atr = df.iloc[i]['atr']
+            if atr == 0:
+                atr = current_price * 0.02  # fallback: 2% 為 ATR
+            
             if position == 1:
                 tp = entry_price + atr * params['tp_multiplier']
                 sl = entry_price - atr * params['sl_multiplier']
@@ -267,7 +275,8 @@ def backtest_with_params(df: pd.DataFrame, signals: pd.Series, params: Dict) -> 
                 trades.append({
                     'pnl': actual_pnl,
                     'entry': entry_price,
-                    'exit': current_price
+                    'exit': current_price,
+                    'direction': 'Long' if position == 1 else 'Short'
                 })
                 position = 0
     
@@ -359,7 +368,7 @@ def render_strategy_l_tab(loader, symbol_selector):
             stat.text("計算指標...")
             prog.progress(50)
             
-            # 計算指標（關鍵修復）
+            # 計算指標
             df_1h = calculate_indicators(df_1h)
             
             stat.text("優化參數並回測...")
@@ -384,6 +393,10 @@ def render_strategy_l_tab(loader, symbol_selector):
             # 生成策略
             strategy = EnvironmentSpecificStrategy(current_env, params)
             signals = strategy.generate_signals(df_test)
+            
+            # 顯示信號統計
+            signal_counts = signals.value_counts()
+            st.info(f"📊 信號統計: 做多 {signal_counts.get(1, 0)} 次 | 做空 {signal_counts.get(-1, 0)} 次 | 持有 {signal_counts.get(0, 0)} 次")
             
             prog.progress(80)
             stat.text("執行回測...")
@@ -436,6 +449,11 @@ def render_strategy_l_tab(loader, symbol_selector):
                     c1.metric("勝率", f"{win_rate:.1f}%")
                     c2.metric("平均獲利", f"${avg_win:.2f}")
                     c3.metric("平均虧損", f"${avg_loss:.2f}")
+                    
+                    # 顯示交易記錄
+                    with st.expander("查看交易記錄"):
+                        trades_df = pd.DataFrame(results['trades'])
+                        st.dataframe(trades_df, use_container_width=True)
         
         except Exception as e:
             st.error(f"錯誤: {e}")
