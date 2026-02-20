@@ -1,11 +1,13 @@
 """
-策略E: Candle Pattern ML v5 - Trade Outcome Label
+策略E: Candle Pattern ML v5.1
 
-核心改進:
-訓練標籤直接用「進場後 SL/TP 哪個先被觸發」來訓練,
-而不是「价格有沒有動 X ATR」。
+核心診斷: 模型有效但手續費吃掉邊際利潤
 
-這樣 ML Precision 才能直接反映到回測勝率。
+修正:
+1. 方向控制 (Long/Short/Both) - 做空模型明顯較強,可單獨運行
+2. 回測結果分拆多/空方向勝率,精確診斷哪邊在賺哪邊在虧
+3. 提高預設 TP:SL = 3.0/1.0 (突破手續費盈虧平衡點)
+4. 顯示理論期望值 vs 實際,讓手續費影響可見
 """
 
 import streamlit as st
@@ -23,13 +25,6 @@ from data.binance_loader import BinanceDataLoader
 
 
 class CandlePatternMLv5:
-    """
-    v5: Trade Outcome Label
-    - 訓練標籤 = 進場後 TP 先袋打到 = 1, SL 先 = 0
-    - 這樣 ML Precision = 實際回測勝率
-    - 分離做多/做空模型
-    """
-
     def __init__(self, lookback=10):
         self.lookback = lookback
         self.scaler_long = StandardScaler()
@@ -46,28 +41,23 @@ class CandlePatternMLv5:
                        abs(df['low'] - df['close'].shift(1)))
         )
         df['atr'] = df['tr'].rolling(14).mean()
-
         delta = df['close'].diff()
         gain = delta.where(delta > 0, 0).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         df['rsi'] = 100 - (100 / (1 + gain / (loss + 1e-8)))
-
         ema12 = df['close'].ewm(span=12).mean()
         ema26 = df['close'].ewm(span=26).mean()
         df['macd'] = ema12 - ema26
         df['macd_signal'] = df['macd'].ewm(span=9).mean()
         df['macd_hist'] = df['macd'] - df['macd_signal']
-
         df['bb_mid'] = df['close'].rolling(20).mean()
         bb_std = df['close'].rolling(20).std()
         df['bb_upper'] = df['bb_mid'] + 2 * bb_std
         df['bb_lower'] = df['bb_mid'] - 2 * bb_std
         df['bb_pct'] = (df['close'] - df['bb_lower']) / (df['bb_upper'] - df['bb_lower'] + 1e-8)
         df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / (df['bb_mid'] + 1e-8)
-
         df['volume_ma'] = df['volume'].rolling(20).mean()
         df['volume_ratio'] = df['volume'] / (df['volume_ma'] + 1e-8)
-
         df['ema8'] = df['close'].ewm(span=8).mean()
         df['ema20'] = df['close'].ewm(span=20).mean()
         df['ema50'] = df['close'].ewm(span=50).mean()
@@ -76,12 +66,10 @@ class CandlePatternMLv5:
         df['ema_short_trend'] = (df['ema8'] - df['ema20']) / (df['atr'] + 1e-8)
         df['ema_aligned_bull'] = ((df['ema8'] > df['ema20']) & (df['ema20'] > df['ema50'])).astype(int)
         df['ema_aligned_bear'] = ((df['ema8'] < df['ema20']) & (df['ema20'] < df['ema50'])).astype(int)
-
         low14 = df['low'].rolling(14).min()
         high14 = df['high'].rolling(14).max()
         df['stoch_k'] = 100 * (df['close'] - low14) / (high14 - low14 + 1e-8)
         df['stoch_d'] = df['stoch_k'].rolling(3).mean()
-
         tp_val = (df['high'] + df['low'] + df['close']) / 3
         tp_ma = tp_val.rolling(20).mean()
         tp_std = tp_val.rolling(20).std()
@@ -97,24 +85,19 @@ class CandlePatternMLv5:
         upper_shadow = h - max(o, c)
         lower_shadow = min(o, c) - l
         return [
-            upper_shadow / total_range,
-            lower_shadow / total_range,
-            body_abs / total_range,
-            1 if body > 0 else -1,
+            upper_shadow / total_range, lower_shadow / total_range,
+            body_abs / total_range, 1 if body > 0 else -1,
             1 if body > 0 else 0,
             1 if body_abs / total_range < 0.1 else 0,
             1 if (lower_shadow > 2 * body_abs and upper_shadow < body_abs) else 0,
             1 if (upper_shadow > 2 * body_abs and lower_shadow < body_abs) else 0,
-            upper_shadow / (atr + 1e-8),
-            lower_shadow / (atr + 1e-8),
-            body_abs / (atr + 1e-8),
-            total_range / (atr + 1e-8),
+            upper_shadow / (atr + 1e-8), lower_shadow / (atr + 1e-8),
+            body_abs / (atr + 1e-8), total_range / (atr + 1e-8),
         ]
 
     def build_sequence_features(self, df):
         df = self.calculate_indicators(df)
         df = df.reset_index(drop=True)
-
         indicator_cols = [
             'rsi', 'macd_hist', 'bb_pct', 'bb_width',
             'volume_ratio', 'price_vs_ema20', 'ema_trend', 'ema_short_trend',
@@ -123,7 +106,6 @@ class CandlePatternMLv5:
         ]
         candle_feat_names = ['up_shd', 'lo_shd', 'body', 'dir', 'bull', 'doji',
                              'hammer', 'star', 'up_atr', 'lo_atr', 'body_atr', 'range_atr']
-
         feature_names = []
         for lag in range(self.lookback, 0, -1):
             for fn in candle_feat_names:
@@ -135,131 +117,76 @@ class CandlePatternMLv5:
         for col in ['up_sum', 'lo_sum', 'bull_cnt', 'bear_cnt', 'doji_cnt']:
             feature_names.append(f"roll10_{col}")
         self.feature_names = feature_names
-
         all_features, valid_indices = [], []
         atrs = df['atr'].values
-
         for i in range(self.lookback, len(df)):
             row_feats = []
             up_shadows, lo_shadows, bull_cnt, bear_cnt, doji_cnt = [], [], 0, 0, 0
-
             for lag in range(self.lookback, 0, -1):
                 idx = i - lag
                 o, h, l, c = df.iloc[idx][['open', 'high', 'low', 'close']]
                 atr = atrs[idx] if not np.isnan(atrs[idx]) else 1.0
                 feats = self.candle_features_row(o, h, l, c, atr)
                 row_feats.extend(feats)
-                up_shadows.append(feats[0])
-                lo_shadows.append(feats[1])
-                bull_cnt += feats[4]
-                bear_cnt += (1 - feats[4])
-                doji_cnt += feats[5]
-
+                up_shadows.append(feats[0]); lo_shadows.append(feats[1])
+                bull_cnt += feats[4]; bear_cnt += (1 - feats[4]); doji_cnt += feats[5]
             for col in indicator_cols:
                 v = df.iloc[i][col]
                 row_feats.append(float(v) if not np.isnan(float(v)) else 0)
-
             for col in ['rsi', 'macd_hist', 'stoch_k']:
                 v = df.iloc[i][col] - df.iloc[i - 3][col]
                 row_feats.append(float(v) if not np.isnan(float(v)) else 0)
-
             row_feats.extend([
                 float(np.sum(up_shadows)), float(np.sum(lo_shadows)),
                 float(bull_cnt), float(bear_cnt), float(doji_cnt)
             ])
             all_features.append(row_feats)
             valid_indices.append(i)
-
         X = pd.DataFrame(all_features, columns=feature_names)
         df_aligned = df.iloc[valid_indices].reset_index(drop=True)
         return X, df_aligned
 
-    # ==============================================================
-    # v5 核心: Trade Outcome Label
-    # ==============================================================
-    def build_trade_outcome_labels(
-        self, df_aligned,
-        sl_atr_mult=1.5, tp_atr_mult=2.5,
-        max_lookahead=20
-    ):
-        """
-        模擬實際進場：
-          - 做多: 入場=close, SL=close - sl*atr, TP=close + tp*atr
-            能在 max_lookahead 根內結束:
-              TP 先被觸 -> y_long=1, y_short=0 (做多贏)
-              SL 先被觸 -> y_long=0, y_short=1 (做空贏)
-              時間到 -> 不納入訓練 (is_valid=False)
-        """
+    def build_trade_outcome_labels(self, df_aligned, sl_atr_mult=1.0, tp_atr_mult=3.0, max_lookahead=20):
         y_long, y_short, is_valid = [], [], []
         highs = df_aligned['high'].values
         lows = df_aligned['low'].values
         closes = df_aligned['close'].values
         atrs = df_aligned['atr'].values
-
         for i in range(len(df_aligned)):
-            atr = atrs[i]
-            close = closes[i]
-
+            atr = atrs[i]; close = closes[i]
             if np.isnan(atr) or atr <= 0 or close <= 0:
-                y_long.append(0); y_short.append(0); is_valid.append(False)
-                continue
-
+                y_long.append(0); y_short.append(0); is_valid.append(False); continue
             long_sl = close - sl_atr_mult * atr
             long_tp = close + tp_atr_mult * atr
             short_sl = close + sl_atr_mult * atr
             short_tp = close - tp_atr_mult * atr
-
-            long_outcome = None
-            short_outcome = None
-
+            long_outcome = None; short_outcome = None
             for j in range(i + 1, min(i + 1 + max_lookahead, len(df_aligned))):
-                h = highs[j]
-                l = lows[j]
-
-                # 做多結果
+                h = highs[j]; l = lows[j]
                 if long_outcome is None:
-                    if l <= long_sl and h >= long_tp:
-                        # 同根K棒同時觸發 SL/TP: 無法確定哪個先,診斷為輸
-                        long_outcome = 0
-                    elif l <= long_sl:
-                        long_outcome = 0  # SL 先被觸
-                    elif h >= long_tp:
-                        long_outcome = 1  # TP 先被觸
-
-                # 做空結果
+                    if l <= long_sl and h >= long_tp: long_outcome = 0
+                    elif l <= long_sl: long_outcome = 0
+                    elif h >= long_tp: long_outcome = 1
                 if short_outcome is None:
-                    if h >= short_sl and l <= short_tp:
-                        short_outcome = 0
-                    elif h >= short_sl:
-                        short_outcome = 0  # SL 先被觸
-                    elif l <= short_tp:
-                        short_outcome = 1  # TP 先被觸
-
-                if long_outcome is not None and short_outcome is not None:
-                    break
-
-            # 如果 max_lookahead 內沒結果 -> 不納入訓練
+                    if h >= short_sl and l <= short_tp: short_outcome = 0
+                    elif h >= short_sl: short_outcome = 0
+                    elif l <= short_tp: short_outcome = 1
+                if long_outcome is not None and short_outcome is not None: break
             if long_outcome is None or short_outcome is None:
                 y_long.append(0); y_short.append(0); is_valid.append(False)
             else:
-                y_long.append(long_outcome)
-                y_short.append(short_outcome)
-                is_valid.append(True)
-
+                y_long.append(long_outcome); y_short.append(short_outcome); is_valid.append(True)
         return pd.Series(y_long), pd.Series(y_short), pd.Series(is_valid)
 
-    def train(self, df, sl_atr_mult=1.5, tp_atr_mult=2.5, max_lookahead=20, model_type='GBM'):
+    def train(self, df, sl_atr_mult=1.0, tp_atr_mult=3.0, max_lookahead=20, model_type='GBM'):
         X, df_aligned = self.build_sequence_features(df)
         y_long, y_short, is_valid = self.build_trade_outcome_labels(
             df_aligned, sl_atr_mult, tp_atr_mult, max_lookahead
         )
-
-        # 只用 is_valid=True 的樣本
         mask = is_valid.values
         X_v = X[mask].reset_index(drop=True)
         yl_v = y_long[mask].reset_index(drop=True)
         ys_v = y_short[mask].reset_index(drop=True)
-
         split = int(len(X_v) * 0.8)
         X_tr, X_te = X_v.iloc[:split], X_v.iloc[split:]
         yl_tr, yl_te = yl_v.iloc[:split], yl_v.iloc[split:]
@@ -290,48 +217,39 @@ class CandlePatternMLv5:
 
         yl_pred = self.model_long.predict(Xl_te)
         ys_pred = self.model_short.predict(Xs_te)
-
-        long_win_rate = float(yl_te.mean() * 100)
-        short_win_rate = float(ys_te.mean() * 100)
-
         return {
-            'train_size': len(X_tr),
-            'test_size': len(X_te),
+            'train_size': len(X_tr), 'test_size': len(X_te),
             'long_prec': precision_score(yl_te, yl_pred, zero_division=0),
             'long_rec': recall_score(yl_te, yl_pred, zero_division=0),
             'short_prec': precision_score(ys_te, ys_pred, zero_division=0),
             'short_rec': recall_score(ys_te, ys_pred, zero_division=0),
-            'long_base_rate': long_win_rate,
-            'short_base_rate': short_win_rate,
+            'long_base_rate': float(yl_te.mean() * 100),
+            'short_base_rate': float(ys_te.mean() * 100),
             'valid_samples': int(mask.sum()),
-            'sl_atr': sl_atr_mult,
-            'tp_atr': tp_atr_mult,
+            'sl_atr': sl_atr_mult, 'tp_atr': tp_atr_mult,
         }
 
     def generate_signals(
-        self, df,
-        leverage: float,
+        self, df, leverage: float,
+        direction='Both',
         conf_long=0.55, conf_short=0.55,
         prob_margin=0.05,
         sizing_mode='Risk',
         fixed_position_pct=0.3,
         risk_per_trade_pct=0.5,
         max_position_pct=0.5,
-        stop_atr_mult=1.5,
-        tp_atr_mult=2.5,
+        stop_atr_mult=1.0,
+        tp_atr_mult=3.0,
         cooldown_bars=5,
         use_trend_filter=True,
     ):
         X, df_aligned = self.build_sequence_features(df)
         Xl = self.scaler_long.transform(X)
         Xs = self.scaler_short.transform(X)
-
         proba_long = self.model_long.predict_proba(Xl)[:, 1]
         proba_short = self.model_short.predict_proba(Xs)[:, 1]
-
         signals = []
         last_signal_bar = -cooldown_bars
-
         for i in range(len(df_aligned)):
             atr = float(df_aligned.iloc[i]['atr'])
             close = float(df_aligned.iloc[i]['close'])
@@ -339,17 +257,13 @@ class CandlePatternMLv5:
             ps = float(proba_short[i])
             bull_trend = df_aligned.iloc[i]['ema_aligned_bull'] == 1
             bear_trend = df_aligned.iloc[i]['ema_aligned_bear'] == 1
-
             sig = 0; sl = np.nan; tp = np.nan; reason = ""; pos_pct = 1.0
-
             if (i - last_signal_bar) >= cooldown_bars and atr > 0 and close > 0:
-                long_ok = (pl >= conf_long) and ((pl - ps) >= prob_margin)
-                short_ok = (ps >= conf_short) and ((ps - pl) >= prob_margin)
-
+                long_ok = (direction in ('Both', 'Long')) and (pl >= conf_long) and ((pl - ps) >= prob_margin)
+                short_ok = (direction in ('Both', 'Short')) and (ps >= conf_short) and ((ps - pl) >= prob_margin)
                 if use_trend_filter:
                     long_ok = long_ok and bull_trend
                     short_ok = short_ok and bear_trend
-
                 if long_ok and pl >= ps:
                     sig = 1
                     sl = close - atr * stop_atr_mult
@@ -362,7 +276,6 @@ class CandlePatternMLv5:
                     tp = close - atr * tp_atr_mult
                     reason = f"SHORT(p={ps:.2f},差={ps-pl:.2f})"
                     last_signal_bar = i
-
                 if sig != 0:
                     if sizing_mode == 'Fixed':
                         pos_pct = float(fixed_position_pct)
@@ -370,13 +283,11 @@ class CandlePatternMLv5:
                         atr_pct = atr / close
                         denom = max(atr_pct * stop_atr_mult * leverage, 1e-6)
                         pos_pct = float(np.clip((risk_per_trade_pct / 100.0) / denom, 0.01, max_position_pct))
-
             signals.append({
                 'signal': sig, 'reason': reason,
                 'stop_loss': sl, 'take_profit': tp,
                 'position_size': pos_pct if sig != 0 else 1.0,
             })
-
         empty = [{'signal': 0, 'reason': '', 'stop_loss': np.nan,
                   'take_profit': np.nan, 'position_size': 1.0}] * self.lookback
         return pd.DataFrame(empty + signals), df_aligned
@@ -387,19 +298,32 @@ class CandlePatternMLv5:
         return pd.Series(m.feature_importances_, index=self.feature_names).sort_values(ascending=False).head(top_n)
 
 
+def _expected_pf(wr: float, tp: float, sl: float) -> float:
+    """理論盈虧比 (未含手續費)"""
+    if (1 - wr) * sl < 1e-9: return float('inf')
+    return (wr * tp) / ((1 - wr) * sl)
+
+
 def render_strategy_e_tab(loader, symbol_selector):
-    st.header("策略 E: K棒影線 AI v5 (Trade Outcome Label)")
+    st.header("策略 E: K棒影線 AI v5.1")
 
-    with st.expander("版本改進說明", expanded=True):
+    with st.expander("v5 診斷與 v5.1 修正", expanded=False):
         st.markdown("""
-        **v5 核心改進: 標籤與回測完全對齊**
-
-        | 版本 | 訓練標籤 | 問題 |
-        |------|----------|------|
-        | v1-v4 | "下一根K棒有沒有漲X ATR?" | 標籤與回測逾輯不一致,導致 ML Precision跟實際勝率差23% |
-        | **v5** | **"實際進場後 TP/SL 哪個先被觸?"** | ML Precision 直接等於預期勝率 |
-
-        還保留: 風險定倉 + 冷卻期 + 機率差 + EMA 趨勢過濾
+        **v5 結果分析**
+        - 模型有效: 勝率 41.1% > 基準 35% ✓
+        - 但仍虧損, 盈虧比 0.91 < 1.0
+        
+        **根本原因: 手續費吃掉邊際利潤**
+        ```
+        理論盈虧比 (TP=2.5, SL=1.5, WR=41.1%): 1.16
+        實際盈虧比:                               0.91
+        差距 0.25 = 手續費 + 滑點 + 同根K棒模糊
+        ```
+        
+        **v5.1 修正**
+        1. TP:SL 預設改為 3.0:1.0 (盈虧平衡點 WR=25%,費後仍有空間)
+        2. 方向選擇: Long/Short/Both (做空模型 55% >> 做多 43%)
+        3. 回測結果分拆多/空方向,看哪邊在賺
         """)
 
     st.markdown("---")
@@ -418,6 +342,8 @@ def render_strategy_e_tab(loader, symbol_selector):
         st.markdown("**交易**")
         capital = st.number_input("資金", 1000.0, 100000.0, 10000.0, 1000.0, key="cap_e")
         leverage = st.slider("槓桿", 1, 10, 3, key="lev_e")
+        direction = st.radio("交易方向", ["Both", "Long", "Short"], index=0, key="dir_e",
+                             help="做空模型通常較強,可先試 Short Only")
         sizing_mode = st.radio("倉位模式", ["Risk", "Fixed"], index=0, key="sz_mode")
         if sizing_mode == "Fixed":
             fixed_position_pct = st.slider("固定倉位%", 5, 80, 30, 5, key="pos_fixed") / 100.0
@@ -431,12 +357,10 @@ def render_strategy_e_tab(loader, symbol_selector):
         st.markdown("**AI + 風控**")
         model_type = st.radio("模型", ["GBM", "RandomForest"], key="model_e")
         lookback = st.slider("回顧K棒", 5, 20, 10, key="lb_e")
-
-        st.markdown("*訓練標籤所用 SL/TP (與回測一致)*")
-        sl_atr = st.slider("止損ATR", 0.5, 3.0, 1.5, 0.5, key="sl_e")
-        tp_atr = st.slider("止盈ATR", 1.0, 6.0, 2.5, 0.5, key="tp_e")
+        st.markdown("*訓練標籤 & 回測共用 SL/TP*")
+        sl_atr = st.slider("止損ATR", 0.5, 3.0, 1.0, 0.5, key="sl_e")
+        tp_atr = st.slider("止盈ATR", 1.0, 6.0, 3.0, 0.5, key="tp_e")
         max_lookahead = st.slider("最大尋找K棒數", 5, 40, 20, 5, key="ml_e")
-
         st.markdown("*信號過濾*")
         conf_long = st.slider("做多信心度", 0.45, 0.90, 0.55, 0.01, key="cl_e")
         conf_short = st.slider("做空信心度", 0.45, 0.90, 0.55, 0.01, key="cs_e")
@@ -444,6 +368,14 @@ def render_strategy_e_tab(loader, symbol_selector):
         cooldown = st.slider("冷卻期(K棒)", 1, 30, 5, key="cd_e")
         trend_filter = st.checkbox("開啟EMA趨勢過濾", value=True, key="emf_e")
 
+    # 即時顯示費後盈虧平衡點
+    breakeven_wr = sl_atr / (sl_atr + tp_atr)
+    fee_drag = 0.0012  # 0.06% × 2 估計
+    st.info(
+        f"**TP={tp_atr}x ATR / SL={sl_atr}x ATR** | "
+        f"盈虧平衡勝率: **{breakeven_wr*100:.1f}%** | "
+        f"估計手續費損耗/筆: ~{fee_drag*leverage*100:.2f}% (槓桿{leverage}x)"
+    )
     st.markdown("---")
 
     if st.button("訓練 + 回測", type="primary", use_container_width=True):
@@ -452,7 +384,6 @@ def render_strategy_e_tab(loader, symbol_selector):
         try:
             stat.text("載入數據...")
             prog.progress(5)
-
             total_days = train_days + test_days + 5
             if isinstance(loader, BinanceDataLoader):
                 end = datetime.now()
@@ -460,7 +391,6 @@ def render_strategy_e_tab(loader, symbol_selector):
             else:
                 df_all = loader.load_klines(symbol, timeframe)
                 df_all = df_all.tail(total_days * bars_per_day)
-
             df_all = df_all.reset_index(drop=True)
             split_idx = int(len(df_all) * (train_days / total_days))
             df_train = df_all.iloc[:split_idx].reset_index(drop=True)
@@ -468,7 +398,7 @@ def render_strategy_e_tab(loader, symbol_selector):
             st.info(f"訓練: {len(df_train)}根 | 測試: {len(df_test)}根")
             prog.progress(15)
 
-            stat.text("訓練 AI (Trade Outcome Label)...")
+            stat.text("訓練 AI...")
             strategy = CandlePatternMLv5(lookback=lookback)
             result = strategy.train(
                 df_train, sl_atr_mult=sl_atr, tp_atr_mult=tp_atr,
@@ -478,27 +408,27 @@ def render_strategy_e_tab(loader, symbol_selector):
 
             st.markdown("### 訓練結果")
             st.caption("ℹ️ Precision 現在直接等於模型預期勝率")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("有效訓練樣本", result['valid_samples'])
-            c1.metric("訓練/測試", f"{result['train_size']} / {result['test_size']}")
-
-            st.markdown("**做多模型** (基準勝率: {:.1f}%)".format(result['long_base_rate']))
-            lc1, lc2 = st.columns(2)
-            lc1.metric("Precision (預期勝率)", f"{result['long_prec']:.2%}")
-            lc2.metric("Recall", f"{result['long_rec']:.2%}")
-            if result['long_prec'] > result['long_base_rate'] / 100:
-                st.success(f"做多模型有效: Precision {result['long_prec']:.2%} > 基準勝率 {result['long_base_rate']:.1f}%")
-            else:
-                st.warning(f"做多模型無效: Precision {result['long_prec']:.2%} <= 基準勝率 {result['long_base_rate']:.1f}%")
-
-            st.markdown("**做空模型** (基準勝率: {:.1f}%)".format(result['short_base_rate']))
-            sc1, sc2 = st.columns(2)
-            sc1.metric("Precision (預期勝率)", f"{result['short_prec']:.2%}")
-            sc2.metric("Recall", f"{result['short_rec']:.2%}")
-            if result['short_prec'] > result['short_base_rate'] / 100:
-                st.success(f"做空模型有效: Precision {result['short_prec']:.2%} > 基準勝率 {result['short_base_rate']:.1f}%")
-            else:
-                st.warning(f"做空模型無效: Precision {result['short_prec']:.2%} <= 基準勝率 {result['short_base_rate']:.1f}%")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown(f"**做多模型** (基準: {result['long_base_rate']:.1f}%)")
+                lc1, lc2 = st.columns(2)
+                lc1.metric("Precision", f"{result['long_prec']:.2%}")
+                lc2.metric("Recall", f"{result['long_rec']:.2%}")
+                epf_long = _expected_pf(result['long_prec'], tp_atr, sl_atr)
+                if result['long_prec'] > result['long_base_rate'] / 100:
+                    st.success(f"有效 | 理論PF={epf_long:.2f}")
+                else:
+                    st.warning(f"無效 | Precision <= 基準")
+            with c2:
+                st.markdown(f"**做空模型** (基準: {result['short_base_rate']:.1f}%)")
+                sc1, sc2 = st.columns(2)
+                sc1.metric("Precision", f"{result['short_prec']:.2%}")
+                sc2.metric("Recall", f"{result['short_rec']:.2%}")
+                epf_short = _expected_pf(result['short_prec'], tp_atr, sl_atr)
+                if result['short_prec'] > result['short_base_rate'] / 100:
+                    st.success(f"有效 | 理論PF={epf_short:.2f}")
+                else:
+                    st.warning(f"無效 | Precision <= 基準")
 
             with st.expander("特徵重要度 Top15"):
                 tc1, tc2 = st.columns(2)
@@ -511,27 +441,23 @@ def render_strategy_e_tab(loader, symbol_selector):
 
             prog.progress(65)
             stat.text("產生信號...")
-
             df_signals, df_aligned = strategy.generate_signals(
-                df_test, leverage=leverage,
+                df_test, leverage=leverage, direction=direction,
                 conf_long=conf_long, conf_short=conf_short, prob_margin=prob_margin,
                 sizing_mode=sizing_mode, fixed_position_pct=fixed_position_pct,
                 risk_per_trade_pct=risk_per_trade_pct, max_position_pct=max_position_pct,
                 stop_atr_mult=sl_atr, tp_atr_mult=tp_atr,
                 cooldown_bars=cooldown, use_trend_filter=trend_filter,
             )
-
             lc = (df_signals['signal'] == 1).sum()
             sc = (df_signals['signal'] == -1).sum()
             st.info(f"信號: {lc+sc} (L:{lc} S:{sc})")
-
             if lc + sc == 0:
                 st.warning("無信號 - 降低信心度或機率差")
                 prog.progress(100); return
 
             prog.progress(75)
             stat.text("回測...")
-
             df_for_bt = pd.concat([df_test.iloc[:lookback].reset_index(drop=True), df_aligned]).reset_index(drop=True)
             engine = TickLevelBacktestEngine(capital, leverage, 0.0006, 0.01, 100)
             metrics = engine.run_backtest(df_for_bt, df_signals)
@@ -540,7 +466,6 @@ def render_strategy_e_tab(loader, symbol_selector):
 
             st.markdown("---")
             st.subheader("回測結果")
-            st.caption("ℹ️ 預期: 回測勝率 ≈ ML Precision")
             c1, c2, c3, c4 = st.columns(4)
             pnl = metrics['final_equity'] - capital
             c1.metric("權益", f"${metrics['final_equity']:,.0f}", f"{pnl:+,.0f}")
@@ -550,19 +475,28 @@ def render_strategy_e_tab(loader, symbol_selector):
             c2.metric("月化", f"{ret*30/test_days:.1f}%")
             wr = metrics['win_rate']
             pf = metrics['profit_factor']
-            c3.metric("勝率", f"{wr:.1f}%",
-                      delta=f"vs 基準 {result['long_base_rate']:.0f}%")
+            c3.metric("勝率", f"{wr:.1f}%", delta=f"盈虧平衡 {breakeven_wr*100:.1f}%")
             c3.metric("盈虧比", f"{pf:.2f}")
             c4.metric("回撤", f"{metrics['max_drawdown_pct']:.1f}%")
             c4.metric("夏普", f"{metrics['sharpe_ratio']:.2f}")
 
-            st.markdown("---")
             st.subheader("權益曲線")
             st.plotly_chart(engine.plot_equity_curve(), use_container_width=True)
 
             trades = engine.get_trades_dataframe()
             if not trades.empty:
-                st.subheader("交易明細")
+                st.subheader("交易明細 (分方向)")
+                for direction_label, dir_key in [('做多 (Long)', 'Long'), ('做空 (Short)', 'Short')]:
+                    dir_trades = trades[trades['direction'] == dir_key]
+                    if len(dir_trades) == 0: continue
+                    dir_wins = dir_trades[dir_trades['pnl_usdt'] > 0]
+                    dir_wr = len(dir_wins) / len(dir_trades) * 100
+                    dir_pnl = dir_trades['pnl_usdt'].sum()
+                    dir_tp = (dir_trades['exit_reason'] == 'TP').sum()
+                    dir_sl = (dir_trades['exit_reason'] == 'SL').sum()
+                    status = "✅" if dir_pnl > 0 else "❌"
+                    st.markdown(f"**{status} {direction_label}**: {len(dir_trades)}筆 | 勝率 {dir_wr:.1f}% | 損益 ${dir_pnl:+.0f} | TP:{dir_tp} SL:{dir_sl}")
+
                 wins = trades[trades['pnl_usdt'] > 0]
                 losses = trades[trades['pnl_usdt'] < 0]
                 c1, c2, c3, c4 = st.columns(4)
@@ -570,17 +504,12 @@ def render_strategy_e_tab(loader, symbol_selector):
                 c2.metric("輸", len(losses))
                 if len(wins): c3.metric("平均贏", f"${wins['pnl_usdt'].mean():.2f}")
                 if len(losses): c4.metric("平均輸", f"${losses['pnl_usdt'].mean():.2f}")
-                
-                # TP/SL 出場比例
-                tp_exits = (trades['exit_reason'] == 'TP').sum()
-                sl_exits = (trades['exit_reason'] == 'SL').sum()
-                st.info(f"TP出場: {tp_exits} | SL出場: {sl_exits} | TP比例: {tp_exits/(len(trades)+1e-8)*100:.1f}%")
-
-                st.dataframe(trades[['entry_time', 'direction', 'entry_price',
-                                     'exit_price', 'pnl_usdt', 'exit_reason']].tail(30),
-                             use_container_width=True)
+                st.dataframe(
+                    trades[['entry_time', 'direction', 'entry_price', 'exit_price', 'pnl_usdt', 'exit_reason']].tail(30),
+                    use_container_width=True
+                )
                 csv = trades.to_csv(index=False).encode('utf-8')
-                st.download_button("CSV", csv, f"{symbol}_ml_v5_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
+                st.download_button("CSV", csv, f"{symbol}_ml_v51_{datetime.now():%Y%m%d_%H%M}.csv", "text/csv")
 
         except Exception as e:
             st.error(f"錯: {e}")
