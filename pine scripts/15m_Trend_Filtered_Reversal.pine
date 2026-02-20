@@ -1,0 +1,126 @@
+//@version=5
+indicator("Trend-Filtered Reversal [FTM]", shorttitle="TF Reversal", overlay=false)
+
+// ==========================================
+// THEORY: Trend-Filtered Reversal System
+// ==========================================
+// Problem: In a strong uptrend, any pause or red candle with volume triggers a "Sell" (Fake Reversal).
+// Solution: We must filter signals based on the Higher Timeframe (HTF) trend and baseline momentum.
+// 
+// Logic:
+// 1. BASELINE TREND: Use a medium/long EMA (e.g., 50 or 200) to define the undeniable trend.
+// 2. EXHAUSTION (Price): Price must be far away from the baseline (over-extended).
+// 3. EXHAUSTION (Volume): High volume pushing into an extreme, followed by a momentum failure.
+// 4. TREND FILTER: NEVER short a strong uptrend unless price is EXTREMELY overextended + strong rejection.
+
+// ==========================================
+// 1. INPUTS
+// ==========================================
+grp_trend = "Trend Baseline"
+ema_len = input.int(50, "Baseline EMA Length", group=grp_trend)
+
+grp_extremes = "Over-Extension (Bands)"
+bb_len = input.int(20, "Bollinger Length", group=grp_extremes)
+bb_mult = input.float(2.5, "Bollinger Multiplier (Strict)", group=grp_extremes, tooltip="Use 2.5 or 3.0 to only catch true extremes")
+
+grp_vol = "Volume & Momentum"
+vol_len = input.int(20, "Volume MA Length", group=grp_vol)
+vol_surge = input.float(1.5, "Volume Surge Threshold", group=grp_vol)
+rsi_len = input.int(14, "RSI Length", group=grp_vol)
+
+// ==========================================
+// 2. TREND & BASELINE ANALYSIS
+// ==========================================
+baseline = ta.ema(close, ema_len)
+
+// Trend Direction
+uptrend = close > baseline and ta.ema(close, 20) > baseline
+downtrend = close < baseline and ta.ema(close, 20) < baseline
+
+// Distance from Baseline (Percentage)
+dist_pct = ((close - baseline) / baseline) * 100
+
+// ==========================================
+// 3. EXTREME BANDS (Strict BB)
+// ==========================================
+// We use a wider BB to ensure price is truly exhausted
+basis = ta.sma(close, bb_len)
+dev = ta.stdev(close, bb_len)
+upper_bb = basis + dev * bb_mult
+lower_bb = basis - dev * bb_mult
+
+is_extreme_high = high >= upper_bb
+is_extreme_low = low <= lower_bb
+
+// ==========================================
+// 4. VOLUME & MOMENTUM CONFIRMATION
+// ==========================================
+vol_ma = ta.sma(volume, vol_len)
+is_high_vol = volume > vol_ma * vol_surge
+
+rsi = ta.rsi(close, rsi_len)
+is_overbought = rsi > 70
+is_oversold = rsi < 30
+
+// Price Rejection Anatomy
+body = math.abs(close - open)
+range_bar = high - low
+upper_wick = high - math.max(close, open)
+lower_wick = math.min(close, open) - low
+
+// Strict Rejection: Wick must be large, and it must close against the push
+bear_rejection = upper_wick > range_bar * 0.5 and close < open
+bull_rejection = lower_wick > range_bar * 0.5 and close > open
+
+// ==========================================
+// 5. SIGNAL LOGIC (With Trend Filtering)
+// ==========================================
+
+// --- BEARISH REVERSAL (Sell) ---
+// Condition 1: Must be at an extreme high (piercing upper band)
+// Condition 2: Must have high volume (climax) OR be heavily overbought
+// Condition 3: Must show price rejection
+// THE FILTER: If in a strong uptrend, the distance from baseline must be significant (> 1.5%) to allow a counter-trend short.
+bear_setup = is_extreme_high and (is_high_vol or is_overbought) and bear_rejection
+bear_filtered = bear_setup and (not uptrend or (uptrend and dist_pct > 1.5))
+
+// --- BULLISH REVERSAL (Buy) ---
+// Condition 1: Must be at an extreme low (piercing lower band)
+// Condition 2: Must have high volume (climax) OR be heavily oversold
+// Condition 3: Must show price rejection
+// THE FILTER: If in a strong downtrend, the distance from baseline must be significant (< -1.5%) to allow a counter-trend long.
+bull_setup = is_extreme_low and (is_high_vol or is_oversold) and bull_rejection
+bull_filtered = bull_setup and (not downtrend or (downtrend and dist_pct < -1.5))
+
+// ==========================================
+// 6. VISUALIZATION (Oscillator)
+// ==========================================
+// We plot the "Distance from Baseline" as the main oscillator, color-coded by trend
+
+osc_color = uptrend ? color.new(color.teal, 30) : downtrend ? color.new(color.red, 30) : color.new(color.gray, 50)
+plot(dist_pct, "Distance from EMA", color=osc_color, style=plot.style_area, linewidth=2)
+
+// Zero Line (Baseline)
+hline(0, "Baseline", color=color.white, linestyle=hline.style_solid)
+
+// Volatility Bands on Oscillator
+bb_width_pct = ((upper_bb - basis) / basis) * 100
+plot(bb_width_pct, "Upper Ext", color=color.new(color.gray, 70), style=plot.style_line)
+plot(-bb_width_pct, "Lower Ext", color=color.new(color.gray, 70), style=plot.style_line)
+
+// ==========================================
+// 7. SIGNAL MARKERS
+// ==========================================
+// Plot clear, filtered signals
+plotshape(bull_filtered, "Bullish Reversal", shape.triangleup, location.bottom, color.lime, size=size.normal, text="BUY", textcolor=color.white)
+plotshape(bear_filtered, "Bearish Reversal", shape.triangledown, location.top, color.red, size=size.normal, text="SELL", textcolor=color.white)
+
+// Optional: Plot warning dots for setups that were blocked by the trend filter
+plotshape(bear_setup and not bear_filtered, "Blocked Bear", shape.xcross, location.top, color=color.new(color.red, 70), size=size.tiny)
+plotshape(bull_setup and not bull_filtered, "Blocked Bull", shape.xcross, location.bottom, color=color.new(color.green, 70), size=size.tiny)
+
+// ==========================================
+// 8. ALERTS
+// ==========================================
+alertcondition(bull_filtered, "Bullish Reversal", "Trend-Filtered Bullish Reversal Detected")
+alertcondition(bear_filtered, "Bearish Reversal", "Trend-Filtered Bearish Reversal Detected")
