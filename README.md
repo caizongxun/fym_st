@@ -1,41 +1,123 @@
 # FYM_ST - Advanced Automated Crypto Trading System
 
+## 🚀 Two-Phase Development Strategy
+
+**An ambitious professional approach: Push Alpha to the limit through microstructure (Phase 1), then validate with rigorous OOS blind testing (Phase 2)**
+
+### Phase 1: Microstructure Feature Expansion (第一階段:微觀結構特徵擴充)
+
+**Goal**: Maximize model Alpha through institutional-grade order flow analysis
+
+Leveraging Binance's native K-line data (`taker_buy_base_asset_volume`), we've integrated **8 core microstructure features**:
+
+1. **net_volume**: Net taker volume delta
+2. **cvd_10**: Short-term Cumulative Volume Delta
+3. **cvd_20**: Mid-term CVD
+4. **cvd_norm_10**: Normalized CVD (cross-asset comparable)
+5. **divergence_score_10**: Price-CVD divergence score **[Core Feature]**
+6. **upper_wick_ratio**: Upper wick to body ratio
+7. **lower_wick_ratio**: Lower wick to body ratio (liquidity sweep)
+8. **order_flow_imbalance**: Order flow imbalance ratio (-1 to +1)
+
+**Expected Results**:
+- AUC: 0.60+
+- Precision @ 0.60 threshold: 58-60%
+- Feature Importance: `divergence_score_10` in Top 5
+
+📚 **Documentation**: [`PHASE1_MICROSTRUCTURE_TRAINING.md`](PHASE1_MICROSTRUCTURE_TRAINING.md)
+
+### Phase 2: Out-of-Sample Blind Test (第二階段:樣本外盲測)
+
+**Goal**: Validate with strictest OOS data the model has never seen
+
+Once Phase 1 completes (AUC > 0.60, Precision > 58%), proceed to rigorous validation:
+
+**Testing Criteria**:
+- **OOS Data**: 90+ days of unseen data (e.g., 2023 H2 or future 2026 data)
+- **Initial Capital**: $10,000
+- **Risk per Trade**: 1.5-2.0%
+- **Probability Threshold**: 0.60
+- **TP/SL**: 3.0 ATR / 1.5 ATR
+- **Fees**: Maker 0.02%, Taker 0.06%, Slippage 0.05%
+
+**Success Criteria**:
+- ☑️ Total Return > 0%
+- ☑️ Win Rate > 50%
+- ☑️ Profit Factor > 1.5
+- ☑️ Avg Win > Avg Loss
+- ☑️ Max Drawdown < 20%
+
+If successful, the system is production-ready for live trading with Binance API.
+
+📚 **Documentation**: [`PHASE2_OOS_VALIDATION.md`](PHASE2_OOS_VALIDATION.md)
+
+---
+
 ## Overview
 
 FYM_ST is an institutional-grade automated cryptocurrency trading system implementing advanced quantitative methods from academic research and hedge fund practices. The system features:
 
 1. **Automated Trading System**: Academic ML framework with meta-labeling and Kelly criterion
-2. **Liquidity Sweep Detection** (NEW): Institutional market microstructure analysis
-3. **Multi-Timeframe AI System**: High-frequency scalping with trend confirmation
+2. **Microstructure Analysis** (NEW): Institutional order flow and CVD divergence detection
+3. **Liquidity Sweep Detection**: Market microstructure exhaustion identification
+4. **Multi-Timeframe AI System**: High-frequency scalping with trend confirmation
 
 ## Core Systems
 
-### 1. Liquidity Sweep Detection System (NEW)
+### 1. Institutional Microstructure Analysis (NEW - Phase 1)
 
-A groundbreaking institutional-grade entry theory based on market microstructure:
+**Revolutionary approach using native Binance K-line data to capture Smart Money intentions**
+
+#### Theory: Order Flow & CVD Divergence
+
+Institutional players leave footprints in the order book. By analyzing the difference between taker buy/sell volume (CVD), we can detect:
+
+- **Bottom Accumulation**: Price drops but CVD rises (buyers absorbing sell pressure)
+- **Top Distribution**: Price rises but CVD drops (sellers distributing to buyers)
+- **Liquidity Sweeps**: Long wicks with OI flush (stop hunt)
+
+#### 8 Core Microstructure Features
+
+```python
+# All calculated from Binance native data
+taker_buy_volume = df['taker_buy_base_asset_volume']
+taker_sell_volume = df['volume'] - taker_buy_volume
+
+net_volume = taker_buy_volume - taker_sell_volume
+cvd_10 = net_volume.rolling(10).sum()
+cvd_norm_10 = cvd_10 / volume.rolling(10).sum()
+
+price_pct_10 = close.pct_change(10)
+divergence_score_10 = cvd_norm_10 - price_pct_10  # Key!
+```
+
+**Key Insight**: When `divergence_score_10` is highly positive (price down + CVD up), institutions are accumulating at the bottom.
+
+🔥 **Quick Start Phase 1**:
+```bash
+cd trading_system
+streamlit run app_main.py
+# Select "模型訓練" and enable 微觀結構特徵
+```
+
+### 2. Liquidity Sweep Detection System
+
+A complementary system focusing on OI and funding rate analysis:
 
 #### Theory: Liquidity Sweep & Microstructure Exhaustion
 
-Instead of traditional breakout strategies, this system identifies when institutional players (Smart Money) trigger retail stop-losses to accumulate positions, then enter when:
+Instead of traditional breakout strategies, this system identifies when institutional players (Smart Money) trigger retail stop-losses to accumulate positions:
 
 1. **Price Action**: False breakout with long wick (2x body)
 2. **OI Flush**: Open Interest drops >2σ (retail liquidation)
 3. **CVD Divergence**: Cumulative Volume Delta shows absorption
 
-#### Advantages Over Traditional Systems
+#### Advantages
 
 - **60% Fee Savings**: Left-side entry allows Maker orders vs Taker breakouts
 - **Superior R:R**: Precise stop at wick extreme vs wide breakout stops
 - **Non-Collinear Data**: OI + CVD adds real money flow dimension
 - **Regime Adaptive**: Works in ranging markets where indicators fail
-
-#### Key Features
-
-- Open Interest (OI) historical data from Binance Futures
-- Cumulative Volume Delta (CVD) calculation
-- Funding Rate integration
-- Smart Money absorption detection
-- 10+ new institutional features
 
 **Quick Start:**
 ```bash
@@ -47,7 +129,7 @@ python examples/liquidity_sweep_example.py
 - Theory: `docs/LIQUIDITY_SWEEP_THEORY.md`
 - Integration: `LIQUIDITY_SWEEP_INTEGRATION.md`
 
-### 2. Automated Trading System (`trading_system/`)
+### 3. Automated Trading System (`trading_system/`)
 
 A quantitative trading framework implementing state-of-the-art machine learning methods:
 
@@ -58,7 +140,7 @@ A quantitative trading framework implementing state-of-the-art machine learning 
 - **Fractional Differentiation**: Stationarity preservation with memory (d=0.4)
 - **Purged K-Fold CV**: Time-series aware cross-validation preventing data leakage
 - **Dynamic Kelly Criterion**: Probability-based position sizing with risk fraction
-- **Sample Weighting**: High-impact trade prioritization during training
+- **Microstructure Features** (NEW): 8 institutional order flow features
 
 #### Features
 
@@ -68,7 +150,6 @@ A quantitative trading framework implementing state-of-the-art machine learning 
 - LightGBM with purged cross-validation
 - Realistic backtesting with commission and slippage
 - Real-time prediction using completed bars only
-- **NEW**: Liquidity sweep features integration
 
 **Quick Start:**
 ```bash
@@ -77,9 +158,7 @@ pip install -r requirements.txt
 streamlit run app_main.py
 ```
 
-**Documentation**: See `trading_system/README.md` for detailed usage
-
-### 3. Multi-Timeframe AI System (Original)
+### 4. Multi-Timeframe AI System (Original)
 
 A sophisticated multi-model architecture for high-frequency trading:
 
@@ -88,15 +167,6 @@ A sophisticated multi-model architecture for high-frequency trading:
 1. **Trend Detection Model (1h)**: Market regime identification
 2. **Volatility Prediction Model (15m)**: Volatility regime forecasting
 3. **Reversal Detection Model (15m)**: High-probability entry points
-
-#### Features
-
-- Multi-timeframe analysis (1h + 15m)
-- Signal stability (completed candles only)
-- Out-of-sample validation
-- Binance API integration
-- ATR-based risk management
-- Portfolio allocation across 38+ pairs
 
 **Quick Start:**
 ```bash
@@ -111,16 +181,7 @@ git clone https://github.com/caizongxun/fym_st.git
 cd fym_st
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
-```
-
-### For Automated Trading System
-```bash
 cd trading_system
-pip install -r requirements.txt
-```
-
-### For Multi-Timeframe System
-```bash
 pip install -r requirements.txt
 ```
 
@@ -134,78 +195,31 @@ BINANCE_API_SECRET=your_api_secret
 HUGGINGFACE_TOKEN=your_token  # Optional
 ```
 
-## Project Structure
+## New Microstructure Features (Phase 1)
 
-```
-fym_st/
-├── trading_system/              # Automated trading system
-│   ├── core/                    # Core quantitative modules
-│   │   ├── data_loader.py       # Enhanced with OI/Funding Rate
-│   │   ├── feature_engineering.py  # Enhanced with liquidity features
-│   │   ├── liquidity_sweep_detector.py  # NEW
-│   │   ├── labeling.py
-│   │   ├── meta_labeling.py
-│   │   ├── model_trainer.py
-│   │   ├── position_sizing.py
-│   │   ├── backtester.py
-│   │   └── predictor.py
-│   ├── gui/                     # Streamlit interface
-│   │   └── pages/
-│   ├── models/                  # Trained models
-│   ├── app_main.py             # Entry point
-│   ├── requirements.txt
-│   └── README.md               # Detailed documentation
-│
-├── docs/
-│   └── LIQUIDITY_SWEEP_THEORY.md  # NEW: Complete theory
-│
-├── examples/
-│   └── liquidity_sweep_example.py # NEW: Usage examples
-│
-├── test_liquidity_sweep.py      # NEW: Quick test
-├── LIQUIDITY_SWEEP_INTEGRATION.md  # NEW: Integration guide
-│
-├── app.py                       # Multi-timeframe system GUI
-├── config.py
-├── requirements.txt
-├── data/                        # Data loading modules
-├── models/                      # Multi-model architecture
-├── training/                    # Training scripts
-├── backtesting/                 # Backtesting engine
-├── strategies/                  # Strategy implementations
-├── utils/                       # Utility functions
-└── uploads/                     # File upload directory
-```
+### Order Flow Features (Native Binance Data)
 
-## New Liquidity Features
+1. **net_volume**: Taker buy - taker sell volume
+2. **cvd_10**: 10-period cumulative volume delta
+3. **cvd_20**: 20-period CVD
+4. **cvd_norm_10**: Normalized CVD (cross-asset comparable)
+5. **divergence_score_10**: **Price-CVD divergence score** [Core]
+6. **upper_wick_ratio**: Upper wick / body size
+7. **lower_wick_ratio**: Lower wick / body size (liquidity sweep)
+8. **order_flow_imbalance**: (Buy - Sell) / (Buy + Sell)
 
-### Price Structure
-- `lower_wick_ratio`, `upper_wick_ratio`: Wick to body ratio
-- `dist_to_support_pct`, `dist_to_resistance_pct`: Distance to key levels
+### OI & Funding Features (Binance Futures API)
 
-### Open Interest (OI)
-- `oi_change_pct`, `oi_change_1h`, `oi_change_4h`, `oi_change_24h`
-- `oi_normalized`: Standardized OI value
-- `open_interest`: Raw OI data
-
-### Cumulative Volume Delta (CVD)
-- `cvd`: Cumulative buy/sell volume difference
-- `cvd_slope_5`, `cvd_slope_10`: CVD momentum
-- `cvd_normalized`: Standardized CVD
-
-### Funding Rate
-- `funding_rate`: 8-hour funding rate
-- `funding_rate_ma_3`, `funding_rate_ma_7`: Moving averages
+- `oi_change_pct`, `oi_change_4h`: Open Interest changes
+- `oi_normalized`: Standardized OI
+- `funding_rate_ma_3`: Funding rate moving average
+- `dist_to_support_pct`: Distance to support level
 
 ## Data Sources
 
-- **HuggingFace Dataset**: `zongowo111/v2-crypto-ohlcv-data`
-  - 38 cryptocurrency pairs
-  - Timeframes: 15m, 1h, 1d
-  - Format: Parquet files
-
-- **Binance API**: Real-time data and execution
-- **Binance Futures API** (NEW): Open Interest and Funding Rate
+- **Binance Spot API**: Real-time OHLCV + taker volume
+- **Binance Futures API**: Open Interest + Funding Rate
+- **HuggingFace Dataset**: `zongowo111/v2-crypto-ohlcv-data` (38 pairs, 3 timeframes)
 
 ## Supported Trading Pairs
 
@@ -221,34 +235,16 @@ XRPUSDT   ZRXUSDT
 
 ## Risk Management
 
-### Liquidity Sweep System
-- Precise stops at wick extremes
-- R:R typically 1:2.5 to 1:4
-- Left-side entries for Maker fees
-- OI flush confirmation reduces false signals
-
-### Automated Trading System
-- Kelly criterion position sizing
-- ATR-based stop-loss and take-profit
-- Maximum position limits
+### Phase 1 Training
+- Triple Barrier Labeling: TP=3.0 ATR, SL=1.0 ATR
 - Sample weighting by return magnitude
+- Feature selection: Remove low-importance features
 
-### Multi-Timeframe System
-- Configurable position size percentage
-- Maximum concurrent positions
-- Dynamic ATR-based stops
-- Multi-model confirmation filters
-
-## Performance Metrics
-
-All systems track:
-- Total return and Sharpe ratio
-- Win rate and profit factor
-- Maximum drawdown
-- Average win/loss
-- Trade distribution
-- Equity curve
-- Commission impact analysis (NEW)
+### Phase 2 Validation
+- Initial capital: $10,000
+- Risk per trade: 1.5-2.0%
+- Probability threshold: 0.60
+- Maker fee: 0.02%, Taker: 0.06%, Slippage: 0.05%
 
 ## Key Principles
 
@@ -262,79 +258,116 @@ All systems track:
 - Temporal train/test splits
 - No shuffle in time-series data
 
-### Risk Controls
-- Position size limits
-- Volatility-adjusted stops
-- Maximum exposure caps
-- Probability-based sizing
+### Two-Phase Validation
+- **Phase 1**: Maximize Alpha with microstructure features
+- **Phase 2**: Strict OOS blind test before live trading
 
 ## Usage Examples
 
-### Detect Liquidity Sweeps
-```python
-from trading_system.core import CryptoDataLoader, LiquiditySweepDetector
+### Phase 1: Train with Microstructure Features
 
-loader = CryptoDataLoader()
-df = loader.fetch_latest_klines(
-    'BTCUSDT', '1h', days=90,
-    include_oi=True, include_funding=True
+```python
+from trading_system.core import (
+    CryptoDataLoader, FeatureEngineer,
+    TripleBarrierLabeling, ModelTrainer
 )
 
-detector = LiquiditySweepDetector()
-df_sweep = detector.detect_liquidity_sweep(df, direction='lower')
-signals = df_sweep[df_sweep['sweep_lower_signal']]
+# Load data
+loader = CryptoDataLoader()
+df = loader.fetch_latest_klines('BTCUSDT', '1h', days=365)
+
+# Build features with microstructure
+fe = FeatureEngineer()
+df_features = fe.build_features(
+    df,
+    include_microstructure=True  # Enable Phase 1 features
+)
+
+# Label
+labeling = TripleBarrierLabeling(tp=3.0, sl=1.0)
+df_labeled = labeling.label(df_features)
+
+# Train
+trainer = ModelTrainer()
+trainer.train(
+    df_labeled,
+    features=[
+        'atr_pct', 'rsi_normalized', 'bb_width_pct',
+        'net_volume', 'cvd_10', 'cvd_norm_10',
+        'divergence_score_10',  # Core microstructure feature
+        'lower_wick_ratio', 'order_flow_imbalance'
+    ]
+)
 ```
 
-### Train with Liquidity Features
+### Phase 2: OOS Validation
+
 ```python
-from trading_system.core import FeatureEngineer, ModelTrainer
+from trading_system.core import Backtester
 
-fe = FeatureEngineer()
-df_features = fe.build_features(df, include_liquidity_features=True)
+# Load OOS data (unseen by model)
+df_oos = loader.fetch_latest_klines('BTCUSDT', '1h', days=90)
+df_oos_features = fe.build_features(df_oos, include_microstructure=True)
 
-trainer = ModelTrainer()
-trainer.train(df_labeled, features=[
-    'rsi_normalized', 'bb_width_pct',
-    'lower_wick_ratio', 'oi_change_4h', 'cvd_slope_5',  # NEW
-    'dist_to_support_pct', 'funding_rate_ma_3'  # NEW
-])
+# Predict
+probabilities = trainer.predict_proba(df_oos_features[features])
+df_oos_features['win_probability'] = probabilities
+signals = df_oos_features[df_oos_features['win_probability'] >= 0.60]
+
+# Backtest
+backtester = Backtester(
+    initial_capital=10000,
+    risk_per_trade=0.015,
+    leverage=10
+)
+results = backtester.run_backtest(signals, tp_multiplier=3.0, sl_multiplier=1.5)
+
+print(f"Total Return: {results['statistics']['total_return']*100:.1f}%")
+print(f"Win Rate: {results['statistics']['win_rate']*100:.1f}%")
+print(f"Profit Factor: {results['statistics']['profit_factor']:.2f}")
 ```
 
 ## Academic References
 
-This system implements methodologies from:
-
 - López de Prado, M. (2018). *Advances in Financial Machine Learning*
 - Hosking, J. R. M. (1981). Fractional Differencing
 - Kelly, J. L. (1956). Information Rate Theory
-- Peng, C. K., et al. (1994). Long-range correlations in nucleotide sequences
-- **Market Microstructure Theory** (Liquidity Sweep Detection)
-- **Order Flow Analysis** (CVD and OI metrics)
+- **Market Microstructure Theory** (Order Flow Analysis)
+- **Cumulative Volume Delta** (CVD) - Institutional footprint detection
 
 ## Documentation
 
+### Phase 1 & 2
+- **Phase 1 Training**: [`PHASE1_MICROSTRUCTURE_TRAINING.md`](PHASE1_MICROSTRUCTURE_TRAINING.md)
+- **Phase 2 Validation**: [`PHASE2_OOS_VALIDATION.md`](PHASE2_OOS_VALIDATION.md)
+
+### Systems
 - **Liquidity Sweep Theory**: `docs/LIQUIDITY_SWEEP_THEORY.md`
 - **Integration Guide**: `LIQUIDITY_SWEEP_INTEGRATION.md`
+- **Quick Start**: `QUICKSTART_LIQUIDITY_SWEEP.md`
 - **Automated System**: `trading_system/README.md`
-- **Usage Guide**: `USAGE.md`
-- **Strategy Integration**: `STRATEGY_C_INTEGRATION.md`
 
 ## Testing
 
 ```bash
-# Test liquidity sweep detection
+# Phase 1: Train with microstructure features
+cd trading_system
+streamlit run app_main.py  # GUI
+# OR
+python examples/train_with_microstructure.py  # Script
+
+# Phase 2: OOS validation
+python examples/oos_validation.py
+
+# Liquidity sweep detection
 python test_liquidity_sweep.py
-
-# Run complete example
-python examples/liquidity_sweep_example.py
-
-# Launch GUI
-streamlit run trading_system/app_main.py
 ```
 
 ## Warning
 
-This software is for educational and research purposes only. Cryptocurrency trading involves substantial risk of loss. Past performance does not guarantee future results. Always conduct thorough testing and use appropriate risk management before live deployment.
+This software is for educational and research purposes only. Cryptocurrency trading involves substantial risk of loss. Past performance does not guarantee future results. 
+
+**Two-Phase Requirement**: Do NOT proceed to live trading without completing both Phase 1 (model training with AUC > 0.60) and Phase 2 (OOS validation with positive returns).
 
 ## License
 
@@ -350,25 +383,27 @@ Contributions welcome. Please open an issue or submit a pull request.
 
 ---
 
-## What's New in v2.0
+## What's New in v2.1
 
-### Liquidity Sweep Detection System
-- Institutional market microstructure analysis
-- Open Interest (OI) integration
-- Cumulative Volume Delta (CVD) calculation
-- Funding Rate monitoring
-- 10+ new features for ML models
-- 60% reduction in trading fees
-- Superior risk-reward ratios
+### Two-Phase Professional Development Strategy
+- **Phase 1**: Microstructure feature expansion (8 core order flow features)
+- **Phase 2**: Rigorous OOS blind testing framework
 
-### Enhanced Data Pipeline
-- Binance Futures API integration
-- Historical OI data fetching
-- Automatic data merging
-- Funding rate time-series
+### Institutional Microstructure Analysis
+- Native Binance taker volume analysis
+- CVD (Cumulative Volume Delta) calculation
+- Price-CVD divergence detection (core alpha source)
+- Liquidity sweep wick analysis
+- Order flow imbalance metrics
 
-### Improved Feature Engineering
-- Liquidity-aware features
-- Market microstructure indicators
-- Smart Money flow metrics
-- Wick analysis ratios
+### Enhanced Feature Engineering
+- Optimized from 15+ to 8 core microstructure features
+- Removed redundant features to prevent overfitting
+- Cross-asset normalized metrics
+- Stationarity-preserving rolling windows
+
+### Production-Ready Validation
+- Strict OOS testing protocol
+- Real-world fee simulation (Maker/Taker/Slippage)
+- Multiple success criteria (Return/Win Rate/Profit Factor)
+- Live trading readiness checklist
