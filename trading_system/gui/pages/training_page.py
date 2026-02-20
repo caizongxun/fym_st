@@ -68,7 +68,7 @@ def render():
             status_text.text("載入數據中...")
             progress_bar.progress(5)
             df = loader.load_klines(symbol, timeframe)
-            st.info(f"已載入 {len(df)} 筆數據,時間範圍: {df['open_time'].min()} 至 {df['open_time'].max()}")
+            st.info(f"載入 {len(df)} 筆數據,時間範圍: {df['open_time'].min()} 至 {df['open_time'].max()}")
             
             status_text.text("建立技術特徵中...")
             progress_bar.progress(15)
@@ -91,7 +91,7 @@ def render():
             st.info(f"標籤分布: {positive_pct:.1f}% 正樣本 ({positive_count} 勝, {negative_count} 負)")
             
             if positive_pct < 20 or positive_pct > 80:
-                st.warning(f"標籤不平衡: {positive_pct:.1f}% 正樣本。考慮調整止盈止損倍數。")
+                st.warning(f"標籤不平衡: {positive_pct:.1f}% 正樣本。已自動調整類別權重。")
             
             status_text.text("準備訓練數據中...")
             progress_bar.progress(35)
@@ -130,13 +130,17 @@ def render():
             
             trainer = ModelTrainer(use_calibration=use_calibration)
             
+            scale_pos_weight = negative_count / positive_count if positive_count > 0 else 1.0
+            st.info(f"類別權重: {scale_pos_weight:.2f} (自動調整以平衡樣本)")
+            
             params = {
                 'max_depth': int(max_depth),
                 'learning_rate': float(learning_rate),
                 'n_estimators': int(n_estimators),
                 'min_child_weight': int(min_child_weight),
                 'subsample': float(subsample),
-                'colsample_bytree': float(colsample_bytree)
+                'colsample_bytree': float(colsample_bytree),
+                'scale_pos_weight': scale_pos_weight
             }
             
             cv_metrics = trainer.train_with_purged_kfold(
@@ -168,19 +172,33 @@ def render():
             with col4:
                 st.metric("召回率", f"{cv_metrics.get('cv_val_recall', 0):.4f}")
             
-            if cv_metrics.get('cv_val_accuracy', 0) > 0.85:
+            if cv_metrics.get('cv_val_auc', 0) < 0.55:
+                st.error("模型 AUC < 0.55,預測能力不佳。建議調整特徵或參數。")
+            elif cv_metrics.get('cv_val_accuracy', 0) > 0.85:
                 st.warning("準確率異常高 (>85%),可能存在數據洩漏。請檢查特徵是否包含未來資訊。")
+            elif cv_metrics.get('cv_val_recall', 0) < 0.1:
+                st.warning("召回率太低 (<10%),模型過於保守。考慮增加 scale_pos_weight 或降低預測門檻。")
             
             st.markdown("### 特徵重要性 (前 20 名)")
             feature_importance = trainer.get_feature_importance()
             st.dataframe(feature_importance.head(20), use_container_width=True)
             
             st.markdown("### 下一步操作")
-            st.info("""
-            1. 前往 **機率校準分析** 檢查機率校準效果
-            2. 前往 **策略優化** 尋找最佳參數
-            3. 前往 **回測分析** 測試 TP=4.0, SL=2.0
-            """)
+            
+            if cv_metrics.get('cv_val_auc', 0) >= 0.60 and cv_metrics.get('cv_val_recall', 0) >= 0.20:
+                st.info("""
+                模型表現良好,可以繼續:
+                1. 前往 **機率校準分析** 檢查機率校準效果
+                2. 前往 **策略優化** 尋找最佳參數
+                3. 前往 **回測分析** 測試 TP=4.0, SL=2.0
+                """)
+            else:
+                st.warning("""
+                模型表現不佳,建議:
+                1. 調整 TP/SL 倍數 (例如 3.0/1.5)
+                2. 修改最大持倉時間
+                3. 或換一個交易對/時間框架再試
+                """)
             
         except Exception as e:
             st.error(f"訓練失敗: {str(e)}")
