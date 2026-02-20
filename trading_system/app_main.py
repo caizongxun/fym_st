@@ -10,38 +10,38 @@ from gui.pages import (
 )
 
 st.set_page_config(
-    page_title="Crypto Trading System",
+    page_title="加密貨幣交易系統",
     page_icon="",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 def main():
-    st.sidebar.title("Navigation")
+    st.sidebar.title("導航選單")
     
     page = st.sidebar.radio(
-        "Select Page",
+        "選擇頁面",
         [
-            "Dashboard", 
-            "Model Training", 
-            "Calibration Analysis",
-            "Strategy Optimization", 
-            "Backtesting", 
-            "Live Prediction"
+            "控制台", 
+            "模型訓練", 
+            "機率校準分析",
+            "策略優化", 
+            "回測分析", 
+            "即時預測"
         ]
     )
     
-    if page == "Dashboard":
+    if page == "控制台":
         dashboard_page.render()
-    elif page == "Model Training":
+    elif page == "模型訓練":
         training_page.render()
-    elif page == "Calibration Analysis":
+    elif page == "機率校準分析":
         calibration_page.render()
-    elif page == "Strategy Optimization":
+    elif page == "策略優化":
         optimization_page.render()
-    elif page == "Backtesting":
+    elif page == "回測分析":
         backtesting_page.render()
-    elif page == "Live Prediction":
+    elif page == "即時預測":
         live_prediction_page.render()
 
 if __name__ == "__main__":
