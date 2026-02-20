@@ -1,20 +1,14 @@
 """
-Strategy G v1.0 - Deep Q-Learning Trading Agent
+Strategy G v1.1 - Deep Q-Learning Trading Agent (Anti-Overfitting)
 
 核心理念:
 不預測方向，直接學習「賺錢的行為」
 
-優勢:
-1. Reward = 實際 PnL（扣手續費）
-2. 學習最優持倉時間
-3. 自動平衡風險收益
-4. 無需手動設計 TP/SL
-
-架構:
-- State: 倉位狀態 + 市場特徵
-- Action: 開多/開空/平倉/持有
-- Reward: 交易損益
-- Algorithm: DQN with Experience Replay
+v1.1 改進:
+- 方案 2: 神經網路加入 Dropout (0.2) 降低過擬合
+- 方案 3: Reward 設計改進，懲罰高波動交易
+- 降低 gamma (0.95 → 0.90) 減少對未來的過度重視
+- 慢速探索衰減 (0.995 → 0.99)
 """
 
 import streamlit as st
@@ -52,8 +46,8 @@ class TradingEnv:
         self._calculate_features()
         
         # 狀態維度
-        self.state_dim = 10  # position, hold_time, pnl_ratio + 7 market features
-        self.action_dim = 4  # long, short, close, hold
+        self.state_dim = 10
+        self.action_dim = 4
         
         self.reset()
     
@@ -97,7 +91,7 @@ class TradingEnv:
     def reset(self, start_idx=60):
         self.current_step = start_idx
         self.capital = self.initial_capital
-        self.position = 0  # 0: 無, 1: 多, -1: 空
+        self.position = 0
         self.entry_price = 0
         self.hold_time = 0
         self.total_trades = 0
@@ -108,25 +102,21 @@ class TradingEnv:
     def _get_state(self):
         row = self.df.iloc[self.current_step]
         
-        # 倉位狀態
-        position_encoded = self.position  # -1, 0, 1
-        hold_time_norm = min(self.hold_time / 30.0, 1.0)  # 正規化到 [0, 1]
+        position_encoded = self.position
+        hold_time_norm = min(self.hold_time / 30.0, 1.0)
         
-        # 浮動盈虧（如果有倉位）
         if self.position != 0:
             pnl_ratio = (row['close'] - self.entry_price) / self.entry_price * self.position * 100
-            pnl_ratio = np.clip(pnl_ratio / 10.0, -1.0, 1.0)  # 正規化
+            pnl_ratio = np.clip(pnl_ratio / 10.0, -1.0, 1.0)
         else:
             pnl_ratio = 0
         
-        # 市場特徵（已正規化）
         rsi_norm = row['rsi'] / 100.0
         macd_hist_norm = np.clip(row['macd_hist'] / row['atr'], -2, 2) / 2.0
         ema_dist_norm = np.clip(row['ema_dist'], -3, 3) / 3.0
         volume_ratio_norm = np.clip(row['volume_ratio'], 0, 3) / 3.0
         atr_change_norm = np.clip(row['atr_change'], -0.5, 0.5) * 2
         
-        # ROC
         roc_5 = (row['close'] - self.df.iloc[self.current_step - 5]['close']) / self.df.iloc[self.current_step - 5]['close'] * 100
         roc_5_norm = np.clip(roc_5 / 5.0, -1, 1)
         
@@ -140,7 +130,7 @@ class TradingEnv:
             volume_ratio_norm,
             atr_change_norm,
             roc_5_norm,
-            0  # 保留位（未來可加其他特徵）
+            0
         ], dtype=np.float32)
         
         return state
@@ -160,7 +150,7 @@ class TradingEnv:
             self.position = 1
             self.entry_price = row['close']
             self.hold_time = 0
-            reward = -0.01  # 小懲罰（手續費預期）
+            reward = -0.01
         
         # Action 1: 開空倉
         elif action == 1 and self.position == 0:
@@ -174,13 +164,25 @@ class TradingEnv:
             exit_price = row['close']
             pnl_pct = (exit_price - self.entry_price) / self.entry_price * self.position * 100
             
-            # 計算實際 PnL（含手續費和槓桿）
-            fee = self.fee_rate * 2 * 100  # 開倉 + 平倉
+            fee = self.fee_rate * 2 * 100
             leveraged_pnl = pnl_pct * self.leverage - fee
             actual_pnl = self.capital * self.position_size * leveraged_pnl / 100
             
             self.capital += actual_pnl
-            reward = leveraged_pnl / 10.0  # 縮放到合理範圍
+            
+            # 方案 3: Reward 設計改進
+            base_reward = leveraged_pnl / 10.0
+            
+            # 懲罰高波動交易（鼓勵穩定獲利）
+            if abs(leveraged_pnl) > 5.0:  # 盈虧 > 5%
+                volatility_penalty = abs(leveraged_pnl) * 0.1  # 波動懲罰
+                base_reward -= volatility_penalty
+            
+            # 獎勵穩定小贏（1-3%）
+            if 1.0 < leveraged_pnl < 3.0:
+                base_reward += 0.5
+            
+            reward = base_reward
             
             self.total_trades += 1
             if actual_pnl > 0:
@@ -200,13 +202,14 @@ class TradingEnv:
         else:
             if self.position != 0:
                 self.hold_time += 1
-                # 持倉懲罰（鼓勵快速決策）
                 reward = -0.001 * min(self.hold_time / 10.0, 1.0)
                 
-                # 浮動盈虧過大時額外懲罰（風險控制）
-                unrealized_pnl = (row['close'] - self.entry_price) / self.entry_price * self.position * 100
-                if unrealized_pnl < -3.0:  # 虧損 > 3%
-                    reward -= 0.5
+                # 方案 3: 浮動盈虧過大懲罰加強
+                unrealized_pnl = (row['close'] - self.entry_price) / self.entry_price * self.position * 100 * self.leverage
+                if abs(unrealized_pnl) > 5.0:  # 浮盈/虧 > 5%
+                    reward -= 1.0  # 鼓勵及時平倉
+                elif unrealized_pnl < -3.0:  # 虧損 > 3%
+                    reward -= 0.8  # 加強止損
             else:
                 reward = 0
         
@@ -214,7 +217,6 @@ class TradingEnv:
         self.current_step += 1
         if self.current_step >= len(self.df) - 1:
             done = True
-            # 強制平倉
             if self.position != 0:
                 row_final = self.df.iloc[self.current_step]
                 pnl_pct = (row_final['close'] - self.entry_price) / self.entry_price * self.position * 100
@@ -227,7 +229,7 @@ class TradingEnv:
         # 爆倉檢查
         if self.capital < self.initial_capital * 0.5:
             done = True
-            reward = -10  # 嚴重懲罰
+            reward = -10
         
         next_state = self._get_state() if not done else np.zeros(self.state_dim)
         
@@ -236,7 +238,7 @@ class TradingEnv:
 
 class DQNAgent:
     """
-    DQN Agent（如果 PyTorch 可用）
+    DQN Agent with Dropout (v1.1)
     """
     def __init__(self, state_dim, action_dim, lr=0.001):
         if not TORCH_AVAILABLE:
@@ -245,18 +247,20 @@ class DQNAgent:
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.memory = deque(maxlen=10000)
-        self.gamma = 0.95
+        self.gamma = 0.90  # v1.1: 降低對未來的重視
         self.epsilon = 1.0
         self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995
+        self.epsilon_decay = 0.99  # v1.1: 慢速衰減
         self.batch_size = 64
         
-        # Q-Network
+        # 方案 2: 神經網路加入 Dropout
         self.model = nn.Sequential(
             nn.Linear(state_dim, 64),
             nn.ReLU(),
+            nn.Dropout(0.2),  # v1.1: 新增
             nn.Linear(64, 64),
             nn.ReLU(),
+            nn.Dropout(0.2),  # v1.1: 新增
             nn.Linear(64, action_dim)
         )
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
@@ -268,6 +272,12 @@ class DQNAgent:
     def act(self, state, training=True):
         if training and np.random.rand() <= self.epsilon:
             return random.randrange(self.action_dim)
+        
+        # v1.1: 訓練時啟用 Dropout，推理時關閉
+        if training:
+            self.model.train()
+        else:
+            self.model.eval()
         
         with torch.no_grad():
             state_t = torch.FloatTensor(state).unsqueeze(0)
@@ -286,10 +296,15 @@ class DQNAgent:
         next_states = torch.FloatTensor([x[3] for x in minibatch])
         dones = torch.FloatTensor([x[4] for x in minibatch])
         
+        self.model.train()  # 訓練模式
         current_q = self.model(states).gather(1, actions.unsqueeze(1)).squeeze(1)
-        next_q = self.model(next_states).max(1)[0]
+        
+        self.model.eval()  # 推理模式（計算 target）
+        with torch.no_grad():
+            next_q = self.model(next_states).max(1)[0]
         target_q = rewards + (1 - dones) * self.gamma * next_q
         
+        self.model.train()
         loss = self.criterion(current_q, target_q.detach())
         
         self.optimizer.zero_grad()
@@ -312,13 +327,11 @@ class SimpleQLearningAgent:
         self.gamma = 0.9
         self.epsilon = 1.0
         self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995
+        self.epsilon_decay = 0.99  # v1.1: 與 DQN 一致
         
-        # 簡化：用字典存 Q-table（狀態離散化）
         self.q_table = {}
     
     def _discretize_state(self, state):
-        # 粗略離散化（每個維度分 3 檔）
         discrete = tuple(np.clip(np.round(state * 2), -2, 2).astype(int))
         return discrete
     
@@ -341,7 +354,6 @@ class SimpleQLearningAgent:
         if s_next not in self.q_table:
             self.q_table[s_next] = np.zeros(self.action_dim)
         
-        # Q-Learning 更新
         target = reward
         if not done:
             target += self.gamma * np.max(self.q_table[s_next])
@@ -419,24 +431,25 @@ def backtest_agent(env, agent):
 
 
 def render_strategy_g_tab(loader, symbol_selector):
-    st.header("策略 G: 強化學習 Agent v1.0")
+    st.header("策略 G: 強化學習 Agent v1.1")
 
-    with st.expander("ℹ️ RL 核心理念", expanded=True):
+    with st.expander("ℹ️ v1.1 抗過擬合改進", expanded=True):
         st.markdown("""
-        **與傳統 AI 的差異**:
-        - ❌ 不預測漲跌方向
-        - ✅ 直接學習「賺錢的行為」
+        **v1.0 問題**: 訓練權益 $70k vs 回測 $1k（過擬合）
         
-        **Agent 學習內容**:
-        - 何時開倉（多/空）
-        - 何時平倉（止盈/止損）
-        - 最優持倉時間
-        - 風險收益平衡
+        **v1.1 解決方案**:
+        - 方案 2: 神經網路加入 Dropout (0.2)
+        - 方案 3: Reward 設計改進
+          - 懲罰高波動交易 (>5%)
+          - 獎勵穩定小贏 (1-3%)
+          - 加強浮動盈虧平倉懲罰
+        - 降低 gamma (0.95 → 0.90)
+        - 慢速探索衰減 (0.995 → 0.99)
         
-        **優勢**:
-        - Reward = 實際 PnL（含手續費）
-        - 無需手動設計 TP/SL
-        - 自動適應市場變化
+        **預期效果**:
+        - 訓練權益更穩定（不再爆張）
+        - 回測效果接近訓練
+        - 交易更謹慎（高品質信號）
         """)
 
     st.markdown("---")
@@ -453,16 +466,16 @@ def render_strategy_g_tab(loader, symbol_selector):
 
     with col2:
         st.markdown("**RL 參數**")
-        episodes = st.slider("訓練輪數", 20, 200, 50, 10, key="ep_g")
-        learning_rate = st.select_slider("學習率", [0.0001, 0.001, 0.01, 0.1], value=0.001, key="lr_g")
+        episodes = st.slider("訓練輪數", 20, 200, 100, 10, key="ep_g")  # v1.1: 預設 100
+        learning_rate = st.select_slider("學習率", [0.0001, 0.001, 0.01, 0.1], value=0.0001, key="lr_g")  # v1.1: 預設 0.0001
         capital = st.number_input("資金", 1000.0, 100000.0, 10000.0, 1000.0, key="cap_g")
         leverage = st.slider("槓桿", 1, 10, 3, key="lev_g")
         position_size = st.slider("倉位%", 10, 80, 30, 5, key="pos_g") / 100.0
         
-        agent_type = "DQN" if TORCH_AVAILABLE else "Q-Learning"
+        agent_type = "DQN (w/ Dropout)" if TORCH_AVAILABLE else "Q-Learning"
         st.info(f"使用算法: {agent_type}")
 
-    if st.button("訓練 RL Agent", type="primary", use_container_width=True):
+    if st.button("訓練 RL Agent v1.1", type="primary", use_container_width=True):
         prog = st.progress(0)
         stat = st.empty()
         
@@ -514,9 +527,11 @@ def render_strategy_g_tab(loader, symbol_selector):
             fig_train.update_layout(title="訓練輪權益變化", xaxis_title="Episode", yaxis_title="Capital ($)")
             st.plotly_chart(fig_train, use_container_width=True)
             
-            c1, c2 = st.columns(2)
+            c1, c2, c3 = st.columns(3)
             c1.metric("最終訓練權益", f"${episode_capitals[-1]:,.0f}")
             c2.metric("平均 Reward", f"{np.mean(episode_rewards[-10:]):.2f}")
+            train_vs_init = (episode_capitals[-1] - capital) / capital * 100
+            c3.metric("訓練報酬", f"{train_vs_init:.1f}%")
             
             # 回測
             stat.text("回測...")
@@ -558,6 +573,15 @@ def render_strategy_g_tab(loader, symbol_selector):
                 st.subheader("交易記錄")
                 trades_df = pd.DataFrame(trades)
                 st.dataframe(trades_df.tail(20), use_container_width=True)
+                
+                # v1.1: 過擬合檢查
+                overfitting_ratio = episode_capitals[-1] / max(final_capital, 1)
+                if overfitting_ratio > 5:
+                    st.warning(f"⚠️ 過擬合風險: 訓練權益 / 回測權益 = {overfitting_ratio:.1f}x")
+                elif overfitting_ratio > 2:
+                    st.info(f"ℹ️ 輕微過擬合: 比率 = {overfitting_ratio:.1f}x（可接受）")
+                else:
+                    st.success(f"✅ 泛化良好: 比率 = {overfitting_ratio:.1f}x")
         
         except Exception as e:
             st.error(f"錯誤: {e}")
