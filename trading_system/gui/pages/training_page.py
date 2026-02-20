@@ -17,11 +17,33 @@ def render():
     
     st.markdown("""
     使用進階機器學習訓練交易模型:
-    - **嚴格事件過濾** - 保留10-15%有效樣本
+    - **嚴格事件過濾** - 保疐10-15%有效樣本
     - **樣本權重 1:1** - 避免濾發信號
     - **時間平移標記** - 修正時間洩漏
-    - **質量微調** - 高質量樣本微調權重
+    - **特徵平穩性** - 只使用比例/標準化特徵
     """)
+    
+    with st.expander("⚠️ 重要:特徵平穩性說明", expanded=False):
+        st.markdown("""
+        ### 為什麼必須移除絕對值特徵?
+        
+        **致命問題**:
+        - 訓練時 BTC = $30,000 → `bb_middle = 30000`
+        - 回測時 BTC = $90,000 → `bb_middle = 90000`
+        - 模型規則: `if bb_middle > 45000: ...` 完全失效!
+        
+        **已封殺的危險特徵**:
+        - ✅ 絕對價格: open, high, low, close
+        - ✅ 絕對 BB: bb_middle, bb_upper, bb_lower
+        - ✅ 絕對成交量: volume, volume_ma_20
+        - ✅ API 不穩定欄位: quote_volume, trades
+        
+        **保留的平穩特徵**:
+        - ✓ 比例特徵: bb_width_pct, volume_ratio
+        - ✓ 標準化: rsi_normalized, cvd_norm_10
+        - ✓ 距離比: ema_9_dist, ema_21_dist
+        - ✓ 影線比: upper_wick_ratio, lower_wick_ratio
+        """)
     
     st.markdown("---")
     
@@ -33,11 +55,11 @@ def render():
             symbol = st.selectbox("訓練交易對", loader.get_available_symbols(), index=10)
             timeframe = st.selectbox("時間框架", loader.get_available_timeframes(), index=1)
             
-            tp_multiplier = st.number_input("止盈倍數 (ATR)", value=2.5, step=0.5)
-            sl_multiplier = st.number_input("止損倍數 (ATR)", value=1.5, step=0.25)
+            tp_multiplier = st.number_input("止盈倍數 (ATR)", value=3.0, step=0.5)
+            sl_multiplier = st.number_input("止損倍數 (ATR)", value=1.0, step=0.25)
         
         with col2:
-            max_holding_bars = st.number_input("最大持倉根數", value=24, step=1)
+            max_holding_bars = st.number_input("最大持倉根數", value=48, step=1)
             n_splits = st.number_input("交叉驗證折數", value=5, step=1, min_value=3, max_value=10)
             embargo_pct = st.number_input("禁止區百分比", value=0.01, step=0.01, format="%.3f")
             use_calibration = st.checkbox("啟用機率校準", value=True)
@@ -61,8 +83,8 @@ def render():
         col1, col2 = st.columns(2)
         with col1:
             slippage = st.number_input("滑點", value=0.001, step=0.0001, format="%.4f")
-            time_decay_lambda = st.number_input("時間衰減系數", value=2.0, step=0.5)
-            quality_alpha = st.number_input("質量微調系數", value=0.5, step=0.1,
+            time_decay_lambda = st.number_input("時間衰減係數", value=2.0, step=0.5)
+            quality_alpha = st.number_input("質量微調係數", value=0.5, step=0.1,
                                            help="微調範圍 1.0-1.5, 不再放大基礎權重")
         with col2:
             use_quality_weight = st.checkbox("啟用質量微調", value=False,
@@ -95,7 +117,10 @@ def render():
             status_text.text("建立特徵...")
             progress_bar.progress(10)
             feature_engineer = FeatureEngineer()
-            df_features = feature_engineer.build_features(df)
+            df_features = feature_engineer.build_features(
+                df,
+                include_microstructure=True  # 啟用微觀結構特徵
+            )
             st.info(f"已建立 {len(df_features.columns)} 個特徵")
             
             if use_event_filter:
@@ -142,22 +167,51 @@ def render():
             st.info(f"標籤分布: {positive_pct:.1f}% 正樣本 ({positive_count} 勝, {negative_count} 負)")
             st.info(f"樣本權重 - 正類: {avg_weight_pos:.2f}, 負類: {avg_weight_neg:.2f}")
             
-            status_text.text("準備訓練數據...")
+            status_text.text("準備訓練數據 (特徵大掃除)...")
             progress_bar.progress(35)
             
-            exclude_cols = [
-                'open_time', 'close_time', 'open', 'high', 'low', 'close', 'volume',
-                'quote_volume', 'trades', 'taker_buy_volume', 'taker_buy_quote_volume',
-                'taker_buy_base_asset_volume',
+            # ===== [重點] 特徵大掃除 - 封殺非平稩特徵 =====
+            st.warning("⚠️ 特徵大掃除:移除絕對值與 API 不穩定特徵")
+            
+            # 1. 基礎欄位 (不用於特徵)
+            base_cols = [
+                'open_time', 'close_time', 
                 'label', 'label_return', 'hit_time', 'exit_type', 'sample_weight', 'mae_ratio',
-                'exit_price', 'exit_bars', 'return', 'ignore',
-                'bb_middle', 'bb_upper', 'bb_lower', 'bb_std',
-                'volume_ma_20'
+                'exit_price', 'exit_bars', 'return', 'ignore'
             ]
             
-            feature_cols = [col for col in df_labeled.columns if col not in exclude_cols]
+            # 2. 禁止特徵黑名單 (封殺非平稩特徵)
+            forbidden_features = [
+                # 絕對價格 (完全沒有平稩性)
+                'open', 'high', 'low', 'close',
+                'bb_middle', 'bb_upper', 'bb_lower', 'bb_std',
+                
+                # 絕對成交量與 API 不穩定特徵
+                'volume', 'quote_asset_volume', 'quote_volume',
+                'volume_ma_20',  # 絕對成交量 MA
+                'taker_buy_base_asset_volume', 
+                'taker_buy_quote_asset_volume', 
+                'taker_buy_volume',
+                'number_of_trades', 'trades',
+                
+                # OI 絕對值 (若有)
+                'open_interest',
+                
+                # 其他絕對值
+                'atr',  # 絕對 ATR
+            ]
+            
+            # 3. 安全特徵篩選 (只保留比例/標準化特徵)
+            exclude_all = base_cols + forbidden_features
+            
+            feature_cols = [col for col in df_labeled.columns if col not in exclude_all]
             feature_cols = [col for col in feature_cols 
                           if df_labeled[col].dtype in ['int64', 'float64', 'bool', 'int32', 'float32']]
+            
+            # 4. 顯示移除的特徵
+            removed_features = [col for col in df_labeled.columns if col in forbidden_features]
+            if len(removed_features) > 0:
+                st.info(f"✅ 移除 {len(removed_features)} 個非平稩特徵: {', '.join(removed_features[:10])}...")
             
             X = df_labeled[feature_cols].copy()
             y = df_labeled['label'].copy()
@@ -170,6 +224,10 @@ def render():
                 X[col] = X[col].astype(int)
             
             st.info(f"訓練數據: {len(X)} 樣本, {len(feature_cols)} 特徵")
+            
+            # 顯示保留的核心特徵
+            with st.expander("保留的平稩特徵 (點擊查看)", expanded=False):
+                st.code('\n'.join(feature_cols))
             
             status_text.text("Purged K-Fold 訓練...")
             progress_bar.progress(50)
@@ -245,14 +303,32 @@ def render():
             
             st.markdown("### 特徵重要性 (前 20 名)")
             feature_importance = trainer.get_feature_importance()
+            
+            # 檢查微觀特徵是否在 Top 15
+            microstructure_features = [
+                'divergence_score_10', 'cvd_norm_10', 'cvd_10', 'cvd_20',
+                'lower_wick_ratio', 'upper_wick_ratio', 'order_flow_imbalance', 'net_volume'
+            ]
+            
+            top_15 = feature_importance.head(15)['feature'].tolist()
+            micro_in_top = [f for f in microstructure_features if f in top_15]
+            
+            if len(micro_in_top) > 0:
+                st.success(f"✅ {len(micro_in_top)} 個微觀特徵在 Top 15: {', '.join(micro_in_top)}")
+            
             st.dataframe(feature_importance.head(20), use_container_width=True)
             
             st.markdown("### 下一步")
             if auc_val >= 0.58:
+                st.success("✅ 模型訓練成功!現在可以進行 **OOS 盲測**")
                 st.info("""
-                1. 前往 **機率校準分析** 測試不同門檻 (0.6, 0.65, 0.7)
-                2. 前往 **回測分析** 檢驗 Out-of-Sample 表現
-                3. 前往 **策略優化** 尋找最佳參數
+                **第二階段檢查清單**:
+                1. 前往 **回測分析**
+                2. 選擇 Binance API (最新 90 天)
+                3. 機率門檻: 0.55-0.60
+                4. TP: 3.0, SL: 1.5
+                5. 啟用事件過濾 (嚴格模式)
+                6. 確認 **無缺失特徵警告**
                 """)
             
         except Exception as e:
