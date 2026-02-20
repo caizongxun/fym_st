@@ -49,6 +49,8 @@ class ModelTrainer:
               y_train: pd.Series,
               X_val: Optional[pd.DataFrame] = None,
               y_val: Optional[pd.Series] = None,
+              sample_weight_train: Optional[np.ndarray] = None,
+              sample_weight_val: Optional[np.ndarray] = None,
               params: Optional[Dict] = None) -> Dict:
         
         self.feature_names = X_train.columns.tolist()
@@ -72,7 +74,9 @@ class ModelTrainer:
         if params:
             default_params.update(params)
         
-        logger.info(f"Training XGBoost model with {len(X_train)} samples")
+        logger.info(f"Training XGBoost with {len(X_train)} samples")
+        if sample_weight_train is not None:
+            logger.info(f"Using sample weights - mean: {sample_weight_train.mean():.2f}, std: {sample_weight_train.std():.2f}")
         
         self.model = xgb.XGBClassifier(**default_params)
         
@@ -81,10 +85,11 @@ class ModelTrainer:
             self.model.fit(
                 X_train, y_train,
                 eval_set=eval_set,
+                sample_weight=sample_weight_train,
                 verbose=False
             )
         else:
-            self.model.fit(X_train, y_train)
+            self.model.fit(X_train, y_train, sample_weight=sample_weight_train)
         
         train_metrics = self._evaluate(X_train, y_train, "training")
         
@@ -103,17 +108,18 @@ class ModelTrainer:
             )
             
             if X_val is not None and y_val is not None:
-                self.calibrated_model.fit(X_val, y_val)
+                self.calibrated_model.fit(X_val, y_val, sample_weight=sample_weight_val)
                 logger.info("Model calibrated on validation set")
             else:
-                self.calibrated_model.fit(X_train, y_train)
-                logger.info("Model calibrated on training set (not ideal)")
+                self.calibrated_model.fit(X_train, y_train, sample_weight=sample_weight_train)
+                logger.info("Model calibrated on training set")
         
         return self.training_metrics
     
     def train_with_purged_kfold(self,
                                 X: pd.DataFrame,
                                 y: pd.Series,
+                                sample_weights: Optional[np.ndarray] = None,
                                 n_splits: int = 5,
                                 embargo_pct: float = 0.01,
                                 params: Optional[Dict] = None) -> Dict:
@@ -132,7 +138,16 @@ class ModelTrainer:
             X_val_fold = X.iloc[val_idx]
             y_val_fold = y.iloc[val_idx]
             
-            metrics = self.train(X_train_fold, y_train_fold, X_val_fold, y_val_fold, params)
+            sw_train = sample_weights[train_idx] if sample_weights is not None else None
+            sw_val = sample_weights[val_idx] if sample_weights is not None else None
+            
+            metrics = self.train(
+                X_train_fold, y_train_fold, 
+                X_val_fold, y_val_fold,
+                sample_weight_train=sw_train,
+                sample_weight_val=sw_val,
+                params=params
+            )
             cv_scores.append(metrics)
         
         avg_metrics = {}
@@ -142,7 +157,7 @@ class ModelTrainer:
                 avg_metrics[key.replace('validation_', 'cv_val_')] = np.mean(values)
                 avg_metrics[key.replace('validation_', 'cv_val_') + '_std'] = np.std(values)
         
-        logger.info(f"Cross-validation complete. Avg val accuracy: {avg_metrics.get('cv_val_accuracy', 0):.4f}")
+        logger.info(f"CV complete. Avg val accuracy: {avg_metrics.get('cv_val_accuracy', 0):.4f}, AUC: {avg_metrics.get('cv_val_auc', 0):.4f}")
         
         self.training_metrics = avg_metrics
         
@@ -209,7 +224,7 @@ class ModelTrainer:
             self.feature_names = None
             self.training_metrics = {}
             self.use_calibration = False
-            logger.warning("Loaded old model format without metadata. Feature validation disabled.")
+            logger.warning("Loaded old model format without metadata")
         
         if self.model is None:
             raise ValueError("Failed to load model")
