@@ -22,26 +22,33 @@ class RealtimePredictor:
         
         exclude_cols = [
             'open_time', 'close_time', 'open', 'high', 'low', 'close', 'volume',
-            'label', 'exit_type', 'exit_price', 'exit_bars', 'return', 'ignore'
+            'quote_volume', 'trades', 'taker_buy_volume', 'taker_buy_quote_volume',
+            'label', 'label_return', 'hit_time',
+            'exit_type', 'exit_price', 'exit_bars', 'return', 'ignore'
         ]
         
         available_features = [col for col in df.columns if col not in exclude_cols]
         
         missing_features = [f for f in self.model_trainer.feature_names if f not in available_features]
         if missing_features:
-            logger.warning(f"Missing features: {missing_features[:5]}... ({len(missing_features)} total)")
+            logger.warning(f"Missing {len(missing_features)} features, will use zeros: {missing_features[:5]}...")
         
-        common_features = [f for f in self.model_trainer.feature_names if f in available_features]
+        X_pred = pd.DataFrame(index=df.index)
         
-        if len(common_features) == 0:
-            raise ValueError("No common features found between model and data")
+        for feature_name in self.model_trainer.feature_names:
+            if feature_name in available_features:
+                X_pred[feature_name] = df[feature_name]
+            else:
+                X_pred[feature_name] = 0
+                logger.debug(f"Feature '{feature_name}' not found, using 0")
         
-        X_pred = df[common_features].copy()
         X_pred = X_pred.fillna(0)
         X_pred = X_pred.replace([np.inf, -np.inf], 0)
         
         for col in X_pred.select_dtypes(include=['bool']).columns:
             X_pred[col] = X_pred[col].astype(int)
+        
+        logger.info(f"Predicting with {X_pred.shape[1]} features on {len(X_pred)} samples")
         
         probabilities = self.model_trainer.predict_proba(X_pred)
         
