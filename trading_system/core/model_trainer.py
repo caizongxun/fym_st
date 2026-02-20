@@ -86,10 +86,10 @@ class ModelTrainer:
         else:
             self.model.fit(X_train, y_train)
         
-        train_metrics = self._evaluate(X_train, y_train, "Training")
+        train_metrics = self._evaluate(X_train, y_train, "training")
         
         if X_val is not None and y_val is not None:
-            val_metrics = self._evaluate(X_val, y_val, "Validation")
+            val_metrics = self._evaluate(X_val, y_val, "validation")
             self.training_metrics = {**train_metrics, **val_metrics}
         else:
             self.training_metrics = train_metrics
@@ -136,13 +136,15 @@ class ModelTrainer:
             cv_scores.append(metrics)
         
         avg_metrics = {}
-        for key in cv_scores[0].keys():
-            if 'val_' in key:
-                values = [score[key] for score in cv_scores]
-                avg_metrics[f"cv_{key}"] = np.mean(values)
-                avg_metrics[f"cv_{key}_std"] = np.std(values)
+        if len(cv_scores) > 0:
+            for key in cv_scores[0].keys():
+                values = [score.get(key, 0) for score in cv_scores]
+                avg_metrics[key.replace('validation_', 'cv_val_')] = np.mean(values)
+                avg_metrics[key.replace('validation_', 'cv_val_') + '_std'] = np.std(values)
         
         logger.info(f"Cross-validation complete. Avg val accuracy: {avg_metrics.get('cv_val_accuracy', 0):.4f}")
+        
+        self.training_metrics = avg_metrics
         
         return avg_metrics
     
@@ -151,15 +153,15 @@ class ModelTrainer:
         y_prob = self.model.predict_proba(X)[:, 1]
         
         metrics = {
-            f"{dataset_name.lower()}_accuracy": accuracy_score(y, y_pred),
-            f"{dataset_name.lower()}_precision": precision_score(y, y_pred, zero_division=0),
-            f"{dataset_name.lower()}_recall": recall_score(y, y_pred, zero_division=0),
-            f"{dataset_name.lower()}_f1": f1_score(y, y_pred, zero_division=0),
-            f"{dataset_name.lower()}_auc": roc_auc_score(y, y_prob)
+            f"{dataset_name}_accuracy": accuracy_score(y, y_pred),
+            f"{dataset_name}_precision": precision_score(y, y_pred, zero_division=0),
+            f"{dataset_name}_recall": recall_score(y, y_pred, zero_division=0),
+            f"{dataset_name}_f1": f1_score(y, y_pred, zero_division=0),
+            f"{dataset_name}_auc": roc_auc_score(y, y_prob)
         }
         
-        logger.info(f"{dataset_name} - Accuracy: {metrics[f'{dataset_name.lower()}_accuracy']:.4f}, "
-                   f"AUC: {metrics[f'{dataset_name.lower()}_auc']:.4f}")
+        logger.info(f"{dataset_name} - Accuracy: {metrics[f'{dataset_name}_accuracy']:.4f}, "
+                   f"AUC: {metrics[f'{dataset_name}_auc']:.4f}")
         
         return metrics
     
