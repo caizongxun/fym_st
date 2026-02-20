@@ -24,7 +24,6 @@ def render():
     - ATR 基礎風險管理
     """)
     
-    # 優化建議
     with st.expander("優化建議", expanded=False):
         st.markdown("""
         ### 提升收益率的三大方向
@@ -78,8 +77,7 @@ def render():
         with col2:
             initial_capital = st.number_input("初始資金", value=10000.0, step=1000.0)
             risk_per_trade = st.number_input("每筆風險%", value=1.0, step=0.5)
-            leverage = st.number_input("槓桿倍數", value=10, min_value=1, max_value=20, step=1,
-                                      help="幣安合約槓桿")
+            leverage = st.number_input("槓桿倍數", value=10, min_value=1, max_value=20, step=1)
             
         with col3:
             tp_multiplier = st.number_input(
@@ -99,13 +97,11 @@ def render():
     with st.expander("手續費與滑點", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
-            taker_fee = st.number_input("Taker 費率", value=0.0006, step=0.0001, format="%.4f",
-                                       help="市價單 0.06%")
-            maker_fee = st.number_input("Maker 費率", value=0.0002, step=0.0001, format="%.4f",
-                                       help="限價單 0.02% (TP 使用)")
+            taker_fee = st.number_input("Taker 費率", value=0.0006, step=0.0001, format="%.4f")
+            maker_fee = st.number_input("Maker 費率", value=0.0002, step=0.0001, format="%.4f")
         with col2:
             slippage = st.number_input("滑點", value=0.0005, step=0.0001, format="%.4f")
-            st.info("建議: 實盤 TP 使用限價單可省 60% 費用")
+            st.info("TP 使用限價單可省 60% 費用")
     
     with st.expander("事件過濾設定", expanded=False):
         use_event_filter = st.checkbox("啟用事件過濾", value=True)
@@ -191,7 +187,7 @@ def render():
             st.info(f"信號: {len(signals)} 個 (門檻: {probability_threshold})")
             
             if len(signals) == 0:
-                st.warning("無信號,請降低門檻")
+                st.warning("無信號,請降低門檻或增加回測天數")
                 return
             
             status_text.text("執行回測...")
@@ -215,14 +211,19 @@ def render():
             progress_bar.progress(100)
             status_text.text("完成")
             
-            st.success("回測完成")
-            
             stats = results['statistics']
             trades_df = results['trades']
             
-            # 計算年化化指標
+            if len(trades_df) == 0:
+                st.warning("回測未產生交易,請調整參數")
+                return
+            
+            st.success("回測完成")
+            
+            # 計算年化指標
             days_in_test = (trades_df.iloc[-1]['entry_time'] - trades_df.iloc[0]['entry_time']).days
-            annualized_return = stats['total_return'] * (365 / days_in_test) if days_in_test > 0 else 0
+            days_in_test = max(days_in_test, 1)  # 避免除以 0
+            annualized_return = stats['total_return'] * (365 / days_in_test)
             
             # 手續費佔收益比
             fee_to_profit_ratio = stats['total_commission'] / stats['net_pnl'] if stats['net_pnl'] > 0 else 0
@@ -250,19 +251,17 @@ def render():
                 ev_theory = (stats['win_rate'] * tp_multiplier) - ((1 - stats['win_rate']) * sl_multiplier)
                 st.metric("理論期望值", f"{ev_theory:.3f}R")
             with col2:
-                # 實際期望值 (含手續費)
                 avg_win_r = stats['avg_win'] / (initial_capital * risk_per_trade / 100) if stats['avg_win'] > 0 else 0
                 avg_loss_r = abs(stats['avg_loss']) / (initial_capital * risk_per_trade / 100) if stats['avg_loss'] < 0 else 0
                 ev_actual = (stats['win_rate'] * avg_win_r) - ((1 - stats['win_rate']) * avg_loss_r)
-                st.metric("實際期望值", f"{ev_actual:.3f}R",
-                         help="含手續費和滑點")
+                st.metric("實際期望值", f"{ev_actual:.3f}R")
             
             st.markdown("### 績效指標")
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("交易次數", stats['total_trades'])
-                trades_per_week = stats['total_trades'] / (days_in_test / 7) if days_in_test > 0 else 0
+                trades_per_week = stats['total_trades'] / (days_in_test / 7)
                 st.metric("週均交易", f"{trades_per_week:.1f} 筆")
             with col2:
                 st.metric("勝率", f"{stats['win_rate']*100:.1f}%")
