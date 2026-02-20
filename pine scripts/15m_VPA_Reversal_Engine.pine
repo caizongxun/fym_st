@@ -1,0 +1,180 @@
+//@version=5
+indicator("15m VPA Reversal Engine [FTM]", shorttitle="VPA Rev 15m", overlay=false)
+
+// ==========================================
+// 0. CORE IDEA (VPA-ONLY REVERSAL ENGINE)
+// ==========================================
+// This indicator focuses purely on Volume–Price Analysis (VPA) patterns:
+// - Climactic volume at highs/lows (Buying/Selling Climaxes)
+// - Stopping volume (wide range + ultra-high volume + failure to continue)
+// - Up-thrust / Down-thrust bars (wide spread, strong rejection)
+// - No-demand / No-supply (narrow range, low volume after a push)
+//
+// It outputs:
+// - An oscillator: net balance of bullish vs bearish VPA signals (-10 .. +10)
+// - Early warning markers (setup forming)
+// - Confirmed reversal markers (multiple VPA patterns aligned)
+
+// ==========================================
+// 1. INPUTS
+// ==========================================
+
+grp_vol = "Volume Context"
+vol_len = input.int(30, "Volume MA Length", group=grp_vol)
+climax_mult = input.float(2.2, "Climax Volume x MA", group=grp_vol)
+low_vol_mult = input.float(0.6, "Low Volume x MA", group=grp_vol)
+
+grp_spread = "Spread / Range"
+spread_smooth = input.int(10, "Spread MA Length", group=grp_spread)
+wide_mult = input.float(1.8, "Wide Spread x Avg", group=grp_spread)
+narrow_mult = input.float(0.7, "Narrow Spread x Avg", group=grp_spread)
+
+grp_lookback = "Context Lookback"
+trend_lookback = input.int(10, "Local Trend Lookback", group=grp_lookback, tooltip="Used only to know if market recently moved up or down (no EMA)")
+
+// ==========================================
+// 2. BASIC MEASURES: VOLUME & SPREAD
+// ==========================================
+
+// True price spread
+spread = high - low
+spread_ma = ta.sma(spread, spread_smooth)
+
+is_wide = spread > spread_ma * wide_mult
+is_narrow = spread < spread_ma * narrow_mult
+
+// Volume context
+vol_ma = ta.sma(volume, vol_len)
+vol_ratio = volume / vol_ma
+
+is_climax = volume > vol_ma * climax_mult
+is_low_vol = volume < vol_ma * low_vol_mult
+
+// Candle anatomy
+body = math.abs(close - open)
+range_candle = spread
+upper_wick = high - math.max(open, close)
+lower_wick = math.min(open, close) - low
+
+// Direction of current bar
+is_up = close > open
+is_down = close < open
+
+// Local directional context: has market been moving up or down recently?
+chg = close - close[trend_lookback]
+recent_up = chg > 0
+recent_down = chg < 0
+
+// ==========================================
+// 3. DEFINE VPA PATTERNS
+// ==========================================
+
+// 3.1 Buying Climax (at/near low, but with absorption)
+// Wide spread down bar on ultra-high volume, but with long lower wick (stopping volume)
+buying_climax = is_climax and is_wide and is_down and lower_wick > range_candle * 0.4
+
+// 3.2 Selling Climax (at/near high, but with absorption)
+selling_climax = is_climax and is_wide and is_up and upper_wick > range_candle * 0.4
+
+// 3.3 Up-thrust (Bearish): Wide up-bar that closes in lower half after pushing higher
+upthrust = is_wide and is_up and close < (low + range_candle * 0.5) and upper_wick > range_candle * 0.3
+
+// 3.4 Down-thrust (Bullish): Wide down-bar that closes in upper half after pushing lower
+downthrust = is_wide and is_down and close > (low + range_candle * 0.5) and lower_wick > range_candle * 0.3
+
+// 3.5 No-demand (after rally): Narrow up-bar on low volume, following recent up-move
+no_demand = is_narrow and is_low_vol and is_up and recent_up
+
+// 3.6 No-supply (after selloff): Narrow down-bar on low volume, following recent down-move
+no_supply = is_narrow and is_low_vol and is_down and recent_down
+
+// 3.7 Test after Climax
+// After a buying climax, a test is a narrow down-bar on low volume that fails to go lower
+bull_test = recent_down and is_narrow and is_low_vol and is_down and close > close[1]
+// After a selling climax, a test is a narrow up-bar on low volume that fails to go higher
+bear_test = recent_up and is_narrow and is_low_vol and is_up and close < close[1]
+
+// ==========================================
+// 4. SCORE SYSTEM (BULL/BEAR POINTS)
+// ==========================================
+
+bull_score_bar = 0
+bear_score_bar = 0
+
+// Strong bull factors
+bull_score_bar += buying_climax ? 3 : 0
+bull_score_bar += downthrust ? 3 : 0
+bull_score_bar += no_supply ? 2 : 0
+bull_score_bar += bull_test ? 2 : 0
+
+// Strong bear factors
+bear_score_bar += selling_climax ? 3 : 0
+bear_score_bar += upthrust ? 3 : 0
+bear_score_bar += no_demand ? 2 : 0
+bear_score_bar += bear_test ? 2 : 0
+
+// Net VPA score this bar
+net_score = bull_score_bar - bear_score_bar
+
+// Smooth into an oscillator for readability
+vpa_osc = ta.ema(net_score, 3)
+
+// ==========================================
+// 5. EARLY & CONFIRMED REVERSAL SIGNALS
+// ==========================================
+
+// Early setup: strong single-bar pattern
+bull_early = buying_climax or downthrust
+bear_early = selling_climax or upthrust
+
+// Confirmation: combination over recent few bars
+bull_confirm = (bull_score_bar >= 3 and ta.sum(bull_score_bar, 3) >= 4) and vpa_osc > 0
+bear_confirm = (bear_score_bar >= 3 and ta.sum(bear_score_bar, 3) >= 4) and vpa_osc < 0
+
+// ==========================================
+// 6. PLOTTING
+// ==========================================
+
+// Oscillator baseline
+hline(0, "Zero", color=color.new(color.gray, 60))
+
+// Plot oscillator: green above 0, red below 0
+osc_color = vpa_osc > 0 ? color.new(color.lime, 0) : vpa_osc < 0 ? color.new(color.red, 0) : color.new(color.gray, 70)
+plot(vpa_osc, "VPA Osc", style=plot.style_columns, color=osc_color, linewidth=2)
+
+// Levels for strong zones
+hline(4, "Bull Zone", color=color.new(color.lime, 70), linestyle=hline.style_dashed)
+hline(-4, "Bear Zone", color=color.new(color.red, 70), linestyle=hline.style_dashed)
+
+// Early warning markers
+plotshape(bull_early, title="Bull Early", style=shape.circle, location=location.bottom, color=color.new(color.green, 40), size=size.tiny, text="E")
+plotshape(bear_early, title="Bear Early", style=shape.circle, location=location.top, color=color.new(color.red, 40), size=size.tiny, text="E")
+
+// Confirmed reversal markers
+plotshape(bull_confirm, title="Bull Confirm", style=shape.triangleup, location=location.bottom, color=color.lime, size=size.normal, text="BUY")
+plotshape(bear_confirm, title="Bear Confirm", style=shape.triangledown, location=location.top, color=color.red, size=size.normal, text="SELL")
+
+// ==========================================
+// 7. TOOLTIP TABLE (DEBUG / EXPLANATION)
+// ==========================================
+
+var table info = table.new(position.top_right, 2, 6, bgcolor=color.new(color.black, 80))
+
+if barstate.islast
+    table.cell(info, 0, 0, "Pattern", text_color=color.yellow, text_size=size.small)
+    table.cell(info, 1, 0, "Active", text_color=color.yellow, text_size=size.small)
+
+    table.cell(info, 0, 1, "Buy Climax", text_color=color.white, text_size=size.tiny)
+    table.cell(info, 1, 1, buying_climax ? "Yes" : "No", text_color=buying_climax ? color.lime : color.gray, text_size=size.tiny)
+
+    table.cell(info, 0, 2, "Sell Climax", text_color=color.white, text_size=size.tiny)
+    table.cell(info, 1, 2, selling_climax ? "Yes" : "No", text_color=selling_climax ? color.red : color.gray, text_size=size.tiny)
+
+    table.cell(info, 0, 3, "Up/Downthrust", text_color=color.white, text_size=size.tiny)
+    table.cell(info, 1, 3, upthrust ? "UpT" : downthrust ? "DnT" : "-", text_color=upthrust ? color.red : downthrust ? color.lime : color.gray, text_size=size.tiny)
+
+    table.cell(info, 0, 4, "No D/S", text_color=color.white, text_size=size.tiny)
+    table.cell(info, 1, 4, no_demand ? "ND" : no_supply ? "NS" : "-", text_color=no_demand ? color.red : no_supply ? color.lime : color.gray, text_size=size.tiny)
+
+    table.cell(info, 0, 5, "Osc", text_color=color.white, text_size=size.tiny)
+    table.cell(info, 1, 5, str.tostring(vpa_osc, "0.0"), text_color=vpa_osc > 0 ? color.lime : vpa_osc < 0 ? color.red : color.gray, text_size=size.tiny)
