@@ -9,6 +9,9 @@ from tabs.tab_strategy_e import render_strategy_e_tab
 from tabs.tab_strategy_f import render_strategy_f_tab
 from tabs.tab_strategy_g import render_strategy_g_tab
 from tabs.tab_strategy_h import render_strategy_h_tab
+from tabs.tab_strategy_i import render_strategy_i_tab
+from tabs.tab_strategy_j import render_strategy_j_tab
+from tabs.tab_strategy_k import render_strategy_k_tab
 
 st.set_page_config(
     page_title="多策略交易系統",
@@ -17,7 +20,7 @@ st.set_page_config(
 )
 
 st.title("多策略交易系統")
-st.caption("策略A:SMC | B:SSL+AI | C:斐波那契 | D:AI網格 | E:K棒AI影線 | F:AI動量 | G:RL Agent | H:混合智能 🚀")
+st.caption("策略A-H:基礎 | I-K:激進版 (目標 +100% / 30天) 🔥")
 
 st.sidebar.title("系統設定")
 
@@ -31,133 +34,159 @@ strategy_choice = st.sidebar.radio(
         "E: K棒影線 AI",
         "F: 動量趨勢 AI",
         "G: 強化學習 Agent 🤖",
-        "H: 混合智能系統 🚀"
+        "H: 混合智能系統 🚀",
+        "---",
+        "I: 極致激進H (10x) 🔥",
+        "J: 網格+趨勢雙引擎 🎯",
+        "K: RL Agent 激進版 🤖🔥"
     ]
 )
 
 st.sidebar.markdown("---")
 
-if strategy_choice.startswith("H"):
+if strategy_choice.startswith("K"):
     st.sidebar.markdown("""
-### 策略H: 混合智能 🚀✨
+### 策略K: RL 激進版 🤖🔥
 
-**三層決策架構**:
+**目標**: 30天 +100-150%
+
+**改造點**:
+- 10x 槓桿 (放大2倍)
+- 允許多倉重疊
+- 最大倉位 200%
+- Reward = 日報酬率
+
+**風險**:
+- 可能爆倉 (-100%)
+- 不可預測
+- 最高潛力
+
+---
+    """)
+elif strategy_choice.startswith("J"):
+    st.sidebar.markdown("""
+### 策略J: 雙引擎 🎯
+
+**目標**: 30天 +80-100%
+
+**引擎 1** (50%): 網格
+- 日交易 20-30 次
+- 日均 +1-2%
+
+**引擎 2** (50%): 趨勢
+- 抓大行情
+- 週均 +10-20%
+
+**優勢**:
+- 震盪靠網格
+- 趨勢靠突破
+- 風險分散
+
+---
+    """)
+elif strategy_choice.startswith("I"):
+    st.sidebar.markdown("""
+### 策略I: 激進H 🔥
+
+**目標**: 30天 +100%
+
+**設置**:
+- 10x 槓桿 + 80% 倉位
+- 快進快出 (ATR*2/0.8)
+- ADX>35 最強趨勢
+- 高頻交易
+
+**風險**:
+- 最大回撤 -40%
+- 連續虧損可能爆倉
+
+---
+    """)
+elif strategy_choice.startswith("H"):
+    st.sidebar.markdown("""
+### 策略H: 混合智能 🚀
+
+**三層架構**:
 - 🧠 市場狀態識別 (ML)
-- 🎯 自適應信號 (指標)
-- ⚡ 智能風控 (待加入)
+- 🎯 自適應信號
+- ⚡ 智能風控
 
-**核心優勢**:
-- 不再單邊 (多/空自動切換)
-- 多時間框架共振 (15m/1h/1d)
-- 量價確認 (過濾假信號)
-- 動態 TP/SL (適應市場)
-
-**vs 策略G**:
-- G: 黑盒，不可解釋
-- H: 白盒，每步可追蹤
+**優勢**:
+- 多/空自動切換
+- 多時間框架共振
+- 白盒可解釋
 
 ---
     """)
 elif strategy_choice.startswith("G"):
     st.sidebar.markdown("""
-### 策略G: 強化學習 Agent 🤖💥
+### 策略G: RL Agent 🤖
 
-**革命性方法**:
-- ❌ 不預測漲跌
-- ✅ 直接學習賺錢
-
-**Agent 自主決策**:
-- 何時開倉（多/空）
-- 何時平倉
-- 最優持倉時間
-
-**核心優勢**:
-- Reward = 實際 PnL
-- 無需手動 TP/SL
-- 自動適應市場
+**革命性**:
+- 直接學習賺錢
+- 自主決策
+- 無需 TP/SL
 
 ---
     """)
 elif strategy_choice.startswith("F"):
     st.sidebar.markdown("""
-### 策略F: 動量趨勢 AI ⭐⭐⭐
+### 策略F: 動量 AI ⭐⭐⭐
 
-**新特徵**:
-- 連續陽/陰線計數
-- 高低點突破追蹤
-- EMA排列強度 (8/20/50)
-- 成交量趨勢斜率
-- ADX + ROC 動量組合
-
-**目標**:
-- 解決v5做多失敗
-- 讓做多模型有效
-- 做空維持優勢
+**特徵**:
+- 連續陽/陰線
+- 高低點突破
+- EMA排列
+- ADX + ROC
 
 ---
     """)
 elif strategy_choice.startswith("E"):
     st.sidebar.markdown("""
-### 策略E: K棒影線 AI ⭐⭐
+### 策略E: K棒 AI ⭐⭐
 
-**學習內容**:
-- 前10根K棒影線模式
-- 上影線/下影線/實體比例
-- K棒形態 (錘子/鐓錘/流星)
-- RSI/MACD/BB/Stoch
-
-**預測目標**:
-- 下1根K棒方向 (+1/0/-1)
-- ATR訊號門檻
-- 信心度過濾
-
-**流程**:
-1. 用前90天訓練
-2. 用前30天測試
-3. 顯示特徵重要度
-4. 執行回測
+**學習**:
+- 影線模式
+- K棒形態
+- RSI/MACD/BB
 
 ---
     """)
 elif strategy_choice.startswith("D"):
     st.sidebar.markdown("""
-### 策略D: AI動態網格
+### 策略D: AI網格
 
-**AI增強網格**:
-- AI預測波動範圍
-- AI判斷市場狀態
-- 動態調整網格
+**AI增強**:
+- 預測波動
+- 動態調整
 
 ---
     """)
 elif strategy_choice.startswith("C"):
     st.sidebar.markdown("""
-### 策略C: 斐波那契回調
+### 策略C: 斐波那契
 
 **Fibonacci**:
-- 38.2%/50%/61.8%回調位
-- 等待反轉確認
+- 38.2%/50%/61.8%
 
 ---
     """)
 elif strategy_choice.startswith("B"):
     st.sidebar.markdown("""
-### 策略B: SSL Hybrid + AI
+### 策略B: SSL+AI
 
-**SSL指標 + XGBoost過濾**:
-- Baseline/SSL1/SSL2/Exit
+**SSL + XGBoost**:
 - 過濾假信號
 
 ---
     """)
 else:
     st.sidebar.markdown("""
-### 策略A: SMC v2
+### 策略A: SMC
 
-**Smart Money Concepts**:
+**Smart Money**:
 - Order Block
-- Fair Value Gap
-- Market Structure
+- FVG
 
 ---
     """)
@@ -234,19 +263,30 @@ elif strategy_choice.startswith("F"):
     render_strategy_f_tab(loader, symbol_selector)
 elif strategy_choice.startswith("G"):
     render_strategy_g_tab(loader, symbol_selector)
-else:
+elif strategy_choice.startswith("H"):
     render_strategy_h_tab(loader, symbol_selector)
+elif strategy_choice.startswith("I"):
+    render_strategy_i_tab(loader, symbol_selector)
+elif strategy_choice.startswith("J"):
+    render_strategy_j_tab(loader, symbol_selector)
+else:  # K
+    render_strategy_k_tab(loader, symbol_selector)
 
 st.sidebar.markdown("---")
 st.sidebar.info("""
-### 預期表現
+### 策略分類
 
-**A (SMC)**: 趨勢市場
-**B (SSL+AI)**: 通用
-**C (斐波)**: 趨勢市場
-**D (AI網格)**: 震盪市場
-**E (K棒AI)**: 所有市場 ⭐⭐
-**F (動量AI)**: 所有市場 ⭐⭐⭐
-**G (RL Agent)**: 自主學習 🤖💥
-**H (混合智能)**: 終極方案 🚀✨
+**基礎版 (A-H)**:
+- 穩健路線
+- 適合入門
+
+**激進版 (I-K)** 🔥:
+- 目標 +100% / 30天
+- 10x 槓桿
+- 高風險高報酬
+
+**推薦**:
+- 新手: H (混合智能)
+- 激進: J (雙引擎)
+- 極致: K (RL 激進)
 """)
