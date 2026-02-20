@@ -7,6 +7,7 @@ from tabs.tab_strategy_c import render_strategy_c_tab
 from tabs.tab_strategy_d import render_strategy_d_tab
 from tabs.tab_strategy_e import render_strategy_e_tab
 from tabs.tab_strategy_f import render_strategy_f_tab
+from tabs.tab_strategy_g import render_strategy_g_tab
 
 st.set_page_config(
     page_title="多策略交易系統",
@@ -15,7 +16,7 @@ st.set_page_config(
 )
 
 st.title("多策略交易系統")
-st.caption("策略A:SMC | B:SSL+AI | C:斐波那契 | D:AI網格 | E:K棒AI影線 | F:AI動量")
+st.caption("策略A:SMC | B:SSL+AI | C:斐波那契 | D:AI網格 | E:K棒AI影線 | F:AI動量 | G:RL Agent")
 
 st.sidebar.title("系統設定")
 
@@ -27,13 +28,34 @@ strategy_choice = st.sidebar.radio(
         "C: 斐波那契回調",
         "D: AI動態網格",
         "E: K棒影線 AI",
-        "F: 動量趨勢 AI ⭐"
+        "F: 動量趨勢 AI",
+        "G: 強化學習 Agent 🤖"
     ]
 )
 
 st.sidebar.markdown("---")
 
-if strategy_choice.startswith("F"):
+if strategy_choice.startswith("G"):
+    st.sidebar.markdown("""
+### 策略G: 強化學習 Agent 🤖💥
+
+**革命性方法**:
+- ❌ 不預測漲跌
+- ✅ 直接學習賺錢
+
+**Agent 自主決策**:
+- 何時開倉（多/空）
+- 何時平倉
+- 最優持倉時間
+
+**核心優勢**:
+- Reward = 實際 PnL
+- 無需手動 TP/SL
+- 自動適應市場
+
+---
+    """)
+elif strategy_choice.startswith("F"):
     st.sidebar.markdown("""
 ### 策略F: 動量趨勢 AI ⭐⭐⭐
 
@@ -185,8 +207,10 @@ elif strategy_choice.startswith("D"):
     render_strategy_d_tab(loader, symbol_selector)
 elif strategy_choice.startswith("E"):
     render_strategy_e_tab(loader, symbol_selector)
-else:
+elif strategy_choice.startswith("F"):
     render_strategy_f_tab(loader, symbol_selector)
+else:
+    render_strategy_g_tab(loader, symbol_selector)
 
 st.sidebar.markdown("---")
 st.sidebar.info("""
@@ -198,4 +222,5 @@ st.sidebar.info("""
 **D (AI網格)**: 震盪市場
 **E (K棒AI)**: 所有市場 ⭐⭐
 **F (動量AI)**: 所有市場 ⭐⭐⭐
+**G (RL Agent)**: 自主學習 🤖💥
 """)
