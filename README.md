@@ -1,191 +1,214 @@
-# FYM_ST - Advanced Multi-Timeframe AI Trading System
+# FYM_ST - Advanced Automated Crypto Trading System
 
 ## Overview
 
-FYM_ST is a sophisticated cryptocurrency trading system that combines multiple AI models with multi-timeframe analysis to identify high-probability trading opportunities. The system is specifically designed for high-frequency scalping on 15-minute timeframes while using 1-hour data for trend confirmation.
+FYM_ST is an institutional-grade automated cryptocurrency trading system implementing advanced quantitative methods from academic research and hedge fund practices. The system features two distinct trading engines:
 
-## Key Features
+1. **Automated Trading System** (New): Academic ML framework with meta-labeling and Kelly criterion
+2. **Multi-Timeframe AI System**: High-frequency scalping with trend confirmation
 
-### Three-Model Architecture
+## Core Systems
 
-1. **Trend Detection Model (1h)**
-   - Identifies market regime: Strong Bullish / Weak Bullish / Ranging / Weak Bearish / Strong Bearish
-   - Provides trend strength score (0-100)
-   - Filters out counter-trend signals
+### 1. Automated Trading System (`trading_system/`)
 
-2. **Volatility Prediction Model (15m)**
-   - Forecasts upcoming volatility regime changes
-   - Predicts trend initiation probability
-   - Enables dynamic stop-loss adjustment
+A quantitative trading framework implementing state-of-the-art machine learning methods:
 
-3. **Reversal Detection Model (15m)**
-   - Identifies high-probability reversal points
-   - Predicts support/resistance levels
-   - Generates entry signals with confidence scores
+#### Mathematical Framework
 
-### Trading System Features
+- **Triple Barrier Method**: Volatility-adjusted profit/loss targets using ATR
+- **Meta-Labeling**: Two-layer signal filtering (primary signal + ML confirmation)
+- **Fractional Differentiation**: Stationarity preservation with memory (d=0.4)
+- **Purged K-Fold CV**: Time-series aware cross-validation preventing data leakage
+- **Dynamic Kelly Criterion**: Probability-based position sizing with risk fraction
+- **Sample Weighting**: High-impact trade prioritization during training
+
+#### Features
+
+- Modular architecture for maintainability
+- Streamlit GUI for training, backtesting, and live prediction
+- HuggingFace dataset integration (38 pairs, 3 timeframes)
+- LightGBM with purged cross-validation
+- Realistic backtesting with commission and slippage
+- Real-time prediction using completed bars only
+
+**Quick Start:**
+```bash
+cd trading_system
+pip install -r requirements.txt
+streamlit run app_main.py
+```
+
+**Documentation**: See `trading_system/README.md` for detailed usage
+
+### 2. Multi-Timeframe AI System (Original)
+
+A sophisticated multi-model architecture for high-frequency trading:
+
+#### Three-Model Architecture
+
+1. **Trend Detection Model (1h)**: Market regime identification
+2. **Volatility Prediction Model (15m)**: Volatility regime forecasting
+3. **Reversal Detection Model (15m)**: High-probability entry points
+
+#### Features
 
 - Multi-timeframe analysis (1h + 15m)
-- Signal stability (uses only completed candles)
-- Multiple cryptocurrency support (38+ pairs)
-- Out-of-sample validation (1500 candles reserved)
-- Comprehensive backtesting engine
-- Real-time Binance data integration
-- Advanced risk management (ATR-based stops)
-- Portfolio allocation across multiple assets
+- Signal stability (completed candles only)
+- Out-of-sample validation
+- Binance API integration
+- ATR-based risk management
+- Portfolio allocation across 38+ pairs
 
-### Backtesting Capabilities
-
-- Configurable initial capital and leverage
-- Dynamic position sizing
-- Maximum concurrent positions limit
-- ATR-based take-profit and stop-loss
-- Binance contract fee structure
-- Detailed trade history and metrics
-- Equity curve visualization
-- Multi-symbol portfolio testing
+**Quick Start:**
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
 
 ## Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/caizongxun/fym_st.git
 cd fym_st
-
-# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate  # Windows: venv\Scripts\activate
+```
 
-# Install dependencies
+### For Automated Trading System
+```bash
+cd trading_system
+pip install -r requirements.txt
+```
+
+### For Multi-Timeframe System
+```bash
 pip install -r requirements.txt
 ```
 
 ## Configuration
 
-Create a `.env` file in the root directory:
+Create `.env` file:
 
 ```env
-BINANCE_API_KEY=your_api_key_here
-BINANCE_API_SECRET=your_api_secret_here
-HUGGINGFACE_TOKEN=your_token_here  # Optional
+BINANCE_API_KEY=your_api_key
+BINANCE_API_SECRET=your_api_secret
+HUGGINGFACE_TOKEN=your_token  # Optional
 ```
-
-## Usage
-
-### Launch Web GUI
-
-```bash
-streamlit run app.py
-```
-
-The web interface provides:
-
-- Model training controls
-- Real-time signal monitoring
-- Backtesting configuration
-- Performance analytics
-- Trade history viewer
-
-### Training Models
-
-1. Navigate to the "Model Training" tab
-2. Select dataset parameters:
-   - Training data size (default: 3000 candles)
-   - OOS validation size (default: 1500 candles)
-   - Symbols to train on
-3. Click "Train All Models" or train individually
-4. Monitor training progress and OOS metrics
-
-### Backtesting
-
-1. Navigate to the "Backtesting" tab
-2. Configure parameters:
-   - Initial capital (default: 10 USDT)
-   - Leverage (1-50x)
-   - Take-profit/Stop-loss (ATR multiples)
-   - Position size (% of capital)
-   - Max concurrent positions
-   - Symbols to trade
-   - Backtest period (days)
-3. Run backtest and analyze results
 
 ## Project Structure
 
 ```
 fym_st/
-├── app.py                      # Streamlit web interface
-├── config.py                   # Configuration settings
+├── trading_system/              # NEW: Automated trading system
+│   ├── core/                    # Core quantitative modules
+│   │   ├── data_loader.py
+│   │   ├── feature_engineering.py
+│   │   ├── labeling.py
+│   │   ├── meta_labeling.py
+│   │   ├── model_trainer.py
+│   │   ├── position_sizing.py
+│   │   ├── backtester.py
+│   │   └── predictor.py
+│   ├── gui/                     # Streamlit interface
+│   │   └── pages/
+│   ├── models/                  # Trained models
+│   ├── app_main.py             # Entry point
+│   ├── requirements.txt
+│   └── README.md               # Detailed documentation
+│
+├── app.py                       # Multi-timeframe system GUI
+├── config.py
 ├── requirements.txt
-├── README.md
-├── data/
-│   ├── __init__.py
-│   ├── data_loader.py         # HuggingFace and Binance data loading
-│   └── feature_engineer.py    # Technical indicator computation
-├── models/
-│   ├── __init__.py
-│   ├── trend_model.py         # 1h trend detection
-│   ├── volatility_model.py    # 15m volatility prediction
-│   ├── reversal_model.py      # 15m reversal detection
-│   └── saved/                 # Trained model files
-├── training/
-│   ├── __init__.py
-│   ├── train_trend.py
-│   ├── train_volatility.py
-│   ├── train_reversal.py
-│   └── labeling.py            # Label generation logic
-├── backtesting/
-│   ├── __init__.py
-│   ├── engine.py              # Backtesting engine
-│   └── metrics.py             # Performance calculations
-└── utils/
-    ├── __init__.py
-    ├── signal_generator.py    # Entry/exit signal logic
-    └── risk_manager.py        # Position sizing and stops
+├── data/                        # Data loading modules
+├── models/                      # Multi-model architecture
+├── training/                    # Training scripts
+├── backtesting/                 # Backtesting engine
+├── strategies/                  # Strategy implementations
+├── utils/                       # Utility functions
+└── uploads/                     # File upload directory
 ```
 
 ## Data Sources
 
-- **Training**: HuggingFace dataset `zongowo111/v2-crypto-ohlcv-data`
+- **HuggingFace Dataset**: `zongowo111/v2-crypto-ohlcv-data`
   - 38 cryptocurrency pairs
-  - Three timeframes: 15m, 1h, 1d
-  - Historical data for model training
+  - Timeframes: 15m, 1h, 1d
+  - Format: Parquet files
 
-- **Backtesting/Live**: Binance API
-  - Real-time market data
-  - Accurate fee calculations
-  - Production-ready data quality
+- **Binance API**: Real-time data and execution
+
+## Supported Trading Pairs
+
+```
+AAVEUSDT  ADAUSDT   ALGOUSDT  ARBUSDT   ATOMUSDT  AVAXUSDT
+BALUSDT   BATUSDT   BCHUSDT   BNBUSDT   BTCUSDT   COMPUSDT
+CRVUSDT   DOGEUSDT  DOTUSDT   ENJUSDT   ENSUSDT   ETCUSDT
+ETHUSDT   FILUSDT   GALAUSDT  GRTUSDT   IMXUSDT   KAVAUSDT
+LINKUSDT  LTCUSDT   MANAUSDT  MATICUSDT MKRUSDT   NEARUSDT
+OPUSDT    SANDUSDT  SNXUSDT   SOLUSDT   SPELLUSDT UNIUSDT
+XRPUSDT   ZRXUSDT
+```
 
 ## Risk Management
 
-### Position Sizing
-- Configurable position size as percentage of capital
-- Maximum concurrent positions limit prevents overexposure
-- Capital allocation across multiple symbols
+### Automated Trading System
+- Kelly criterion position sizing
+- ATR-based stop-loss and take-profit
+- Maximum position limits
+- Sample weighting by return magnitude
 
-### Stop Management
-- ATR-based dynamic stops (e.g., 2x ATR)
-- Wider stops in high volatility, tighter in low volatility
-- Take-profit targets based on risk-reward ratio
-
-### Entry Filters
-- Multi-model confirmation required
-- Volume confirmation
-- Trend alignment check
-- Reversal probability threshold (>75%)
+### Multi-Timeframe System
+- Configurable position size percentage
+- Maximum concurrent positions
+- Dynamic ATR-based stops
+- Multi-model confirmation filters
 
 ## Performance Metrics
 
-The system tracks:
+Both systems track:
 - Total return and Sharpe ratio
 - Win rate and profit factor
 - Maximum drawdown
-- Average trade duration
-- Trade distribution by symbol
-- Equity curve over time
+- Average win/loss
+- Trade distribution
+- Equity curve
+
+## Key Principles
+
+### Avoiding Lookahead Bias
+- All predictions use completed bars only
+- No access to current incomplete bar
+- Time-series integrity in cross-validation
+
+### Data Leakage Prevention
+- Purged cross-validation
+- Temporal train/test splits
+- No shuffle in time-series data
+
+### Risk Controls
+- Position size limits
+- Volatility-adjusted stops
+- Maximum exposure caps
+- Probability-based sizing
+
+## Academic References
+
+This system implements methodologies from:
+
+- López de Prado, M. (2018). *Advances in Financial Machine Learning*
+- Hosking, J. R. M. (1981). Fractional Differencing
+- Kelly, J. L. (1956). Information Rate Theory
+- Peng, C. K., et al. (1994). Long-range correlations in nucleotide sequences
+
+## Documentation
+
+- **Automated System**: `trading_system/README.md`
+- **Usage Guide**: `USAGE.md`
+- **Strategy Integration**: `STRATEGY_C_INTEGRATION.md`
 
 ## Warning
 
-This software is for educational and research purposes only. Cryptocurrency trading involves substantial risk of loss. Past performance does not guarantee future results. Always test thoroughly and use appropriate risk management.
+This software is for educational and research purposes only. Cryptocurrency trading involves substantial risk of loss. Past performance does not guarantee future results. Always conduct thorough testing and use appropriate risk management before live deployment.
 
 ## License
 
@@ -197,4 +220,4 @@ Developed by [caizongxun](https://github.com/caizongxun)
 
 ## Contributing
 
-Contributions are welcome. Please open an issue or submit a pull request.
+Contributions welcome. Please open an issue or submit a pull request.
