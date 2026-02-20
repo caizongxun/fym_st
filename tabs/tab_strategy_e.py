@@ -393,20 +393,23 @@ def render_strategy_e_tab(loader, symbol_selector):
 
             st.markdown("### 訓練結果")
             c1, c2 = st.columns(2)
+            check_long = '✅' if result['long_prec'] > result['long_base_rate']/100 else '❌'
+            check_short = '✅' if result['short_prec'] > result['short_base_rate']/100 else '❌'
+            
             with c1:
                 st.markdown(f"**做多** (基準: {result['long_base_rate']:.1f}%)")
                 lc1, lc2 = st.columns(2)
                 lc1.metric("Precision", f"{result['long_prec']:.2%}")
                 lc2.metric("Recall", f"{result['long_rec']:.2%}")
                 epf_long = _expected_pf(result['long_prec'], tp_atr, sl_atr)
-                st.caption(f"理論PF={epf_long:.2f} | {'\u2705' if result['long_prec'] > result['long_base_rate']/100 else '\u274c'}")
+                st.caption(f"理論PF={epf_long:.2f} | {check_long}")
             with c2:
                 st.markdown(f"**做空** (基準: {result['short_base_rate']:.1f}%)")
                 sc1, sc2 = st.columns(2)
                 sc1.metric("Precision", f"{result['short_prec']:.2%}")
                 sc2.metric("Recall", f"{result['short_rec']:.2%}")
                 epf_short = _expected_pf(result['short_prec'], tp_atr, sl_atr)
-                st.caption(f"理論PF={epf_short:.2f} | {'\u2705' if result['short_prec'] > result['short_base_rate']/100 else '\u274c'}")
+                st.caption(f"理論PF={epf_short:.2f} | {check_short}")
 
             with st.expander("特徵重要度"):
                 tc1, tc2 = st.columns(2)
