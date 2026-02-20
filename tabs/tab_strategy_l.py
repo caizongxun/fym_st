@@ -74,8 +74,8 @@ class MarketEnvironmentClassifier:
         分類每個 window 天的市場環境
         
         環境定義：
-        - STRONG_BULL: 月漲幅 > 20%
-        - WEAK_BULL: 月漲幅 5-20%
+        - STRONG_BULL: 月漨幅 > 20%
+        - WEAK_BULL: 月漨幅 5-20%
         - RANGE: 月漨跌幅 -5% ~ +5%
         - WEAK_BEAR: 月跌幅 5-20%
         - STRONG_BEAR: 月跌幅 > 20%
@@ -136,6 +136,51 @@ class ParameterOptimizer:
         }
 
 
+def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """計算技術指標"""
+    df = df.copy()
+    
+    # EMA
+    df['ema20'] = df['close'].ewm(span=20).mean()
+    df['ema50'] = df['close'].ewm(span=50).mean()
+    
+    # RSI
+    delta = df['close'].diff()
+    gain = delta.where(delta > 0, 0).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / (loss + 1e-8)
+    df['rsi'] = 100 - (100 / (1 + rs))
+    
+    # MACD
+    ema12 = df['close'].ewm(span=12).mean()
+    ema26 = df['close'].ewm(span=26).mean()
+    df['macd'] = ema12 - ema26
+    df['macd_signal'] = df['macd'].ewm(span=9).mean()
+    df['macd_hist'] = df['macd'] - df['macd_signal']
+    
+    # Bollinger Bands
+    df['bb_mid'] = df['close'].rolling(20).mean()
+    bb_std = df['close'].rolling(20).std()
+    df['bb_upper'] = df['bb_mid'] + 2 * bb_std
+    df['bb_lower'] = df['bb_mid'] - 2 * bb_std
+    
+    # ADX
+    high_diff = df['high'].diff()
+    low_diff = -df['low'].diff()
+    tr = df['high'] - df['low']
+    atr = tr.rolling(14).mean()
+    plus_di = 100 * (high_diff.rolling(14).mean() / atr)
+    minus_di = 100 * (low_diff.rolling(14).mean() / atr)
+    dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-8)
+    df['adx'] = dx.rolling(14).mean()
+    
+    # ATR
+    df['atr'] = atr
+    
+    df.fillna(0, inplace=True)
+    return df
+
+
 class EnvironmentSpecificStrategy:
     """
     分環境策略
@@ -147,7 +192,6 @@ class EnvironmentSpecificStrategy:
     
     def generate_signals(self, df: pd.DataFrame) -> pd.Series:
         """生成交易信號"""
-        df = self._calculate_indicators(df)
         signals = pd.Series(0, index=df.index)
         
         if 'BULL' in self.environment:
@@ -178,50 +222,6 @@ class EnvironmentSpecificStrategy:
             signals[df['close'] <= bb_lower] = 1
         
         return signals
-    
-    def _calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """計算技術指標"""
-        df = df.copy()
-        
-        # EMA
-        df['ema20'] = df['close'].ewm(span=20).mean()
-        df['ema50'] = df['close'].ewm(span=50).mean()
-        
-        # RSI
-        delta = df['close'].diff()
-        gain = delta.where(delta > 0, 0).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / (loss + 1e-8)
-        df['rsi'] = 100 - (100 / (1 + rs))
-        
-        # MACD
-        ema12 = df['close'].ewm(span=12).mean()
-        ema26 = df['close'].ewm(span=26).mean()
-        df['macd'] = ema12 - ema26
-        df['macd_signal'] = df['macd'].ewm(span=9).mean()
-        df['macd_hist'] = df['macd'] - df['macd_signal']
-        
-        # Bollinger Bands
-        df['bb_mid'] = df['close'].rolling(20).mean()
-        bb_std = df['close'].rolling(20).std()
-        df['bb_upper'] = df['bb_mid'] + 2 * bb_std
-        df['bb_lower'] = df['bb_mid'] - 2 * bb_std
-        
-        # ADX
-        high_diff = df['high'].diff()
-        low_diff = -df['low'].diff()
-        tr = df['high'] - df['low']
-        atr = tr.rolling(14).mean()
-        plus_di = 100 * (high_diff.rolling(14).mean() / atr)
-        minus_di = 100 * (low_diff.rolling(14).mean() / atr)
-        dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-8)
-        df['adx'] = dx.rolling(14).mean()
-        
-        # ATR
-        df['atr'] = atr
-        
-        df.fillna(0, inplace=True)
-        return df
 
 
 def backtest_with_params(df: pd.DataFrame, signals: pd.Series, params: Dict) -> Dict:
@@ -345,7 +345,7 @@ def render_strategy_l_tab(loader, symbol_selector):
             environments = MarketEnvironmentClassifier.classify_period(df_1h, window=30)
             env_stats = MarketEnvironmentClassifier.get_environment_stats(environments)
             
-            prog.progress(40)
+            prog.progress(30)
             
             # 顯示環境分布
             st.markdown("### 歷史市場環境分布")
@@ -355,6 +355,12 @@ def render_strategy_l_tab(loader, symbol_selector):
             c3.metric("➡️ 震盪", f"{env_stats['RANGE']['percentage']:.1f}%")
             c4.metric("📉 弱熊", f"{env_stats['WEAK_BEAR']['percentage']:.1f}%")
             c5.metric("⚠️ 強熊", f"{env_stats['STRONG_BEAR']['percentage']:.1f}%")
+            
+            stat.text("計算指標...")
+            prog.progress(50)
+            
+            # 計算指標（關鍵修復）
+            df_1h = calculate_indicators(df_1h)
             
             stat.text("優化參數並回測...")
             prog.progress(60)
@@ -403,6 +409,8 @@ def render_strategy_l_tab(loader, symbol_selector):
             c1.metric("槓桿", f"{params['leverage']}x")
             c2.metric("倉位", f"{params['position_size']*100:.0f}%")
             c3.metric("TP/SL", f"{params['tp_multiplier']}/{params['sl_multiplier']}")
+            
+            st.info(f"測試期主要環境: {current_env}")
             
             # 評分
             if results['total_return'] >= 100:
