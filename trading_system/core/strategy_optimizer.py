@@ -137,44 +137,63 @@ class StrategyOptimizer:
         
         filter_configs = [
             {
-                'name': 'No filters',
+                'name': 'No filters (baseline)',
                 'min_probability': 0.5,
                 'use_filters': False
             },
             {
-                'name': 'Conservative',
+                'name': 'Probability 0.65 only',
+                'min_probability': 0.65,
+                'use_filters': False
+            },
+            {
+                'name': 'Probability 0.70 only',
+                'min_probability': 0.70,
+                'use_filters': False
+            },
+            {
+                'name': 'Light (prob + volume)',
+                'min_probability': 0.60,
+                'min_vsr': 0.3,
+                'max_vsr': 2.0,
+                'use_trend_filter': False,
+                'use_rsi_filter': False,
+                'min_rsi': 20,
+                'max_rsi': 80,
+                'use_volume_filter': True,
+                'min_volume_ratio': 1.1,
+                'use_macd_filter': False,
+                'macd_require_positive': False,
+                'use_filters': True
+            },
+            {
+                'name': 'Moderate (prob + trend + vol)',
+                'min_probability': 0.65,
+                'min_vsr': 0.4,
+                'max_vsr': 1.5,
+                'use_trend_filter': True,
+                'use_rsi_filter': False,
+                'min_rsi': 20,
+                'max_rsi': 80,
+                'use_volume_filter': True,
+                'min_volume_ratio': 1.2,
+                'use_macd_filter': False,
+                'macd_require_positive': False,
+                'use_filters': True
+            },
+            {
+                'name': 'Strict (all filters)',
                 'min_probability': 0.70,
                 'min_vsr': 0.5,
                 'max_vsr': 1.2,
                 'use_trend_filter': True,
-                'min_rsi': 40,
-                'max_rsi': 60,
+                'use_rsi_filter': True,
+                'min_rsi': 25,
+                'max_rsi': 75,
+                'use_volume_filter': True,
                 'min_volume_ratio': 1.5,
                 'use_macd_filter': True,
-                'use_filters': True
-            },
-            {
-                'name': 'Moderate',
-                'min_probability': 0.65,
-                'min_vsr': 0.4,
-                'max_vsr': 1.3,
-                'use_trend_filter': True,
-                'min_rsi': 35,
-                'max_rsi': 65,
-                'min_volume_ratio': 1.3,
-                'use_macd_filter': True,
-                'use_filters': True
-            },
-            {
-                'name': 'Aggressive',
-                'min_probability': 0.60,
-                'min_vsr': 0.3,
-                'max_vsr': 1.5,
-                'use_trend_filter': False,
-                'min_rsi': 30,
-                'max_rsi': 70,
-                'min_volume_ratio': 1.1,
-                'use_macd_filter': False,
+                'macd_require_positive': False,
                 'use_filters': True
             }
         ]
@@ -184,6 +203,10 @@ class StrategyOptimizer:
         for config in filter_configs:
             signals = predictions[predictions['signal'] == 1].copy()
             
+            if len(signals) == 0:
+                logger.warning(f"Config '{config['name']}': No signals to filter")
+                continue
+            
             if config['use_filters']:
                 filter_params = {k: v for k, v in config.items() if k not in ['name', 'use_filters']}
                 signals = self.signal_filter.apply_all_filters(signals, **filter_params)
@@ -191,7 +214,7 @@ class StrategyOptimizer:
                 signals = signals[signals['win_probability'] >= config['min_probability']].copy()
             
             if len(signals) < 10:
-                logger.warning(f"Config '{config['name']}': Only {len(signals)} signals, skipping")
+                logger.warning(f"Config '{config['name']}': Only {len(signals)} signals after filtering, skipping")
                 continue
             
             backtest_result = self.backtester.run_backtest(
