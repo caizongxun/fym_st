@@ -6,6 +6,7 @@ from tabs.tab_strategy_b import render_strategy_b_tab
 from tabs.tab_strategy_c import render_strategy_c_tab
 from tabs.tab_strategy_d import render_strategy_d_tab
 from tabs.tab_strategy_e import render_strategy_e_tab
+from tabs.tab_strategy_f import render_strategy_f_tab
 
 st.set_page_config(
     page_title="多策略交易系統",
@@ -14,7 +15,7 @@ st.set_page_config(
 )
 
 st.title("多策略交易系統")
-st.caption("策略A:SMC | B:SSL+AI | C:斐波那契 | D:AI網格 | E:K棒AI")
+st.caption("策略A:SMC | B:SSL+AI | C:斐波那契 | D:AI網格 | E:K棒AI影線 | F:AI動量")
 
 st.sidebar.title("系統設定")
 
@@ -25,25 +26,44 @@ strategy_choice = st.sidebar.radio(
         "B: SSL Hybrid + AI",
         "C: 斐波那契回調",
         "D: AI動態網格",
-        "E: K棒影線 AI"
+        "E: K棒影線 AI",
+        "F: 動量趨勢 AI ⭐"
     ]
 )
 
 st.sidebar.markdown("---")
 
-if strategy_choice.startswith("E"):
+if strategy_choice.startswith("F"):
+    st.sidebar.markdown("""
+### 策略F: 動量趨勢 AI ⭐⭐⭐
+
+**新特徵**:
+- 連續陽/陰線計數
+- 高低點突破追蹤
+- EMA排列強度 (8/20/50)
+- 成交量趨勢斜率
+- ADX + ROC 動量組合
+
+**目標**:
+- 解決v5做多失敗
+- 讓做多模型有效
+- 做空維持優勢
+
+---
+    """)
+elif strategy_choice.startswith("E"):
     st.sidebar.markdown("""
 ### 策略E: K棒影線 AI ⭐⭐
 
 **學習內容**:
 - 前10根K棒影線模式
 - 上影線/下影線/實體比例
-- K棒形態 (錘子/鉄锤/流星)
+- K棒形態 (錘子/鐓錘/流星)
 - RSI/MACD/BB/Stoch
 
 **預測目標**:
 - 下1根K棒方向 (+1/0/-1)
-- ATR訊號門溻
+- ATR訊號門檻
 - 信心度過濾
 
 **流程**:
@@ -163,8 +183,10 @@ elif strategy_choice.startswith("C"):
     render_strategy_c_tab(loader, symbol_selector)
 elif strategy_choice.startswith("D"):
     render_strategy_d_tab(loader, symbol_selector)
-else:
+elif strategy_choice.startswith("E"):
     render_strategy_e_tab(loader, symbol_selector)
+else:
+    render_strategy_f_tab(loader, symbol_selector)
 
 st.sidebar.markdown("---")
 st.sidebar.info("""
@@ -175,4 +197,5 @@ st.sidebar.info("""
 **C (斐波)**: 趨勢市場
 **D (AI網格)**: 震盪市場
 **E (K棒AI)**: 所有市場 ⭐⭐
+**F (動量AI)**: 所有市場 ⭐⭐⭐
 """)
