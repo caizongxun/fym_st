@@ -18,10 +18,10 @@ def render():
     
     st.markdown("""
     在歷史數據上測試你的模型績效:
-    - 模擬真實交易手續費和滑點
-    - ATR 基礎風險管理 (每筆風險固定)
-    - 機率門檻控制 (基於校準分析)
-    - 嚴格事件過濾 (與訓練一致)
+    - 正確的 Maker/Taker 費率模型
+    - 槓桿合約交易模擬
+    - TP 無滑點,SL 有滑點 (真實情況)
+    - ATR 基礎風險管理
     """)
     
     st.markdown("---")
@@ -50,28 +50,33 @@ def render():
             )
             
             if data_source == "Binance API (最新)":
-                backtest_days = st.number_input("回測天數", value=90, min_value=7, max_value=365, step=7,
-                                               help="從 Binance 直接抽取最近 N 天數據")
+                backtest_days = st.number_input("回測天數", value=90, min_value=7, max_value=365, step=7)
             else:
                 use_recent_data = st.checkbox("只使用2024+數據 (OOS)", value=True)
         
         with col2:
             initial_capital = st.number_input("初始資金", value=10000.0, step=1000.0)
-            risk_per_trade = st.number_input("每筆風險%", value=1.0, step=0.5,
-                                            help="每筆交易風險的資金比例")
-            commission_rate = st.number_input("手續費率", value=0.0006, step=0.0001, format="%.4f",
-                                             help="合約吃單 0.06%")
-            slippage = st.number_input("滑點", value=0.0005, step=0.0001, format="%.4f")
-        
+            risk_per_trade = st.number_input("每筆風險%", value=1.0, step=0.5)
+            leverage = st.number_input("槓桿倍數", value=10, min_value=1, max_value=20, step=1,
+                                      help="幣安合約槓桿,預設10x")
+            
         with col3:
             tp_multiplier = st.number_input("TP 倍數 (ATR)", value=2.5, step=0.5)
             sl_multiplier = st.number_input("SL 倍數 (ATR)", value=1.5, step=0.25)
-            probability_threshold = st.number_input("機率門檻", value=0.60, step=0.05,
-                                                    help="基於校準分析的最佳門檻")
-            max_holding_bars = st.number_input("最大持倉根數", value=24, step=6)
+            probability_threshold = st.number_input("機率門檻", value=0.60, step=0.05)
+    
+    with st.expander("手續費與滑點", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            taker_fee = st.number_input("Taker 費率", value=0.0006, step=0.0001, format="%.4f",
+                                       help="市價單吃單費率 (0.06%)")
+            maker_fee = st.number_input("Maker 費率", value=0.0002, step=0.0001, format="%.4f",
+                                       help="限價單掛單費率 (0.02%)")
+        with col2:
+            slippage = st.number_input("滑點", value=0.0005, step=0.0001, format="%.4f",
+                                      help="市價單滑點 (0.05%)")
     
     with st.expander("事件過濾設定", expanded=False):
-        st.markdown("與訓練時保持一致")
         use_event_filter = st.checkbox("啟用事件過濾", value=True)
         if use_event_filter:
             col1, col2 = st.columns(2)
@@ -102,9 +107,8 @@ def render():
                 df = loader.load_klines(symbol, timeframe)
                 if use_recent_data:
                     df = df[df['open_time'] >= '2024-01-01'].copy()
-                    st.info(f"Out-of-Sample 測試: {len(df)} 筆 (2024-01-01 至今)")
             
-            st.info(f"載入 {len(df)} 筆數據,時間範圍: {df['open_time'].min()} 至 {df['open_time'].max()}")
+            st.info(f"載入 {len(df)} 筆,範圍: {df['open_time'].min()} ~ {df['open_time'].max()}")
             
             status_text.text("建立特徵...")
             progress_bar.progress(30)
@@ -112,7 +116,7 @@ def render():
             df_features = feature_engineer.build_features(df)
             
             if use_event_filter:
-                status_text.text("應用事件過濾...")
+                status_text.text("事件過濾...")
                 progress_bar.progress(35)
                 event_filter = EventFilter(
                     use_strict_mode=use_strict,
@@ -122,8 +126,7 @@ def render():
                     lookback_period=20
                 )
                 df_filtered = event_filter.filter_events(df_features)
-                filter_ratio = len(df_filtered) / len(df_features)
-                st.info(f"事件過濾: {len(df_features)} → {len(df_filtered)} ({100*filter_ratio:.1f}%)")
+                st.info(f"過濾: {len(df_features)} → {len(df_filtered)} ({100*len(df_filtered)/len(df_features):.1f}%)")
             else:
                 df_filtered = df_features
             
@@ -133,8 +136,7 @@ def render():
             exclude_cols = [
                 'open_time', 'close_time', 'open', 'high', 'low', 'close', 'volume',
                 'quote_volume', 'trades', 'taker_buy_volume', 'taker_buy_quote_volume',
-                'taker_buy_base_asset_volume',
-                'bb_middle', 'bb_upper', 'bb_lower', 'bb_std',
+                'taker_buy_base_asset_volume', 'bb_middle', 'bb_upper', 'bb_lower', 'bb_std',
                 'volume_ma_20'
             ]
             
@@ -145,8 +147,7 @@ def render():
                 else:
                     X_pred[feature_name] = 0
             
-            X_pred = X_pred.fillna(0)
-            X_pred = X_pred.replace([np.inf, -np.inf], 0)
+            X_pred = X_pred.fillna(0).replace([np.inf, -np.inf], 0)
             
             for col in X_pred.select_dtypes(include=['bool']).columns:
                 X_pred[col] = X_pred[col].astype(int)
@@ -156,10 +157,10 @@ def render():
             df_filtered['win_probability'] = probabilities
             
             signals = df_filtered[df_filtered['win_probability'] >= probability_threshold].copy()
-            st.info(f"生成 {len(signals)} 個交易信號 (門檻: {probability_threshold})")
+            st.info(f"信號: {len(signals)} 個 (門檻: {probability_threshold})")
             
             if len(signals) == 0:
-                st.warning("未生成任何信號。請降低門檻。")
+                st.warning("無信號,請降低門檻")
                 return
             
             status_text.text("執行回測...")
@@ -167,20 +168,23 @@ def render():
             
             backtester = Backtester(
                 initial_capital=initial_capital,
-                commission_rate=commission_rate,
+                taker_fee=taker_fee,
+                maker_fee=maker_fee,
                 slippage=slippage,
-                risk_per_trade=risk_per_trade / 100.0
+                risk_per_trade=risk_per_trade / 100.0,
+                leverage=int(leverage)
             )
             results = backtester.run_backtest(
                 signals,
                 tp_multiplier=tp_multiplier,
-                sl_multiplier=sl_multiplier
+                sl_multiplier=sl_multiplier,
+                direction=1
             )
             
             progress_bar.progress(100)
-            status_text.text("回測完成")
+            status_text.text("完成")
             
-            st.success("回測執行成功")
+            st.success("回測完成")
             
             stats = results['statistics']
             trades_df = results['trades']
@@ -198,14 +202,14 @@ def render():
             with col4:
                 st.metric("總手續費", f"${stats['total_commission']:,.0f}")
             with col5:
-                ev_actual = (stats['win_rate'] * tp_multiplier) - ((1 - stats['win_rate']) * sl_multiplier)
-                st.metric("實際期望值", f"{ev_actual:.3f}R")
+                ev = (stats['win_rate'] * tp_multiplier) - ((1 - stats['win_rate']) * sl_multiplier)
+                st.metric("期望值", f"{ev:.3f}R")
             
             st.markdown("### 績效指標")
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("總交易次數", stats['total_trades'])
+                st.metric("交易次數", stats['total_trades'])
                 st.metric("勝率", f"{stats['win_rate']*100:.1f}%")
             with col2:
                 st.metric("獲利次數", stats['winning_trades'])
@@ -215,106 +219,77 @@ def render():
                 st.metric("平均虧損", f"${stats['avg_loss']:.0f}")
             with col4:
                 st.metric("盈虧比", f"{stats['profit_factor']:.2f}")
-                st.metric("Sharpe 比率", f"{stats['sharpe_ratio']:.2f}")
+                st.metric("Sharpe", f"{stats['sharpe_ratio']:.2f}")
             
             st.markdown("### 風險指標")
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("最大回撤", f"{stats['max_drawdown']*100:.1f}%")
             with col2:
-                st.metric("平均持倉時間", f"{stats['avg_trade_duration']:.1f} 根")
+                st.metric("平均持倉", f"{stats['avg_trade_duration']:.1f} 根")
             with col3:
-                st.metric("總獲利金額", f"${stats['total_win']:,.0f}")
+                st.metric("總獲利", f"${stats['total_win']:,.0f}")
             with col4:
-                st.metric("總虧損金額", f"${stats['total_loss']:,.0f}")
+                st.metric("總虧損", f"${stats['total_loss']:,.0f}")
             
             fig = make_subplots(
                 rows=2, cols=1,
-                subplot_titles=("資金曲線", "回撤曲線"),
+                subplot_titles=("資金曲線", "回撤%"),
                 vertical_spacing=0.15,
                 row_heights=[0.7, 0.3]
             )
             
             fig.add_trace(
-                go.Scatter(
-                    x=list(range(len(trades_df))),
-                    y=trades_df['capital'],
-                    mode='lines',
-                    name='資金',
-                    line=dict(color='blue', width=2)
-                ),
+                go.Scatter(x=list(range(len(trades_df))), y=trades_df['capital'],
+                          mode='lines', name='資金', line=dict(color='blue', width=2)),
                 row=1, col=1
             )
             
-            fig.add_hline(
-                y=initial_capital,
-                line_dash="dash",
-                line_color="gray",
-                annotation_text="初始資金",
-                row=1, col=1
-            )
+            fig.add_hline(y=initial_capital, line_dash="dash", line_color="gray",
+                         annotation_text="初始", row=1, col=1)
             
             fig.add_trace(
-                go.Scatter(
-                    x=list(range(len(trades_df))),
-                    y=trades_df['drawdown_pct'] * 100,
-                    mode='lines',
-                    name='回撤',
-                    fill='tozeroy',
-                    line=dict(color='red', width=1)
-                ),
+                go.Scatter(x=list(range(len(trades_df))), y=trades_df['drawdown_pct']*100,
+                          mode='lines', name='回撤', fill='tozeroy', line=dict(color='red', width=1)),
                 row=2, col=1
             )
             
             fig.update_xaxes(title_text="交易次數", row=2, col=1)
-            fig.update_yaxes(title_text="資金 ($)", row=1, col=1)
-            fig.update_yaxes(title_text="回撤 (%)", row=2, col=1)
-            
+            fig.update_yaxes(title_text="$", row=1, col=1)
+            fig.update_yaxes(title_text="%", row=2, col=1)
             fig.update_layout(height=700, showlegend=True)
             
             st.plotly_chart(fig, use_container_width=True)
             
-            st.markdown("### 退出原因分布")
+            st.markdown("### 退出原因")
             exit_counts = trades_df['exit_reason'].value_counts()
             col1, col2, col3 = st.columns(3)
             with col1:
-                tp_count = exit_counts.get('TP', 0)
-                st.metric("止盈出場", tp_count, 
-                         delta=f"{100*tp_count/len(trades_df):.1f}%")
+                tp = exit_counts.get('TP', 0)
+                st.metric("TP", tp, delta=f"{100*tp/len(trades_df):.1f}%")
             with col2:
-                sl_count = exit_counts.get('SL', 0)
-                st.metric("止損出場", sl_count,
-                         delta=f"{100*sl_count/len(trades_df):.1f}%")
+                sl = exit_counts.get('SL', 0)
+                st.metric("SL", sl, delta=f"{100*sl/len(trades_df):.1f}%")
             with col3:
-                timeout_count = exit_counts.get('Timeout', 0)
-                st.metric("超時出場", timeout_count,
-                         delta=f"{100*timeout_count/len(trades_df):.1f}%")
+                timeout = exit_counts.get('Timeout', 0)
+                st.metric("Timeout", timeout, delta=f"{100*timeout/len(trades_df):.1f}%")
             
-            st.markdown("### 近期交易紀錄")
-            display_cols = ['entry_time', 'entry_price', 'exit_price', 'position_value', 'exit_reason', 'exit_bars', 
-                          'pnl_dollar', 'total_commission', 'capital']
-            display_df = trades_df[display_cols].tail(50).copy()
+            st.markdown("### 交易紀錄")
+            display_df = trades_df[['entry_time', 'entry_price', 'exit_price', 'required_margin',
+                                   'exit_reason', 'pnl_dollar', 'total_commission', 'capital']].tail(50).copy()
             display_df['entry_time'] = display_df['entry_time'].dt.strftime('%Y-%m-%d %H:%M')
-            display_df.columns = ['進場時間', '進場價', '出場價', '倉位金額', '退出原因', '持倉時間', '損益', '手續費', '累計資金']
+            display_df.columns = ['時間', '進場', '出場', '保證金', '原因', '損益', '費用', '累計']
             st.dataframe(display_df, use_container_width=True)
             
             csv = trades_df.to_csv(index=False)
             st.download_button(
-                label="下載完整交易紀錄 (CSV)",
+                label="下載 CSV",
                 data=csv,
                 file_name=f"backtest_{symbol}_{timeframe}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv"
             )
             
-            st.markdown("### 建議")
-            if stats['total_return'] > 0.5 and stats['sharpe_ratio'] > 1.5:
-                st.success("優秀的回測結果! 可以考慮實盤測試")
-            elif stats['total_return'] > 0.2 and stats['win_rate'] > 0.5:
-                st.info("合格的結果,建議繼續優化參數")
-            else:
-                st.warning("績效不佳,建議重新訓練模型或調整門檻")
-            
         except Exception as e:
-            st.error(f"回測失敗: {str(e)}")
+            st.error(f"錯誤: {str(e)}")
             import traceback
             st.code(traceback.format_exc())
