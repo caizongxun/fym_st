@@ -12,6 +12,7 @@ from tabs.tab_strategy_h import render_strategy_h_tab
 from tabs.tab_strategy_i import render_strategy_i_tab
 from tabs.tab_strategy_j import render_strategy_j_tab
 from tabs.tab_strategy_k import render_strategy_k_tab
+from tabs.tab_strategy_l import render_strategy_l_tab
 
 st.set_page_config(
     page_title="多策略交易系統",
@@ -20,7 +21,7 @@ st.set_page_config(
 )
 
 st.title("多策略交易系統")
-st.caption("策略A-H:基礎 | I-K:激進版 (目標 +100% / 30天) 🔥")
+st.caption("策略A-H:基礎 | I-K:激進 | L:終極 (10年數據) 🏆")
 
 st.sidebar.title("系統設定")
 
@@ -38,13 +39,39 @@ strategy_choice = st.sidebar.radio(
         "---",
         "I: 極致激進H (10x) 🔥",
         "J: 網格+趨勢雙引擎 🎯",
-        "K: RL Agent 激進版 🤖🔥"
+        "K: RL Agent 激進版 🤖🔥",
+        "---",
+        "L: 終極系統 (10年數據) 🏆"
     ]
 )
 
 st.sidebar.markdown("---")
 
-if strategy_choice.startswith("K"):
+if strategy_choice.startswith("L"):
+    st.sidebar.markdown("""
+### 策略L: 終極系統 🏆
+
+**利用 10 年完整數據**:
+- 2016-2026 全部歷史
+- 3 個牛熊週期
+- 自動識別每個幣開始時間
+
+**智能系統**:
+1. 環境分類器 (牛/熊/震盪)
+2. 分環境訓練 (專屬策略)
+3. 參數優化 (最佳組合)
+4. Walk-Forward 驗證
+
+**優勢**:
+- 每種市場用最佳策略
+- 避免過擬合
+- 參數經大量驗證
+
+**目標**: +100%+ / 30天
+
+---
+    """)
+elif strategy_choice.startswith("K"):
     st.sidebar.markdown("""
 ### 策略K: RL 激進版 🤖🔥
 
@@ -269,8 +296,10 @@ elif strategy_choice.startswith("I"):
     render_strategy_i_tab(loader, symbol_selector)
 elif strategy_choice.startswith("J"):
     render_strategy_j_tab(loader, symbol_selector)
-else:  # K
+elif strategy_choice.startswith("K"):
     render_strategy_k_tab(loader, symbol_selector)
+else:  # L
+    render_strategy_l_tab(loader, symbol_selector)
 
 st.sidebar.markdown("---")
 st.sidebar.info("""
@@ -285,8 +314,14 @@ st.sidebar.info("""
 - 10x 槓桿
 - 高風險高報酬
 
-**推薦**:
-- 新手: H (混合智能)
-- 激進: J (雙引擎)
-- 極致: K (RL 激進)
+**終極版 (L)** 🏆:
+- 利用 10 年完整數據
+- 環境分類 + 參數優化
+- Walk-Forward 驗證
+- 最高穩健性
+
+**推薦順序**:
+1. 先試 L (終極版)
+2. 再試 J (雙引擎)
+3. 最後 K (極致)
 """)
