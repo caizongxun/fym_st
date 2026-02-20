@@ -24,6 +24,27 @@ def render():
     - ATR 基礎風險管理
     """)
     
+    # 優化建議
+    with st.expander("優化建議", expanded=False):
+        st.markdown("""
+        ### 提升收益率的三大方向
+        
+        **1. 拉高 TP 倍數 (3.5-4.0)**
+        - 目的: 讓獲利遠大於手續費 (0.12%)
+        - 代價: 勝率可能從 66% 降至 55%
+        - 結果: 平均獲利大幅提升,盈虧比改善
+        
+        **2. 降低機率門檻 (0.52-0.53)**
+        - 目的: 增加交易頁率 (90天 12筆 → 25-30筆)
+        - 條件: 新信號依然保持正期望值
+        - 結果: 總獲利翻倍
+        
+        **3. 實盤使用 Maker 費率**
+        - 方法: TP 使用限價單 (Limit Order)
+        - 節省: 60% 的出場手續費
+        - 影響: 平均獲利立即提升
+        """)
+    
     st.markdown("---")
     
     with st.expander("回測配置", expanded=True):
@@ -46,7 +67,7 @@ def render():
             data_source = st.radio(
                 "數據來源",
                 ["Binance API (最新)", "HuggingFace (快速)"],
-                help="Binance API 獲取最新數據,HuggingFace 使用緩存"
+                help="Binance API 獲取最新數據"
             )
             
             if data_source == "Binance API (最新)":
@@ -58,23 +79,33 @@ def render():
             initial_capital = st.number_input("初始資金", value=10000.0, step=1000.0)
             risk_per_trade = st.number_input("每筆風險%", value=1.0, step=0.5)
             leverage = st.number_input("槓桿倍數", value=10, min_value=1, max_value=20, step=1,
-                                      help="幣安合約槓桿,預設10x")
+                                      help="幣安合約槓桿")
             
         with col3:
-            tp_multiplier = st.number_input("TP 倍數 (ATR)", value=2.5, step=0.5)
+            tp_multiplier = st.number_input(
+                "TP 倍數 (ATR)", 
+                value=3.5, 
+                step=0.5,
+                help="建議 3.5-4.0 以覆蓋手續費"
+            )
             sl_multiplier = st.number_input("SL 倍數 (ATR)", value=1.5, step=0.25)
-            probability_threshold = st.number_input("機率門檻", value=0.60, step=0.05)
+            probability_threshold = st.number_input(
+                "機率門檻", 
+                value=0.52, 
+                step=0.01,
+                help="建議 0.52-0.53 增加交易頁率"
+            )
     
     with st.expander("手續費與滑點", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
             taker_fee = st.number_input("Taker 費率", value=0.0006, step=0.0001, format="%.4f",
-                                       help="市價單吃單費率 (0.06%)")
+                                       help="市價單 0.06%")
             maker_fee = st.number_input("Maker 費率", value=0.0002, step=0.0001, format="%.4f",
-                                       help="限價單掛單費率 (0.02%)")
+                                       help="限價單 0.02% (TP 使用)")
         with col2:
-            slippage = st.number_input("滑點", value=0.0005, step=0.0001, format="%.4f",
-                                      help="市價單滑點 (0.05%)")
+            slippage = st.number_input("滑點", value=0.0005, step=0.0001, format="%.4f")
+            st.info("建議: 實盤 TP 使用限價單可省 60% 費用")
     
     with st.expander("事件過濾設定", expanded=False):
         use_event_filter = st.checkbox("啟用事件過濾", value=True)
@@ -189,6 +220,13 @@ def render():
             stats = results['statistics']
             trades_df = results['trades']
             
+            # 計算年化化指標
+            days_in_test = (trades_df.iloc[-1]['entry_time'] - trades_df.iloc[0]['entry_time']).days
+            annualized_return = stats['total_return'] * (365 / days_in_test) if days_in_test > 0 else 0
+            
+            # 手續費佔收益比
+            fee_to_profit_ratio = stats['total_commission'] / stats['net_pnl'] if stats['net_pnl'] > 0 else 0
+            
             st.markdown("### 績效摘要")
             
             col1, col2, col3, col4, col5 = st.columns(5)
@@ -200,20 +238,35 @@ def render():
                 st.metric("淨損益", f"${stats['net_pnl']:,.0f}", 
                          delta=f"{stats['total_return']*100:.1f}%")
             with col4:
-                st.metric("總手續費", f"${stats['total_commission']:,.0f}")
+                st.metric("總手續費", f"${stats['total_commission']:,.0f}",
+                         delta=f"{fee_to_profit_ratio*100:.1f}% 佔利潤",
+                         delta_color="inverse")
             with col5:
-                ev = (stats['win_rate'] * tp_multiplier) - ((1 - stats['win_rate']) * sl_multiplier)
-                st.metric("期望值", f"{ev:.3f}R")
+                st.metric("年化報酸", f"{annualized_return*100:.1f}%")
+            
+            # 期望值分析
+            col1, col2 = st.columns(2)
+            with col1:
+                ev_theory = (stats['win_rate'] * tp_multiplier) - ((1 - stats['win_rate']) * sl_multiplier)
+                st.metric("理論期望值", f"{ev_theory:.3f}R")
+            with col2:
+                # 實際期望值 (含手續費)
+                avg_win_r = stats['avg_win'] / (initial_capital * risk_per_trade / 100) if stats['avg_win'] > 0 else 0
+                avg_loss_r = abs(stats['avg_loss']) / (initial_capital * risk_per_trade / 100) if stats['avg_loss'] < 0 else 0
+                ev_actual = (stats['win_rate'] * avg_win_r) - ((1 - stats['win_rate']) * avg_loss_r)
+                st.metric("實際期望值", f"{ev_actual:.3f}R",
+                         help="含手續費和滑點")
             
             st.markdown("### 績效指標")
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("交易次數", stats['total_trades'])
-                st.metric("勝率", f"{stats['win_rate']*100:.1f}%")
+                trades_per_week = stats['total_trades'] / (days_in_test / 7) if days_in_test > 0 else 0
+                st.metric("週均交易", f"{trades_per_week:.1f} 筆")
             with col2:
-                st.metric("獲利次數", stats['winning_trades'])
-                st.metric("虧損次數", stats['losing_trades'])
+                st.metric("勝率", f"{stats['win_rate']*100:.1f}%")
+                st.metric("獲利/虧損", f"{stats['winning_trades']}/{stats['losing_trades']}")
             with col3:
                 st.metric("平均獲利", f"${stats['avg_win']:.0f}")
                 st.metric("平均虧損", f"${stats['avg_loss']:.0f}")
@@ -288,6 +341,29 @@ def render():
                 file_name=f"backtest_{symbol}_{timeframe}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv"
             )
+            
+            # 優化建議
+            st.markdown("### 優化建議")
+            
+            suggestions = []
+            
+            if fee_to_profit_ratio > 0.3:
+                suggestions.append(f"手續費佔利潤 {fee_to_profit_ratio*100:.1f}% 過高,建議提高 TP 至 {tp_multiplier+0.5:.1f}-{tp_multiplier+1:.1f}")
+            
+            if trades_per_week < 2:
+                suggestions.append(f"週均交易 {trades_per_week:.1f} 筆過少,建議降低門檻至 {probability_threshold-0.03:.2f}")
+            
+            if stats['avg_loss'] and abs(stats['avg_loss']) > stats['avg_win']:
+                suggestions.append("平均虧損 > 平均獲利,考慮提高 TP 或縮小 SL")
+            
+            if stats['total_return'] > 0.3 and stats['sharpe_ratio'] > 2.0:
+                suggestions.append("優秀的績效! 可以考慮實盤測試")
+            
+            if len(suggestions) > 0:
+                for s in suggestions:
+                    st.info(s)
+            else:
+                st.success("參數設定良好,繼續保持!")
             
         except Exception as e:
             st.error(f"錯誤: {str(e)}")
