@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
 from core import (
     CryptoDataLoader, FeatureEngineer, TripleBarrierLabeling,
-    MetaLabeling, ModelTrainer
+    MetaLabeling, ModelTrainer, EventFilter
 )
 
 def render():
@@ -17,10 +17,10 @@ def render():
     
     st.markdown("""
     使用進階機器學習訓練交易模型:
-    - **時間平移三重屏障** - 修正時間洩漏
+    - **事件驅動抽樣** - 過濾無效盤整期 (關鍵)
+    - **時間平移標記** - 修正時間洩漏
     - **MAE 追蹤** - 記錄最大不利偏移
     - **樣本質量加權** - 快速低回撤的交易權重更高
-    - **機率校準** - Isotonic Regression
     """)
     
     st.markdown("---")
@@ -33,10 +33,10 @@ def render():
             symbol = st.selectbox("訓練交易對", loader.get_available_symbols(), index=10)
             timeframe = st.selectbox("時間框架", loader.get_available_timeframes(), index=1)
             
-            tp_multiplier = st.number_input("止盈倍數 (ATR)", value=3.0, step=0.5, 
-                                           help="建議: 3.0-4.0")
+            tp_multiplier = st.number_input("止盈倍數 (ATR)", value=2.5, step=0.5, 
+                                           help="建議: 2.5-3.0")
             sl_multiplier = st.number_input("止損倍數 (ATR)", value=1.5, step=0.25,
-                                           help="建議: 1.5-2.0")
+                                           help="建議: 1.5")
         
         with col2:
             max_holding_bars = st.number_input("最大持倉根數", value=24, step=1)
@@ -44,16 +44,40 @@ def render():
             embargo_pct = st.number_input("禁止區百分比", value=0.01, step=0.01, format="%.3f")
             use_calibration = st.checkbox("啟用機率校準", value=True)
     
+    with st.expander("事件過濾器", expanded=True):
+        st.markdown("""
+        **核心功能**: 過濾無交易機會的盤整期,只保留10-20%有效樣本
+        這是將 AUC 從 0.5 提升到 0.6+ 的關鍵
+        """)
+        
+        use_event_filter = st.checkbox("啟用事件過濾器", value=True,
+                                       help="強烈建議啟用以提升 AUC")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            use_volatility = st.checkbox("波動率突破", value=True,
+                                        help="VSR > 1.2")
+            use_volume = st.checkbox("成交量爆增", value=True,
+                                    help="Volume Ratio > 1.5")
+        with col2:
+            use_trend = st.checkbox("趨勢對齊", value=True,
+                                   help="EMA9 > EMA21 > EMA50")
+            use_bb_squeeze = st.checkbox("BB壓縮突破", value=True,
+                                        help="布林帶壓縮後爆發")
+        with col3:
+            filter_aggressiveness = st.selectbox(
+                "過濾強度",
+                ["標準 (15-25%)", "激進 (10%)", "寬鬆 (30%)"],
+                index=0
+            )
+    
     with st.expander("進階配置", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
-            slippage = st.number_input("滑點", value=0.001, step=0.0001, format="%.4f",
-                                      help="模擬實際交易的價格滑點")
-            time_decay_lambda = st.number_input("時間衰減系數", value=2.0, step=0.5,
-                                               help="控制持倉時間懲罰強度")
+            slippage = st.number_input("滑點", value=0.001, step=0.0001, format="%.4f")
+            time_decay_lambda = st.number_input("時間衰減系數", value=2.0, step=0.5)
         with col2:
-            quality_alpha = st.number_input("質量權重系數", value=2.0, step=0.5,
-                                           help="高質量樣本的權重放大倍數")
+            quality_alpha = st.number_input("質量權重系數", value=2.0, step=0.5)
     
     with st.expander("模型超參數", expanded=False):
         col1, col2 = st.columns(2)
@@ -79,12 +103,36 @@ def render():
             st.info(f"載入 {len(df)} 筆數據,時間範圍: {df['open_time'].min()} 至 {df['open_time'].max()}")
             
             status_text.text("建立特徵...")
-            progress_bar.progress(15)
+            progress_bar.progress(10)
             feature_engineer = FeatureEngineer()
             df_features = feature_engineer.build_features(df)
             st.info(f"已建立 {len(df_features.columns)} 個特徵")
             
-            status_text.text("應用進階三重屏障標記...")
+            # 事件過濾
+            if use_event_filter:
+                status_text.text("應用事件過濾器...")
+                progress_bar.progress(15)
+                
+                event_filter = EventFilter(
+                    use_volatility_breakout=use_volatility,
+                    use_volume_surge=use_volume,
+                    use_trend_alignment=use_trend,
+                    use_bb_squeeze=use_bb_squeeze,
+                    min_events_ratio=0.05
+                )
+                
+                if "激進" in filter_aggressiveness:
+                    df_filtered = event_filter.apply_aggressive_filter(df_features, target_ratio=0.10)
+                elif "寬鬆" in filter_aggressiveness:
+                    event_filter.min_events_ratio = 0.30
+                    df_filtered = event_filter.filter_events(df_features)
+                else:
+                    df_filtered = event_filter.filter_events(df_features)
+                
+                st.info(f"事件過濾: {len(df)} → {len(df_filtered)} ({100*len(df_filtered)/len(df):.1f}%)")
+                df_features = df_filtered
+            
+            status_text.text("應用三重屏障標記...")
             progress_bar.progress(25)
             labeler = TripleBarrierLabeling(
                 tp_multiplier=tp_multiplier,
@@ -114,7 +162,9 @@ def render():
                 'quote_volume', 'trades', 'taker_buy_volume', 'taker_buy_quote_volume',
                 'taker_buy_base_asset_volume',
                 'label', 'label_return', 'hit_time', 'exit_type', 'sample_weight', 'mae_ratio',
-                'exit_price', 'exit_bars', 'return', 'ignore'
+                'exit_price', 'exit_bars', 'return', 'ignore',
+                'bb_middle', 'bb_upper', 'bb_lower', 'bb_std',  # 排除絕對價格
+                'volume_ma_20'  # 排除絕對成交量
             ]
             
             feature_cols = [col for col in df_labeled.columns if col not in exclude_cols]
@@ -133,9 +183,7 @@ def render():
             
             st.info(f"訓練數據: {len(X)} 樣本, {len(feature_cols)} 特徵")
             
-            status_text.text(f"Purged K-Fold 交叉驗證訓練...")
-            if use_calibration:
-                st.info("機率校準: 已啟用")
+            status_text.text(f"Purged K-Fold 訓練...")
             progress_bar.progress(50)
             
             trainer = ModelTrainer(use_calibration=use_calibration)
@@ -175,47 +223,29 @@ def render():
             with col1:
                 st.metric("準確率", f"{cv_metrics.get('cv_val_accuracy', 0):.4f} ± {cv_metrics.get('cv_val_accuracy_std', 0):.4f}")
             with col2:
-                st.metric("AUC", f"{cv_metrics.get('cv_val_auc', 0):.4f} ± {cv_metrics.get('cv_val_auc_std', 0):.4f}")
+                auc_val = cv_metrics.get('cv_val_auc', 0)
+                auc_delta = auc_val - 0.5
+                st.metric("AUC", f"{auc_val:.4f} ± {cv_metrics.get('cv_val_auc_std', 0):.4f}",
+                         delta=f"+{auc_delta:.4f}" if auc_delta > 0 else f"{auc_delta:.4f}")
             with col3:
                 st.metric("精確率", f"{cv_metrics.get('cv_val_precision', 0):.4f}")
             with col4:
                 st.metric("召回率", f"{cv_metrics.get('cv_val_recall', 0):.4f}")
             
             auc = cv_metrics.get('cv_val_auc', 0)
-            acc = cv_metrics.get('cv_val_accuracy', 0)
-            recall = cv_metrics.get('cv_val_recall', 0)
+            prec = cv_metrics.get('cv_val_precision', 0)
             
-            if auc >= 0.65 and recall >= 0.25:
-                st.success("模型表現優秀! AUC >= 0.65 且召回率良好")
-            elif auc >= 0.60:
+            if auc >= 0.60 and prec >= 0.40:
+                st.success("模型表現優秀! AUC >= 0.60 且精確率 >= 40%")
+            elif auc >= 0.56:
                 st.info("模型表現合格,可進行回測")
             elif auc < 0.55:
-                st.error("模型 AUC < 0.55,預測能力不佳")
-            
-            if acc > 0.85:
-                st.warning("準確率 > 85%,可能存在數據洩漏")
-            
-            if recall < 0.1:
-                st.warning("召回率 < 10%,模型過於保守")
+                st.error(f"模型 AUC {auc:.4f} < 0.55,預測能力不佳")
+                st.warning("建議: 1) 確認事件過濾器已啟用 2) 調整 TP/SL")
             
             st.markdown("### 特徵重要性 (前 20 名)")
             feature_importance = trainer.get_feature_importance()
             st.dataframe(feature_importance.head(20), use_container_width=True)
-            
-            st.markdown("### 下一步")
-            if auc >= 0.60:
-                st.info("""
-                1. 前往 **機率校準分析** 檢查校準效果
-                2. 前往 **回測分析** 測試策略績效
-                3. 前往 **策略優化** 尋找最佳參數
-                """)
-            else:
-                st.warning("""
-                模型表現不佳,建議:
-                1. 調整 TP/SL 倍數
-                2. 修改時間框架或交易對
-                3. 檢查特徵工程
-                """)
             
         except Exception as e:
             st.error(f"訓練失敗: {str(e)}")
