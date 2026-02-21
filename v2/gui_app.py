@@ -2,9 +2,11 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import sys
+import glob
+import time
 
 from data_loader import CryptoDataLoader
 from feature_engineering import FeatureEngineer
@@ -12,11 +14,13 @@ from label_generation import LabelGenerator
 from pipeline import TradingPipeline
 from model_trainer import ModelTrainer, TrendFilterTrainer
 from inference_engine import InferenceEngine
+from advanced_data_collector import BatchAdvancedDataCollector, BinanceAdvancedDataCollector
+from advanced_feature_merger import AdvancedFeatureMerger
 
 
 st.set_page_config(
     page_title="V2 交易系統",
-    page_icon="chart",
+    page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -29,12 +33,20 @@ if 'data_loader' not in st.session_state:
 if 'pipeline' not in st.session_state:
     st.session_state.pipeline = TradingPipeline()
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "[1] 數據載入",
-    "[2] 特徵工程",
-    "[3] 標籤生成",
-    "[4] 模型訓練",
-    "[5] 推論測試"
+if 'batch_collector' not in st.session_state:
+    st.session_state.batch_collector = BatchAdvancedDataCollector()
+
+if 'feature_merger' not in st.session_state:
+    st.session_state.feature_merger = AdvancedFeatureMerger()
+
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "📊 [1] 數據載入",
+    "🔄 [2] 進階數據收集",
+    "🛠️ [3] 特徵工程",
+    "🏷️ [4] 標籤生成",
+    "🤖 [5] 模型訓練",
+    "🎯 [6] 推論測試",
+    "☁️ [7] HF 上傳"
 ])
 
 with tab1:
@@ -81,6 +93,8 @@ with tab1:
                         df = st.session_state.data_loader.load_klines(symbol, timeframe)
                         df_prepared = st.session_state.data_loader.prepare_dataframe(df)
                         st.session_state.df_raw = df_prepared
+                        st.session_state.current_symbol = symbol
+                        st.session_state.current_timeframe = timeframe
                         st.success(f"成功載入 {len(df_prepared)} 筆數據")
                     except Exception as e:
                         st.error(f"載入失敗: {str(e)}")
@@ -103,10 +117,158 @@ with tab1:
                 st.metric("平均價格", f"{df_display['close'].mean():.2f}")
 
 with tab2:
+    st.header("🔄 進階數據收集")
+    
+    st.info("📈 收集訂單流、資金費率、未平倉量、多空比等進階特徵,預期提升測試 AUC 0.15-0.25")
+    
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.subheader("收集參數")
+        
+        collection_mode = st.radio(
+            "收集模式",
+            ["單一幣種", "批量收集 (38個)"],
+            key='collection_mode'
+        )
+        
+        if collection_mode == "單一幣種":
+            symbols_to_collect = [st.selectbox(
+                "選擇幣種",
+                st.session_state.batch_collector.hf_symbols,
+                key='adv_symbol'
+            )]
+        else:
+            symbols_to_collect = st.session_state.batch_collector.hf_symbols
+            with st.expander(f"查看幣種清單 ({len(symbols_to_collect)}個)"):
+                for sym in symbols_to_collect:
+                    st.text(sym)
+        
+        st.write("---")
+        
+        col_date1, col_date2 = st.columns(2)
+        with col_date1:
+            start_date = st.date_input(
+                "起始日期",
+                value=datetime(2024, 1, 1),
+                key='adv_start_date'
+            )
+        with col_date2:
+            end_date = st.date_input(
+                "結束日期",
+                value=datetime(2024, 12, 31),
+                key='adv_end_date'
+            )
+        
+        adv_timeframe = st.selectbox(
+            "時間框架",
+            ['15m', '1h', '4h'],
+            index=0,
+            key='adv_timeframe'
+        )
+        
+        output_dir = st.text_input(
+            "輸出目錄",
+            value='v2/advanced_data',
+            key='adv_output_dir'
+        )
+        
+        st.write("---")
+        
+        if st.button("🚀 開始收集", use_container_width=True, type="primary"):
+            st.session_state.collection_started = True
+            st.rerun()
+    
+    with col2:
+        if st.session_state.get('collection_started', False):
+            st.subheader("收集進度")
+            
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            result_placeholder = st.empty()
+            
+            collector = BinanceAdvancedDataCollector()
+            summary_data = []
+            
+            for idx, symbol in enumerate(symbols_to_collect):
+                progress = (idx + 1) / len(symbols_to_collect)
+                progress_bar.progress(progress)
+                status_text.text(f"正在處理 {symbol} ({idx+1}/{len(symbols_to_collect)})...")
+                
+                try:
+                    features_dict = collector.collect_all_advanced_features(
+                        symbol=symbol,
+                        start_date=start_date.strftime('%Y-%m-%d'),
+                        end_date=end_date.strftime('%Y-%m-%d'),
+                        timeframe=adv_timeframe
+                    )
+                    
+                    collector.save_advanced_features(
+                        symbol=symbol,
+                        features_dict=features_dict,
+                        output_dir=output_dir
+                    )
+                    
+                    summary_data.append({
+                        '幣種': symbol,
+                        '訂單流': len(features_dict.get('order_flow', pd.DataFrame())),
+                        '資金費率': len(features_dict.get('funding_rate', pd.DataFrame())),
+                        '未平倉量': len(features_dict.get('open_interest', pd.DataFrame())),
+                        '多空比': len(features_dict.get('long_short_ratio', pd.DataFrame())),
+                        '狀態': '✅ 成功'
+                    })
+                    
+                    time.sleep(1)
+                    
+                except Exception as e:
+                    summary_data.append({
+                        '幣種': symbol,
+                        '訂單流': 0,
+                        '資金費率': 0,
+                        '未平倉量': 0,
+                        '多空比': 0,
+                        '狀態': f'❌ {str(e)[:20]}'
+                    })
+            
+            progress_bar.progress(1.0)
+            status_text.text("✅ 收集完成!")
+            
+            st.session_state.collection_summary = pd.DataFrame(summary_data)
+            st.session_state.collection_started = False
+            
+            summary_path = os.path.join(output_dir, 'collection_summary.csv')
+            os.makedirs(output_dir, exist_ok=True)
+            st.session_state.collection_summary.to_csv(summary_path, index=False)
+            
+            st.success(f"✅ 已完成 {len(symbols_to_collect)} 個幣種的數據收集")
+            st.rerun()
+        
+        if 'collection_summary' in st.session_state:
+            st.subheader("📋 收集摘要")
+            st.dataframe(
+                st.session_state.collection_summary,
+                use_container_width=True,
+                hide_index=True,
+                height=400
+            )
+            
+            success_count = (st.session_state.collection_summary['狀態'] == '✅ 成功').sum()
+            total_records = st.session_state.collection_summary[['訂單流', '資金費率', '未平倉量', '多空比']].sum().sum()
+            
+            col_m1, col_m2, col_m3 = st.columns(3)
+            with col_m1:
+                st.metric("成功收集", f"{success_count}/{len(st.session_state.collection_summary)}")
+            with col_m2:
+                st.metric("總數據筆數", f"{total_records:,}")
+            with col_m3:
+                success_rate = (success_count / len(st.session_state.collection_summary) * 100)
+                st.metric("成功率", f"{success_rate:.1f}%")
+
+with tab3:
     st.header("特徵工程")
     
     if 'df_raw' not in st.session_state:
-        st.warning("請先在 [1]數據載入 頁面載入數據")
+        st.warning("⚠️ 請先在 [1]數據載入 頁面載入數據")
     else:
         col1, col2 = st.columns([1, 3])
         
@@ -118,6 +280,14 @@ with tab2:
             lookback = st.number_input("回溯週期", 50, 200, 100)
             pivot_left = st.number_input("樞紐左側K線", 1, 10, 3)
             pivot_right = st.number_input("樞紐右側K線", 1, 10, 3)
+            
+            st.write("---")
+            
+            merge_advanced = st.checkbox(
+                "🔥 合併進階特徵",
+                value=False,
+                help="自動載入訂單流、資金費率等進階數據"
+            )
             
             if st.button("計算特徵", use_container_width=True):
                 with st.spinner('計算中...'):
@@ -131,35 +301,71 @@ with tab2:
                         )
                         st.session_state.df_features = fe.process_features(st.session_state.df_raw)
                         st.session_state.feature_engineer = fe
-                        st.success(f"特徵計算完成: {len(st.session_state.df_features)} 筆")
+                        
+                        base_features = len(fe.get_feature_columns())
+                        
+                        if merge_advanced:
+                            if 'current_symbol' in st.session_state:
+                                merger = st.session_state.feature_merger
+                                st.session_state.df_features = merger.merge_all_features(
+                                    st.session_state.df_features,
+                                    st.session_state.current_symbol
+                                )
+                                adv_features = merger.get_advanced_feature_columns(st.session_state.df_features)
+                                st.success(f"✅ 特徵計算完成: {len(st.session_state.df_features)} 筆 | 基礎特徵: {base_features} | 進階特徵: {len(adv_features)}")
+                            else:
+                                st.warning("⚠️ 無法合併進階特徵: 請先載入數據")
+                                st.success(f"✅ 基礎特徵計算完成: {len(st.session_state.df_features)} 筆 | 特徵數: {base_features}")
+                        else:
+                            st.success(f"✅ 基礎特徵計算完成: {len(st.session_state.df_features)} 筆 | 特徵數: {base_features}")
                     except Exception as e:
-                        st.error(f"計算失敗: {str(e)}")
+                        st.error(f"❌ 計算失敗: {str(e)}")
         
         with col2:
             if 'df_features' in st.session_state:
                 st.subheader("特徵數據預覽")
                 
                 feature_cols = st.session_state.feature_engineer.get_feature_columns()
-                display_cols = ['timestamp', 'close'] + feature_cols[:5]
+                
+                adv_features = []
+                if 'feature_merger' in st.session_state:
+                    adv_features = st.session_state.feature_merger.get_advanced_feature_columns(
+                        st.session_state.df_features
+                    )
+                
+                all_features = feature_cols + adv_features
+                display_cols = ['timestamp', 'close'] + all_features[:8]
+                available_cols = [c for c in display_cols if c in st.session_state.df_features.columns]
                 
                 st.dataframe(
-                    st.session_state.df_features[display_cols].head(50),
+                    st.session_state.df_features[available_cols].head(50),
                     use_container_width=True,
                     height=300
                 )
                 
-                st.subheader("特徵列表")
+                st.subheader("📊 特徵列表")
+                
                 col_feat1, col_feat2 = st.columns(2)
                 with col_feat1:
-                    st.write(feature_cols[:8])
+                    st.write("**基礎特徵**")
+                    for feat in feature_cols:
+                        st.text(f"• {feat}")
+                
                 with col_feat2:
-                    st.write(feature_cols[8:])
+                    if adv_features:
+                        st.write(f"**進階特徵 ({len(adv_features)}個)**")
+                        for feat in adv_features[:15]:
+                            st.text(f"• {feat}")
+                        if len(adv_features) > 15:
+                            st.text(f"... 和其他 {len(adv_features)-15} 個")
+                    else:
+                        st.info("未載入進階特徵")
 
-with tab3:
+with tab4:
     st.header("標籤生成")
     
     if 'df_features' not in st.session_state:
-        st.warning("請先在 [2]特徵工程 頁面計算特徵")
+        st.warning("⚠️ 請先在 [3]特徵工程 頁面計算特徵")
     else:
         col1, col2 = st.columns([1, 3])
         
@@ -186,9 +392,9 @@ with tab3:
                         stats = lg.get_label_statistics(st.session_state.df_labeled)
                         st.session_state.label_stats = stats
                         
-                        st.success("標籤生成完成")
+                        st.success("✅ 標籤生成完成")
                     except Exception as e:
-                        st.error(f"生成失敗: {str(e)}")
+                        st.error(f"❌ 生成失敗: {str(e)}")
         
         with col2:
             if 'df_labeled' in st.session_state:
@@ -229,11 +435,11 @@ with tab3:
                     height=300
                 )
 
-with tab4:
+with tab5:
     st.header("模型訓練")
     
     if 'df_labeled' not in st.session_state:
-        st.warning("請先在 [3]標籤生成 頁面生成標籤")
+        st.warning("⚠️ 請先在 [4]標籤生成 頁面生成標籤")
     else:
         col1, col2 = st.columns([1, 3])
         
@@ -241,9 +447,9 @@ with tab4:
             st.subheader("訓練參數")
             
             direction = st.selectbox("方向", ['long', 'short'])
-            n_estimators = st.number_input("樹數量", 100, 1000, 500, 50)
-            learning_rate = st.number_input("學習率", 0.01, 0.2, 0.05, 0.01)
-            max_depth = st.number_input("最大深度", 3, 15, 7)
+            n_estimators = st.number_input("樹數量", 100, 1000, 300, 50)
+            learning_rate = st.number_input("學習率", 0.001, 0.1, 0.01, 0.001, format="%.3f")
+            max_depth = st.number_input("最大深度", 3, 15, 4)
             train_ratio = st.number_input("訓練集比例", 0.5, 0.9, 0.8, 0.05)
             
             st.write("---")
@@ -272,9 +478,9 @@ with tab4:
                             trainer.save_model(f'v2/models/bounce_{direction}_model.pkl')
                             
                             st.session_state.bounce_results = results
-                            st.success("反彈模型訓練完成")
+                            st.success("✅ 反彈模型訓練完成")
                         except Exception as e:
-                            st.error(f"訓練失敗: {str(e)}")
+                            st.error(f"❌ 訓練失敗: {str(e)}")
             
             with col_btn2:
                 if st.button("訓練過濾模型", use_container_width=True):
@@ -297,9 +503,9 @@ with tab4:
                             trainer.save_model(f'v2/models/filter_{direction}_model.pkl')
                             
                             st.session_state.filter_results = results
-                            st.success("過濾模型訓練完成")
+                            st.success("✅ 過濾模型訓練完成")
                         except Exception as e:
-                            st.error(f"訓練失敗: {str(e)}")
+                            st.error(f"❌ 訓練失敗: {str(e)}")
         
         with col2:
             st.subheader("訓練結果")
@@ -315,11 +521,12 @@ with tab4:
                     st.metric("訓練樣本", results['train_samples'])
                     st.metric("測試樣本", results['test_samples'])
                     
-                    st.write("**特徵重要性 Top 5**")
+                    st.write("**特徵重要性 Top 10**")
                     st.dataframe(
-                        results['feature_importance'].head(5),
+                        results['feature_importance'].head(10),
                         use_container_width=True,
-                        hide_index=True
+                        hide_index=True,
+                        height=300
                     )
                 else:
                     st.info("尚未訓練")
@@ -331,18 +538,19 @@ with tab4:
                     st.metric("訓練 AUC", f"{results['train_auc']:.4f}")
                     st.metric("測試 AUC", f"{results['test_auc']:.4f}")
                     st.metric("訓練樣本", results['train_samples'])
-                    st.metric("測試樹本", results['test_samples'])
+                    st.metric("測試樣本", results['test_samples'])
                     
-                    st.write("**特徵重要性 Top 5**")
+                    st.write("**特徵重要性 Top 10**")
                     st.dataframe(
-                        results['feature_importance'].head(5),
+                        results['feature_importance'].head(10),
                         use_container_width=True,
-                        hide_index=True
+                        hide_index=True,
+                        height=300
                     )
                 else:
                     st.info("尚未訓練")
 
-with tab5:
+with tab6:
     st.header("推論測試")
     
     col1, col2 = st.columns([1, 3])
@@ -356,15 +564,15 @@ with tab5:
         filter_path = f'v2/models/filter_{direction_infer}_model.pkl'
         
         if os.path.exists(bounce_path) and os.path.exists(filter_path):
-            st.success("模型檔案存在")
+            st.success("✅ 模型檔案存在")
             
-            st.subheader("閉值設定")
-            bounce_threshold = st.slider("反彈閉值", 0.0, 1.0, 0.65, 0.05)
-            filter_threshold = st.slider("過濾閉值", 0.0, 1.0, 0.40, 0.05)
+            st.subheader("閾值設定")
+            bounce_threshold = st.slider("反彈閾值", 0.0, 1.0, 0.65, 0.05)
+            filter_threshold = st.slider("過濾閾值", 0.0, 1.0, 0.40, 0.05)
             
             if st.button("執行推論", use_container_width=True):
                 if 'df_labeled' not in st.session_state:
-                    st.error("請先生成標籤數據")
+                    st.error("❌ 請先生成標籤數據")
                 else:
                     with st.spinner('推論中...'):
                         try:
@@ -386,12 +594,12 @@ with tab5:
                             st.session_state.df_predictions = df_predictions
                             st.session_state.inference_stats = stats
                             
-                            st.success("推論完成")
+                            st.success("✅ 推論完成")
                         except Exception as e:
-                            st.error(f"推論失敗: {str(e)}")
+                            st.error(f"❌ 推論失敗: {str(e)}")
         else:
-            st.error(f"模型檔案不存在")
-            st.info("請先在 [4]模型訓練 頁面訓練模型")
+            st.error(f"❌ 模型檔案不存在")
+            st.info("請先在 [5]模型訓練 頁面訓練模型")
     
     with col2:
         if 'inference_stats' in st.session_state:
@@ -436,26 +644,167 @@ with tab5:
         else:
             st.info("請先執行推論")
 
+with tab7:
+    st.header("☁️ HuggingFace 上傳")
+    
+    st.info("📤 將進階數據上傳到 HuggingFace 以便分享與備份")
+    
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        st.subheader("上傳設定")
+        
+        hf_token = st.text_input(
+            "HuggingFace Token",
+            type="password",
+            help="從 https://huggingface.co/settings/tokens 獲取",
+            key='hf_token'
+        )
+        
+        hf_repo = st.text_input(
+            "Repository 名稱",
+            value="username/v2-crypto-advanced-data",
+            help="格式: username/repo-name",
+            key='hf_repo'
+        )
+        
+        data_dir = st.text_input(
+            "數據目錄",
+            value="v2/advanced_data",
+            key='hf_data_dir'
+        )
+        
+        st.write("---")
+        
+        if st.button("🚀 上傳到 HuggingFace", use_container_width=True, type="primary"):
+            if not hf_token:
+                st.error("❌ 請輸入 HuggingFace Token")
+            elif not os.path.exists(data_dir):
+                st.error(f"❌ 數據目錄不存在: {data_dir}")
+            else:
+                with st.spinner('上傳中...'):
+                    try:
+                        from huggingface_hub import HfApi, create_repo
+                        
+                        api = HfApi(token=hf_token)
+                        
+                        try:
+                            create_repo(
+                                repo_id=hf_repo,
+                                token=hf_token,
+                                repo_type="dataset",
+                                exist_ok=True
+                            )
+                            st.success(f"✅ Repository 已建立: {hf_repo}")
+                        except:
+                            st.info(f"ℹ️ Repository 已存在: {hf_repo}")
+                        
+                        parquet_files = glob.glob(os.path.join(data_dir, "*.parquet"))
+                        csv_files = glob.glob(os.path.join(data_dir, "*.csv"))
+                        all_files = parquet_files + csv_files
+                        
+                        if not all_files:
+                            st.error(f"❌ 在 {data_dir} 中找不到任何檔案")
+                        else:
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
+                            uploaded_files = []
+                            
+                            for idx, file_path in enumerate(all_files):
+                                progress = (idx + 1) / len(all_files)
+                                progress_bar.progress(progress)
+                                
+                                filename = os.path.basename(file_path)
+                                status_text.text(f"上傳 {filename} ({idx+1}/{len(all_files)})...")
+                                
+                                try:
+                                    api.upload_file(
+                                        path_or_fileobj=file_path,
+                                        path_in_repo=filename,
+                                        repo_id=hf_repo,
+                                        repo_type="dataset",
+                                        token=hf_token
+                                    )
+                                    uploaded_files.append(filename)
+                                except Exception as e:
+                                    st.warning(f"⚠️ 上傳 {filename} 失敗: {str(e)[:30]}")
+                            
+                            progress_bar.progress(1.0)
+                            status_text.text("✅ 上傳完成!")
+                            
+                            st.session_state.uploaded_files = uploaded_files
+                            st.success(f"✅ 已成功上傳 {len(uploaded_files)}/{len(all_files)} 個檔案")
+                            
+                    except Exception as e:
+                        st.error(f"❌ 上傳失敗: {str(e)}")
+    
+    with col2:
+        st.subheader("📁 檢查數據檔案")
+        
+        data_dir_check = st.text_input(
+            "目錄路徑",
+            value="v2/advanced_data",
+            key='data_dir_check'
+        )
+        
+        if os.path.exists(data_dir_check):
+            parquet_files = glob.glob(os.path.join(data_dir_check, "*.parquet"))
+            csv_files = glob.glob(os.path.join(data_dir_check, "*.csv"))
+            
+            col_m1, col_m2 = st.columns(2)
+            with col_m1:
+                st.metric("Parquet 檔案", len(parquet_files))
+            with col_m2:
+                st.metric("CSV 檔案", len(csv_files))
+            
+            if parquet_files or csv_files:
+                file_info = []
+                for f in parquet_files + csv_files:
+                    size_mb = os.path.getsize(f) / (1024 * 1024)
+                    file_info.append({
+                        '檔案名': os.path.basename(f),
+                        '大小 (MB)': f"{size_mb:.2f}",
+                        '修改時間': datetime.fromtimestamp(os.path.getmtime(f)).strftime('%Y-%m-%d %H:%M')
+                    })
+                
+                df_files = pd.DataFrame(file_info)
+                st.dataframe(df_files, use_container_width=True, hide_index=True, height=400)
+                
+                total_size = sum([os.path.getsize(f) for f in parquet_files + csv_files]) / (1024 * 1024)
+                st.metric("總大小 (MB)", f"{total_size:.2f}")
+        else:
+            st.warning(f"⚠️ 目錄不存在: {data_dir_check}")
+        
+        if 'uploaded_files' in st.session_state:
+            st.subheader("📋 上傳記錄")
+            st.write(f"已上傳 {len(st.session_state.uploaded_files)} 個檔案")
+            for f in st.session_state.uploaded_files[:10]:
+                st.text(f"✓ {f}")
+            if len(st.session_state.uploaded_files) > 10:
+                st.text(f"... 和其他 {len(st.session_state.uploaded_files)-10} 個")
+
 st.sidebar.header("關於")
 st.sidebar.info(
     """
     **V2 模塊化交易系統**
     
     功能模塊:
-    - 數據載入 (HuggingFace)
-    - 特徵工程 (15個指標)
-    - 標籤生成 (ATR動態)
-    - 模型訓練 (LightGBM)
-    - 推論測試 (共振-否決)
+    - 📊 數據載入 (HuggingFace)
+    - 🔄 進階數據收集 (Binance API)
+    - 🛠️ 特徵工程 (30+ 指標)
+    - 🏷️ 標籤生成 (ATR 動態)
+    - 🤖 模型訓練 (LightGBM 防過擬合)
+    - 🎯 推論測試 (共振-否決)
+    - ☁️ HF 上傳 (備份分享)
     
-    版本: 2.0.0
+    版本: 2.1.0
     """
 )
 
 st.sidebar.header("快速操作")
-if st.sidebar.button("清除所有緩存"):
+if st.sidebar.button("🗑️ 清除所有緩存"):
     for key in list(st.session_state.keys()):
-        if key not in ['data_loader', 'pipeline']:
+        if key not in ['data_loader', 'pipeline', 'batch_collector', 'feature_merger']:
             del st.session_state[key]
-    st.sidebar.success("緩存已清除")
+    st.sidebar.success("✅ 緩存已清除")
     st.rerun()
