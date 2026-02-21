@@ -12,7 +12,7 @@ from gui.pages import (
 
 st.set_page_config(
     page_title="BB+NW 波段反轉交易系統",
-    page_icon="🎯",
+    page_icon="■",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -21,7 +21,6 @@ def main():
     # 主標題
     st.sidebar.markdown("""
     <div style='text-align: center; padding: 20px 0;'>
-        <h1 style='color: #1f77b4; margin: 0;'>🎯</h1>
         <h2 style='margin: 5px 0;'>BB+NW</h2>
         <h3 style='color: #7f7f7f; margin: 0; font-weight: normal;'>波段反轉系統</h3>
     </div>
@@ -31,15 +30,15 @@ def main():
     
     # 頁面選擇
     page = st.sidebar.radio(
-        "🧳 主選單",
+        "主選單",
         [
-            "🏠 控制台", 
-            "🧪 模型訓練", 
-            "📊 回測分析",
-            "🔍 機率校準",
-            "⚙️ 策略優化", 
-            "🌊 流動性分析",
-            "📡 即時預測"
+            "控制台", 
+            "模型訓練", 
+            "回測分析",
+            "機率校準",
+            "策略優化", 
+            "流動性分析",
+            "即時預測"
         ],
         label_visibility="collapsed"
     )
@@ -47,7 +46,7 @@ def main():
     # 系統狀態
     st.sidebar.markdown("---")
     st.sidebar.markdown("""
-    ### 🛡️ 系統核心
+    ### 系統核心
     
     **觸發層**: BB + NW 雙通道  
     **特徵層**: ADX + CVD + VWWA  
@@ -56,18 +55,18 @@ def main():
     
     ---
     
-    ### 🎯 防禁機制
+    ### 防禁機制
     
-    ✅ 單邊趨勢輾壓過濾 (ADX + HTF EMA)  
-    ✅ 獵取流動性辨識 (CVD 背離)  
-    ✅ BB 壓縮突破偵測  
-    ✅ 無未來函數 (No Repaint)  
+    - 單邊趨勢輾壓過濾 (ADX + HTF EMA)  
+    - 獵取流動性辨識 (CVD 背離)  
+    - BB 壓縮突破偵測  
+    - 無未來函數 (No Repaint)  
     
     ---
     
-    ### 📌 適用市場
+    ### 適用市場
     
-    **時間框架**: 15m (进场) + 1h (趨势)  
+    **時間框架**: 15m (进场) + 1h (趨勢)  
     **交易風格**: 波段反轉 (Swing Reversal)  
     **持倉時間**: 4-20 小時  
     **勝率目標**: 55-65%  
@@ -75,11 +74,9 @@ def main():
     """)
     
     st.sidebar.markdown("---")
-    st.sidebar.caption("🔗 v2.0 - Swing Reversal Edition")
+    st.sidebar.caption("v2.0 - Swing Reversal Edition")
     
     # 路由頁面
-    page_key = page.split()[-1]  # 提取中文名稱
-    
     if "控制台" in page:
         dashboard_page.render()
     elif "訓練" in page:
