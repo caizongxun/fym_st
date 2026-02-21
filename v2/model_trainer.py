@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import lightgbm as lgb
 from lightgbm import LGBMClassifier
 from sklearn.metrics import roc_auc_score, classification_report, confusion_matrix
 import joblib
@@ -11,11 +12,11 @@ class ModelTrainer:
     def __init__(
         self,
         model_type: str = 'bounce',
-        n_estimators: int = 500,
-        learning_rate: float = 0.05,
-        max_depth: int = 7,
-        num_leaves: int = 31,
-        min_child_samples: int = 20,
+        n_estimators: int = 300,
+        learning_rate: float = 0.01,
+        max_depth: int = 4,
+        num_leaves: int = 12,
+        min_child_samples: int = 150,
         random_state: int = 42
     ):
         self.model_type = model_type
@@ -27,6 +28,11 @@ class ModelTrainer:
             num_leaves=num_leaves,
             min_child_samples=min_child_samples,
             class_weight='balanced',
+            subsample=0.8,
+            subsample_freq=1,
+            colsample_bytree=0.8,
+            reg_alpha=0.5,
+            reg_lambda=1.0,
             random_state=random_state,
             verbose=-1
         )
@@ -70,7 +76,7 @@ class ModelTrainer:
         self,
         df: pd.DataFrame,
         train_ratio: float = 0.8,
-        early_stopping_rounds: int = 50
+        early_stopping_rounds: int = 30
     ) -> dict:
         if 'target' not in df.columns:
             raise ValueError("DataFrame must contain 'target' column")
@@ -84,17 +90,30 @@ class ModelTrainer:
         X_test = df_test[self.feature_names]
         y_test = df_test['target']
         
-        print(f"\nTraining {self.model_type} model...")
+        print(f"\n{'='*60}")
+        print(f"Training {self.model_type} model with anti-overfitting parameters")
+        print(f"{'='*60}")
         print(f"Train samples: {len(X_train)} | Test samples: {len(X_test)}")
         print(f"Features: {len(self.feature_names)}")
         print(f"Feature names: {self.feature_names}")
         print(f"Train label distribution: {y_train.value_counts().to_dict()}")
         print(f"Test label distribution: {y_test.value_counts().to_dict()}")
+        print(f"\nModel hyperparameters:")
+        print(f"  - max_depth: {self.model.max_depth}")
+        print(f"  - num_leaves: {self.model.num_leaves}")
+        print(f"  - min_child_samples: {self.model.min_child_samples}")
+        print(f"  - learning_rate: {self.model.learning_rate}")
+        print(f"  - subsample: {self.model.subsample}")
+        print(f"  - colsample_bytree: {self.model.colsample_bytree}")
+        print(f"  - reg_alpha (L1): {self.model.reg_alpha}")
+        print(f"  - reg_lambda (L2): {self.model.reg_lambda}")
+        print(f"{'='*60}\n")
         
         self.model.fit(
             X_train, y_train,
             eval_set=[(X_test, y_test)],
-            callbacks=[]
+            eval_metric='auc',
+            callbacks=[lgb.early_stopping(stopping_rounds=early_stopping_rounds, verbose=False)]
         )
         
         y_train_pred_proba = self.model.predict_proba(X_train)[:, 1]
@@ -103,16 +122,26 @@ class ModelTrainer:
         self.train_score = roc_auc_score(y_train, y_train_pred_proba)
         self.test_score = roc_auc_score(y_test, y_test_pred_proba)
         
-        print(f"\nTraining ROC-AUC: {self.train_score:.4f}")
+        print(f"\n{'='*60}")
+        print(f"Training Results")
+        print(f"{'='*60}")
+        print(f"Training ROC-AUC: {self.train_score:.4f}")
         print(f"Test ROC-AUC: {self.test_score:.4f}")
+        print(f"Train-Test Gap: {abs(self.train_score - self.test_score):.4f}")
+        print(f"Best iteration: {self.model.booster_.best_iteration}")
+        print(f"{'='*60}\n")
         
         y_test_pred = (y_test_pred_proba >= 0.5).astype(int)
         
-        print("\nClassification Report (Test Set):")
+        print("Classification Report (Test Set, threshold=0.5):")
         print(classification_report(y_test, y_test_pred, zero_division=0))
         
         print("\nConfusion Matrix (Test Set):")
         print(confusion_matrix(y_test, y_test_pred))
+        
+        y_test_pred_035 = (y_test_pred_proba >= 0.35).astype(int)
+        print("\nClassification Report (Test Set, threshold=0.35 for high recall):")
+        print(classification_report(y_test, y_test_pred_035, zero_division=0))
         
         feature_importance = pd.DataFrame({
             'feature': self.feature_names,
@@ -129,7 +158,8 @@ class ModelTrainer:
             'test_auc': self.test_score,
             'feature_importance': feature_importance,
             'train_samples': len(X_train),
-            'test_samples': len(X_test)
+            'test_samples': len(X_test),
+            'best_iteration': self.model.booster_.best_iteration
         }
         
         return results
@@ -178,8 +208,10 @@ class TrendFilterTrainer(ModelTrainer):
         
         if 'hit_sl' in df.columns:
             df['filter_target'] = (df['hit_sl'] == 1).astype(int)
+            print(f"Using hit_sl for filter labels: {df['filter_target'].sum()} positive samples")
         else:
             df['filter_target'] = (df['target'] == 0).astype(int)
+            print(f"Using target==0 for filter labels: {df['filter_target'].sum()} positive samples")
         
         df['target'] = df['filter_target']
         df = df.drop('filter_target', axis=1)
@@ -190,7 +222,7 @@ class TrendFilterTrainer(ModelTrainer):
         self,
         df: pd.DataFrame,
         train_ratio: float = 0.8,
-        early_stopping_rounds: int = 50
+        early_stopping_rounds: int = 30
     ) -> dict:
         df_prepared = self.prepare_filter_labels(df)
         
