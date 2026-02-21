@@ -1,0 +1,116 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © caizongxun
+
+//@version=5
+strategy("Thermodynamic Volume-Price Resonance (TVPR)", overlay=true, initial_capital=10, default_qty_type=strategy.percent_of_equity, default_qty_value=100)
+
+// --- Parameters ---
+int velocity_period = input.int(5, title="Velocity Period (N)", minval=1)
+int bbw_period = input.int(20, title="BBW Period (M)", minval=1)
+float epsilon = input.float(0.0001, title="Epsilon")
+string htf = input.timeframe("15", title="Higher Timeframe for VWAP")
+int energy_exit_bars = input.int(5, title="Energy Exhaustion Bars")
+
+// --- 1. Price Velocity (vp) ---
+float vp = (close - close[velocity_period]) / velocity_period
+
+// --- 2. Volume-Price Momentum (KE) ---
+// Logarithmic smoothing of volume, avoiding 0 or negative volume issues
+float vol = volume > 0 ? volume : 1
+float ke = math.log(vol) * math.pow(math.abs(vp), 2) * math.sign(vp)
+
+// --- 3. System Entropy / Volatility (SE) ---
+// Using standardized Bollinger Band Width
+float basis = ta.sma(close, bbw_period)
+float dev = 2 * ta.stdev(close, bbw_period)
+float upper = basis + dev
+float lower = basis - dev
+float bbw = basis != 0 ? (upper - lower) / basis : 0
+
+float bbw_mean = ta.sma(bbw, bbw_period)
+float bbw_std = ta.stdev(bbw, bbw_period)
+float se = bbw_std != 0 ? (bbw - bbw_mean) / bbw_std : 0
+
+// --- 4. Thermodynamic Momentum Index (TMI) ---
+float tmi = ke / (se + epsilon)
+
+// --- Entry Conditions Logic ---
+
+// Condition A: Energy Compression (SE < -1 in last 10 periods)
+bool cond_a = ta.lowest(se, 10) < -1
+
+// Condition B: Momentum Explosion
+float tmi_mean = ta.sma(tmi, 20)
+float tmi_std = ta.stdev(tmi, 20)
+float tmi_upper = tmi_mean + 2 * tmi_std
+float tmi_lower = tmi_mean - 2 * tmi_std
+
+bool cond_b_long = ta.crossover(tmi, tmi_upper)
+bool cond_b_short = ta.crossunder(tmi, tmi_lower)
+
+// Condition C: Trend Filter (HTF VWAP)
+float htf_vwap = request.security(syminfo.tickerid, htf, ta.vwap)
+bool cond_c_long = close > htf_vwap
+bool cond_c_short = close < htf_vwap
+
+// Combine Conditions
+bool enter_long = cond_a and cond_b_long and cond_c_long
+bool enter_short = cond_a and cond_b_short and cond_c_short
+
+// --- Execution & Risk Management Variables ---
+var float entry_price = na
+var float sl = na
+var float initial_risk = na
+var float entry_tmi = na
+var int entry_bar = na
+
+// State tracker to handle single entry operations
+bool in_long = strategy.position_size > 0
+bool in_short = strategy.position_size < 0
+
+// --- Trade Entry Logic ---
+if enter_long and strategy.position_size == 0
+    strategy.entry("Long", strategy.long)
+    entry_price := close
+    sl := low
+    initial_risk := close - low
+    entry_tmi := math.abs(tmi)
+    entry_bar := bar_index
+
+if enter_short and strategy.position_size == 0
+    strategy.entry("Short", strategy.short)
+    entry_price := close
+    sl := high
+    initial_risk := high - close
+    entry_tmi := math.abs(tmi)
+    entry_bar := bar_index
+
+// --- Exit & Management Logic ---
+if in_long
+    // 1. Dynamic Trailing Stop (Move to breakeven if profit > 1.5 * risk)
+    if high > entry_price + 1.5 * initial_risk
+        sl := math.max(sl, entry_price)
+    
+    // Check traditional stop loss
+    strategy.exit("Exit Long", "Long", stop=sl)
+    
+    // 2. Time/Energy Exit
+    if (bar_index - entry_bar) >= energy_exit_bars and math.abs(tmi) < 0.3 * entry_tmi
+        strategy.close("Long", comment="Energy Exhaustion")
+
+if in_short
+    // 1. Dynamic Trailing Stop (Move to breakeven if profit > 1.5 * risk)
+    if low < entry_price - 1.5 * initial_risk
+        sl := math.min(sl, entry_price)
+    
+    // Check traditional stop loss
+    strategy.exit("Exit Short", "Short", stop=sl)
+    
+    // 2. Time/Energy Exit
+    if (bar_index - entry_bar) >= energy_exit_bars and math.abs(tmi) < 0.3 * entry_tmi
+        strategy.close("Short", comment="Energy Exhaustion")
+
+// --- Chart Visuals ---
+plot(htf_vwap, color=color.new(color.blue, 0), title="HTF VWAP", linewidth=2)
+plotshape(enter_long, style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, title="Long Signal")
+plotshape(enter_short, style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, title="Short Signal")
