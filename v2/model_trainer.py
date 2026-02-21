@@ -45,7 +45,9 @@ class ModelTrainer:
             'long_sl', 'long_tp', 'short_sl', 'short_tp',
             'basis', 'dev', 'upper', 'lower',
             'last_ph', 'last_pl', 'atr',
-            'is_touching_lower', 'is_touching_upper'
+            'is_touching_lower', 'is_touching_upper',
+            'hit_sl_long', 'hit_sl_short', 'hit_tp_long', 'hit_tp_short',
+            'hit_sl', 'hit_tp'
         ]
         
         feature_cols = [col for col in df.columns if col not in exclude_cols]
