@@ -329,24 +329,37 @@ class FeatureEngineer:
         df_1h_copy = df_1h.copy()
         df_15m_copy = df_15m.copy()
         
-        essential_15m_cols = ['open_time', 'open', 'high', 'low', 'close', 'volume', 'atr']
+        # Essential columns check
+        essential_15m_cols = ['open_time', 'open', 'high', 'low', 'close', 'volume']
         missing_essential = [col for col in essential_15m_cols if col not in df_15m_copy.columns]
         if missing_essential:
             logger.error(f"Missing essential columns in df_15m: {missing_essential}")
             raise ValueError(f"df_15m missing required columns: {missing_essential}")
         
+        # Log input shapes
+        logger.info(f"Input df_15m shape: {df_15m_copy.shape}")
+        logger.info(f"Input df_1h shape: {df_1h_copy.shape}")
+        logger.info(f"15m time range: {df_15m_copy['open_time'].min()} ~ {df_15m_copy['open_time'].max()}")
+        logger.info(f"1h time range: {df_1h_copy['open_time'].min()} ~ {df_1h_copy['open_time'].max()}")
+        
+        # Prepare 1h data
         df_1h_copy['htf_close_time'] = df_1h_copy['open_time'] + pd.Timedelta(hours=1)
         df_1h_copy = df_1h_copy.drop(columns=['open_time'])
         
+        # Rename 1h columns
         cols_to_exclude = ['close_time', 'htf_close_time']
         cols_to_keep = [col for col in df_1h_copy.columns if col not in cols_to_exclude]
         rename_dict = {col: f"{col}_1h" for col in cols_to_keep}
         df_1h_renamed = df_1h_copy.rename(columns=rename_dict)
         df_1h_renamed['htf_close_time'] = df_1h_copy['htf_close_time']
         
+        # Sort
         df_15m_copy = df_15m_copy.sort_values('open_time').reset_index(drop=True)
         df_1h_renamed = df_1h_renamed.sort_values('htf_close_time').reset_index(drop=True)
         
+        logger.info(f"Before merge_asof - 15m: {len(df_15m_copy)}, 1h: {len(df_1h_renamed)}")
+        
+        # Merge
         df_mtf = pd.merge_asof(
             df_15m_copy,
             df_1h_renamed,
@@ -355,35 +368,73 @@ class FeatureEngineer:
             direction='backward'
         )
         
-        if 'open_time' not in df_mtf.columns:
-            logger.error("CRITICAL: open_time missing after merge_asof!")
-            raise ValueError("open_time lost during merge_asof operation")
-        
         logger.info(f"After merge_asof: {df_mtf.shape}")
+        logger.info(f"Columns: {list(df_mtf.columns[:10])}...")
         
-        # 只 dropna essential columns，保留其他特徵的 NaN
-        essential_check_cols = essential_15m_cols + ['close_1h', 'atr_1h']
+        # Check if merge was successful
+        if 'close_1h' not in df_mtf.columns:
+            logger.error("CRITICAL: 1h columns not found after merge!")
+            logger.error(f"Available columns: {df_mtf.columns.tolist()}")
+            raise ValueError("MTF merge failed - 1h columns not merged")
+        
+        # Count NaN in essential columns
+        essential_check_cols = essential_15m_cols + ['close_1h']
         existing_check_cols = [col for col in essential_check_cols if col in df_mtf.columns]
         
-        logger.info(f"Before selective dropna: {df_mtf.shape}")
-        df_mtf = df_mtf.dropna(subset=existing_check_cols)
-        logger.info(f"After selective dropna: {df_mtf.shape}")
+        nan_counts = {col: df_mtf[col].isna().sum() for col in existing_check_cols}
+        logger.info(f"NaN counts in essential columns: {nan_counts}")
+        
+        # More lenient dropna - only drop if ALL essential columns are NaN
+        before_drop = len(df_mtf)
+        df_mtf = df_mtf.dropna(subset=['open_time', 'close', 'close_1h'], how='any')
+        after_drop = len(df_mtf)
+        
+        logger.info(f"Dropped {before_drop - after_drop} rows with NaN in critical columns")
+        logger.info(f"Remaining rows: {after_drop}")
         
         if len(df_mtf) == 0:
             logger.error("MTF merge resulted in empty DataFrame after dropna!")
-            logger.error(f"Essential check columns: {existing_check_cols}")
-            raise ValueError("MTF merge produced empty result")
+            logger.error(f"Original 15m had {len(df_15m_copy)} rows")
+            logger.error(f"Original 1h had {len(df_1h_copy)} rows")
+            logger.error("Possible causes:")
+            logger.error("1. Time ranges don't overlap")
+            logger.error("2. 1h data starts later than 15m data")
+            logger.error("3. NW window (50) causes too many initial NaN")
+            
+            # Try to salvage by using forward fill for 1h columns
+            logger.warning("Attempting to salvage with forward fill...")
+            df_mtf = pd.merge_asof(
+                df_15m_copy,
+                df_1h_renamed,
+                left_on='open_time',
+                right_on='htf_close_time',
+                direction='backward',
+                allow_exact_matches=True
+            )
+            
+            # Forward fill 1h columns
+            h_cols = [col for col in df_mtf.columns if col.endswith('_1h')]
+            df_mtf[h_cols] = df_mtf[h_cols].fillna(method='ffill')
+            
+            # Try dropna again
+            df_mtf = df_mtf.dropna(subset=['open_time', 'close', 'close_1h'], how='any')
+            
+            if len(df_mtf) == 0:
+                raise ValueError("MTF merge produced empty result even after forward fill")
+            
+            logger.info(f"Salvaged {len(df_mtf)} rows after forward fill")
         
-        # 添加 MTF alpha 特徵
+        # Add MTF alpha features
         df_mtf = self.add_mtf_alpha_features(df_mtf)
         
-        # 最後再做一次檢查
+        # Final check
         for col in essential_15m_cols:
             if col not in df_mtf.columns:
                 logger.error(f"Essential column {col} missing in final df_mtf")
                 raise ValueError(f"Essential column {col} lost during MTF processing")
         
         logger.info(f"MTF merge complete. Final shape: {df_mtf.shape}")
+        logger.info(f"Time range: {df_mtf['open_time'].min()} ~ {df_mtf['open_time'].max()}")
         
         return df_mtf
 
@@ -436,7 +487,7 @@ class FeatureEngineer:
         if include_microstructure:
             result = self.add_microstructure_features(result)
         
-        # Bounce confluence (需要在 MTF 合併後才能計算 HTF 特徵)
+        # Bounce confluence
         if include_bounce_features:
             result = self.add_bounce_confluence_features(result)
         
