@@ -73,13 +73,11 @@ def render():
         
         col1, col2 = st.columns(2)
         with col1:
-            # 15m 的雜訊較大，將預設值從 1.5 提升至 2.0
             min_volume_ratio = st.number_input("最小成交量比率 (15m)", value=2.0, step=0.1)
             use_strict = st.checkbox("嚴格模式 (AND)", value=True)
         with col2:
             min_vsr = st.number_input("最小波動率", value=1.0, step=0.1)
             bb_squeeze = st.number_input("BB壓縮門檻", value=0.5, step=0.1)
-            # 增加回看週期以過濾短線雜訊
             lookback_period = st.number_input("突破回看週期 (K線)", value=40, step=10)
     
     with st.expander("進階配置", expanded=False):
@@ -114,7 +112,6 @@ def render():
         try:
             status_text.text("載入 15m 與 1h 數據...")
             progress_bar.progress(5)
-            # 強制載入雙週期數據
             df_15m = loader.load_klines(symbol, '15m')
             df_1h = loader.load_klines(symbol, '1h')
             
@@ -125,18 +122,15 @@ def render():
             progress_bar.progress(10)
             feature_engineer = FeatureEngineer()
             
-            # 分別建立特徵
             df_15m_features = feature_engineer.build_features(df_15m, include_microstructure=True)
             df_1h_features = feature_engineer.build_features(df_1h, include_microstructure=True)
             
             status_text.text("合併多時間框架 (MTF) 特徵...")
             progress_bar.progress(15)
             
-            # 合併特徵 (MTF logic)
             df_mtf = feature_engineer.merge_and_build_mtf_features(df_15m_features, df_1h_features)
             st.success(f"MTF 特徵合併完成! 最終數據形狀: {df_mtf.shape}")
             
-            # 使用合併後的數據作為主要特徵集
             df_features = df_mtf
             
             if use_event_filter:
@@ -163,7 +157,6 @@ def render():
             status_text.text("應用三重屏障標記...")
             progress_bar.progress(25)
             
-            # 標籤生成 (基於 15m 數據)
             labeler = TripleBarrierLabeling(
                 tp_multiplier=tp_multiplier,
                 sl_multiplier=sl_multiplier,
@@ -188,19 +181,15 @@ def render():
             status_text.text("準備訓練數據 (特徵大掃除)...")
             progress_bar.progress(35)
             
-            # ===== [重點] 特徵大掃除 - 封殺非平稩特徵 (含 1h) =====
             st.warning("⚠️ 特徵大掃除:移除絕對值與 API 不穩定特徵")
             
-            # 1. 基礎欄位 (不用於特徵)
             base_cols = [
-                'open_time', 'close_time', 'htf_close_time', # htf_close_time 是合併時產生的
+                'open_time', 'close_time', 'htf_close_time',
                 'label', 'label_return', 'hit_time', 'exit_type', 'sample_weight', 'mae_ratio',
                 'exit_price', 'exit_bars', 'return', 'ignore'
             ]
             
-            # 2. 禁止特徵黑名單 (封殺非平稩特徵)
             forbidden_features = [
-                # 15m 絕對特徵
                 'open', 'high', 'low', 'close',
                 'bb_middle', 'bb_upper', 'bb_lower', 'bb_std',
                 'volume', 'volume_ma_20',
@@ -208,8 +197,6 @@ def render():
                 'quote_asset_volume', 'quote_volume', 
                 'number_of_trades', 'trades',
                 'open_interest', 'atr',
-                
-                # 1h 絕對特徵 (新增)
                 'open_1h', 'high_1h', 'low_1h', 'close_1h',
                 'bb_middle_1h', 'bb_upper_1h', 'bb_lower_1h', 'bb_std_1h',
                 'volume_1h', 'volume_ma_20_1h',
@@ -218,14 +205,12 @@ def render():
                 'open_interest_1h', 'atr_1h'
             ]
             
-            # 3. 安全特徵篩選 (只保留比例/標準化特徵)
             exclude_all = base_cols + forbidden_features
             
             feature_cols = [col for col in df_labeled.columns if col not in exclude_all]
             feature_cols = [col for col in feature_cols 
                           if df_labeled[col].dtype in ['int64', 'float64', 'bool', 'int32', 'float32']]
             
-            # 4. 顯示移除的特徵
             removed_features = [col for col in df_labeled.columns if col in forbidden_features]
             if len(removed_features) > 0:
                 st.info(f"✅ 移除 {len(removed_features)} 個非平稩特徵 (含1h版本)")
@@ -242,7 +227,6 @@ def render():
             
             st.info(f"訓練數據: {len(X)} 樣本, {len(feature_cols)} 特徵")
             
-            # 顯示保留的核心特徵
             with st.expander("保留的平稩特徵 (點擊查看)", expanded=False):
                 st.code('\n'.join(feature_cols))
             
@@ -303,7 +287,6 @@ def render():
                 recall = cv_metrics.get('cv_val_recall', 0)
                 st.metric("召回率", f"{recall:.4f}")
             
-            # 期望值計算
             if prec > 0 and recall > 0:
                 ev = (prec * tp_multiplier) - ((1 - prec) * sl_multiplier)
                 st.info(f"期望值 (EV): {ev:.3f}R ({'positive' if ev > 0 else 'negative'})")
@@ -321,7 +304,6 @@ def render():
             st.markdown("### 特徵重要性 (前 20 名)")
             feature_importance = trainer.get_feature_importance()
             
-            # 檢查 MTF Alpha 特徵是否在 Top 15
             mtf_features = ['mvr', 'cvd_fractal', 'vwwa_buy', 'vwwa_sell', 'htf_trend_age_norm']
             
             top_15 = feature_importance.head(15)['feature'].tolist()
@@ -333,6 +315,72 @@ def render():
                 st.info("MTF 特徵未進入前 15 名，請檢查數據量或參數")
                 
             st.dataframe(feature_importance.head(20), use_container_width=True)
+            
+            # ===== [新增] 詳細訓練報告 (可複製給 Gemini) =====
+            st.markdown("---")
+            st.markdown("### 📋 詳細訓練報告 (可複製給 Gemini 查看)")
+            
+            report = f"""
+# MTF 多時間框架交易模型訓練報告
+
+## 模型配置
+- **交易對**: {symbol}
+- **時間框架**: 15m (進場) + 1h (環境過濾)
+- **模型檔案**: {model_name}
+- **訓練時間**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## 數據概要
+- **15m 數據**: {len(df_15m)} 筆
+- **1h 數據**: {len(df_1h)} 筆
+- **MTF 合併後**: {df_mtf.shape[0]} 筆, {df_mtf.shape[1]} 欄
+- **事件過濾後**: {len(df_features)} 筆 ({100*len(df_features)/len(df_mtf):.1f}%)
+- **數據範圍**: {df_15m['open_time'].min()} 至 {df_15m['open_time'].max()}
+
+## 標籤配置
+- **止盈 (TP)**: {tp_multiplier:.1f} ATR
+- **止損 (SL)**: {sl_multiplier:.1f} ATR
+- **最大持倉**: {max_holding_bars} 根 15m K線 ({max_holding_bars/4:.1f} 小時)
+- **樣本權重**: {'Enabled' if use_quality_weight else 'Disabled'}
+- **類別權重**: {scale_pos_weight:.2f}
+
+## 標籤分布
+- **正樣本 (勝)**: {positive_count} ({positive_pct:.1f}%)
+- **負樣本 (負)**: {negative_count} ({100-positive_pct:.1f}%)
+- **平均權重 (正)**: {avg_weight_pos:.2f}
+- **平均權重 (負)**: {avg_weight_neg:.2f}
+
+## 特徵工程
+- **原始特徵數**: {len(df_labeled.columns)} 個
+- **移除非平稩特徵**: {len(removed_features)} 個
+- **最終保留特徵**: {len(feature_cols)} 個
+- **MTF Alpha 特徵**: {', '.join(mtf_features)}
+
+## 交叉驗證結果 (Purged K-Fold, {n_splits} Folds)
+- **準確率**: {cv_metrics.get('cv_val_accuracy', 0):.4f} ± {cv_metrics.get('cv_val_accuracy_std', 0):.4f}
+- **AUC**: {auc_val:.4f} (delta: +{auc_delta:.4f})
+- **精確率 (Precision)**: {prec:.4f}
+- **召回率 (Recall)**: {recall:.4f}
+- **期望值 (EV)**: {ev:.3f}R
+
+## 模型超參數
+- **max_depth**: {max_depth}
+- **learning_rate**: {learning_rate}
+- **n_estimators**: {n_estimators}
+- **min_child_weight**: {min_child_weight}
+- **subsample**: {subsample}
+- **colsample_bytree**: {colsample_bytree}
+
+## 特徵重要性 Top 20
+{feature_importance.head(20).to_string()}
+
+## MTF Alpha 特徵在 Top 15
+{', '.join(mtf_in_top) if len(mtf_in_top) > 0 else 'None'}
+
+## 保留的平稩特徵列表
+{chr(10).join(feature_cols)}
+"""
+            
+            st.text_area("報告內容 (點擊右上角複製)", report, height=400)
             
             st.markdown("### 下一步")
             if auc_val >= 0.58:
