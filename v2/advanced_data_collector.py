@@ -18,9 +18,10 @@ class BinanceAdvancedDataCollector:
     5. 主動大单比 (Taker Buy/Sell): 爬爆倉代理指標
     
     關鍵優化:
+    - 使用期貨 API (現貨 aggTrades 對舊數據無響應)
+    - 直接從 Taker Buy/Sell 計算 CVD (替代方案)
     - 分塊爬取 (1天/塊) 避免 API 超時
     - 自動往前爬取所有可用歷史數據
-    - 新增 CVD (累計成交量差) 特徵
     """
     
     def __init__(self):
@@ -50,143 +51,48 @@ class BinanceAdvancedDataCollector:
         
         return int(pd.to_datetime(date_str).timestamp() * 1000)
     
-    def get_aggregate_trades(self, symbol: str, start_time: int, end_time: int) -> pd.DataFrame:
+    def calculate_order_flow_from_taker_buysell(
+        self, 
+        taker_df: pd.DataFrame
+    ) -> pd.DataFrame:
         """
-        改進版: 分塊收集聚合成交數據以避免 API 超時
-        每次抓取 1 天的數據, 避免一次請求過多導致卡住
+        從 Taker Buy/Sell 數據計算訂單流特徵
+        這是替代方案,因為 aggTrades 對舊數據無響應
         """
-        url = f"{self.spot_base_url}/api/v3/aggTrades"
-        
-        all_trades = []
-        chunk_size = 24 * 60 * 60 * 1000
-        current_start = start_time
-        
-        total_chunks = (end_time - start_time) // chunk_size + 1
-        print(f"  預計分 {total_chunks} 塊爬取 (每塊 1天)")
-        
-        chunk_idx = 0
-        while current_start < end_time:
-            chunk_idx += 1
-            chunk_end = min(current_start + chunk_size, end_time)
-            
-            chunk_start_date = pd.to_datetime(current_start, unit='ms').strftime('%Y-%m-%d')
-            
-            if chunk_idx % 100 == 1 or chunk_idx <= 5:
-                print(f"  [{chunk_idx}/{total_chunks}] {chunk_start_date} ...", end=' ')
-            
-            params = {
-                'symbol': symbol,
-                'startTime': current_start,
-                'endTime': chunk_end,
-                'limit': 1000
-            }
-            
-            chunk_trades = []
-            last_id = None
-            
-            try:
-                while True:
-                    if last_id:
-                        params['fromId'] = last_id + 1
-                    
-                    response = requests.get(url, params=params, timeout=10)
-                    response.raise_for_status()
-                    trades = response.json()
-                    
-                    if not trades:
-                        break
-                    
-                    chunk_trades.extend(trades)
-                    
-                    if len(trades) < 1000:
-                        break
-                    
-                    last_id = trades[-1]['a']
-                    
-                    if trades[-1]['T'] >= chunk_end:
-                        break
-                    
-                    time.sleep(self.rate_limit_delay)
-                
-                all_trades.extend(chunk_trades)
-                
-                if chunk_idx % 100 == 1 or chunk_idx <= 5:
-                    print(f"✓ {len(chunk_trades):,} 筆")
-                
-            except Exception as e:
-                if chunk_idx % 100 == 1 or chunk_idx <= 5:
-                    print(f"⚠️ {str(e)[:30]}")
-            
-            current_start = chunk_end
-            time.sleep(self.rate_limit_delay)
-        
-        if not all_trades:
-            print(f"  ❌ 無聚合成交數據")
+        if taker_df.empty:
             return pd.DataFrame()
         
-        print(f"  ✅ 總計 {len(all_trades):,} 筆成交")
+        df = taker_df.copy()
         
-        df = pd.DataFrame(all_trades)
-        df['T'] = pd.to_datetime(df['T'], unit='ms')
-        df['timestamp'] = df['T']
-        df['price'] = df['p'].astype(float)
-        df['qty'] = df['q'].astype(float)
-        df['is_buyer_maker'] = df['m']
+        # 計算買賣量差
+        df['delta_volume'] = df['buyVol'] - df['sellVol']
         
-        df = df[['timestamp', 'price', 'qty', 'is_buyer_maker']]
+        # 計算買賣壓力
+        total_volume = df['buyVol'] + df['sellVol']
+        df['buy_pressure'] = df['buyVol'] / total_volume
+        df['sell_pressure'] = df['sellVol'] / total_volume
+        
+        # 累計成交量差 (CVD)
+        df['cvd'] = df['delta_volume'].cumsum()
+        
+        # 不平衡度
+        df['taker_imbalance'] = df['delta_volume'] / total_volume
+        
+        # CVD 變化率
+        df['cvd_change'] = df['cvd'].diff()
+        df['cvd_change_rate'] = df['cvd'].pct_change()
+        
+        # CVD 移動平均
+        df['cvd_ma7'] = df['cvd'].rolling(7).mean()
+        df['cvd_ma24'] = df['cvd'].rolling(24).mean()
+        
+        # CVD 背離 (CVD 上升但價格下跌 = 看多訊號)
+        df['cvd_momentum'] = df['cvd'].diff(7)
+        
+        df.fillna(0, inplace=True)
+        df.replace([np.inf, -np.inf], 0, inplace=True)
         
         return df
-    
-    def calculate_order_flow_features(self, trades_df: pd.DataFrame, timeframe: str = '15T') -> pd.DataFrame:
-        """訂單流特徵: CVD, 主動買賣壓, 大單比例"""
-        if trades_df.empty:
-            return pd.DataFrame()
-        
-        trades_df = trades_df.copy()
-        
-        trades_df['buy_volume'] = trades_df.apply(
-            lambda x: 0 if x['is_buyer_maker'] else x['qty'], axis=1
-        )
-        trades_df['sell_volume'] = trades_df.apply(
-            lambda x: x['qty'] if x['is_buyer_maker'] else 0, axis=1
-        )
-        
-        trades_df.set_index('timestamp', inplace=True)
-        
-        agg_dict = {
-            'price': ['first', 'last', 'mean'],
-            'qty': ['sum', 'count', 'mean', 'std'],
-            'buy_volume': 'sum',
-            'sell_volume': 'sum'
-        }
-        
-        df_agg = trades_df.resample(timeframe).agg(agg_dict)
-        df_agg.columns = ['_'.join(col).strip() for col in df_agg.columns.values]
-        
-        df_agg['delta_volume'] = df_agg['buy_volume_sum'] - df_agg['sell_volume_sum']
-        
-        total_volume = df_agg['buy_volume_sum'] + df_agg['sell_volume_sum']
-        df_agg['buy_pressure'] = df_agg['buy_volume_sum'] / total_volume
-        df_agg['sell_pressure'] = df_agg['sell_volume_sum'] / total_volume
-        
-        df_agg['cvd'] = df_agg['delta_volume'].cumsum()
-        
-        df_agg['trade_intensity'] = df_agg['qty_count'] / 15
-        df_agg['avg_trade_size'] = df_agg['qty_sum'] / df_agg['qty_count']
-        df_agg['trade_size_volatility'] = df_agg['qty_std'] / df_agg['qty_mean']
-        
-        large_threshold = df_agg['qty_mean'] * 2
-        trades_df['is_large_trade'] = trades_df['qty'] > large_threshold.reindex(trades_df.index, method='ffill')
-        large_trades = trades_df[trades_df['is_large_trade']].resample(timeframe).size()
-        df_agg['large_trade_count'] = large_trades
-        df_agg['large_trade_ratio'] = df_agg['large_trade_count'] / df_agg['qty_count']
-        
-        df_agg.fillna(0, inplace=True)
-        df_agg.replace([np.inf, -np.inf], 0, inplace=True)
-        
-        df_agg.reset_index(inplace=True)
-        
-        return df_agg
     
     def get_funding_rate(self, symbol: str, limit: int = 1000) -> pd.DataFrame:
         """資金費率: 往前爬取所有歷史數據"""
@@ -430,19 +336,15 @@ class BinanceAdvancedDataCollector:
         end_date: Optional[str] = None,
         timeframe: str = '15m'
     ) -> Dict[str, pd.DataFrame]:
-        """收集所有進階特徵, 如未指定日期則自動偵測並爬取所有可用數據"""
+        """
+        收集所有進階特徵
+        注意: Order Flow 現改由 Taker Buy/Sell 計算 CVD
+        """
         
         if start_date is None or end_date is None:
             start_time = self.get_earliest_available_time(symbol)
             start_date = pd.to_datetime(start_time, unit='ms').strftime('%Y-%m-%d')
             end_date = datetime.now().strftime('%Y-%m-%d')
-        else:
-            start_dt = pd.to_datetime(start_date)
-            end_dt = pd.to_datetime(end_date)
-            start_time = int(start_dt.timestamp() * 1000)
-        
-        end_dt = pd.to_datetime(end_date)
-        end_time = int(end_dt.timestamp() * 1000)
         
         print(f"\n{'='*60}")
         print(f"收集 {symbol} 進階特徵")
@@ -451,42 +353,42 @@ class BinanceAdvancedDataCollector:
         
         results = {}
         
-        print("\n[1/5] 訂單流特徵 (Order Flow - CVD)...")
-        trades_df = self.get_aggregate_trades(symbol, start_time, end_time)
-        if not trades_df.empty:
-            order_flow_df = self.calculate_order_flow_features(trades_df, timeframe)
-            results['order_flow'] = order_flow_df
-            print(f"  ✅ 生成 {len(order_flow_df):,} 筆訂單流特徵")
-        else:
-            results['order_flow'] = pd.DataFrame()
-        
-        print("\n[2/5] 資金費率 (Funding Rate)...")
+        print("\n[1/5] 資金費率 (Funding Rate)...")
         funding_df = self.get_funding_rate(symbol)
         if not funding_df.empty:
             results['funding_rate'] = funding_df
         else:
             results['funding_rate'] = pd.DataFrame()
         
-        print("\n[3/5] 未平倉量 (Open Interest)...")
+        print("\n[2/5] 未平倉量 (Open Interest)...")
         oi_df = self.get_open_interest(symbol, timeframe)
         if not oi_df.empty:
             results['open_interest'] = oi_df
         else:
             results['open_interest'] = pd.DataFrame()
         
-        print("\n[4/5] 多空比 (Long/Short Ratio)...")
+        print("\n[3/5] 多空比 (Long/Short Ratio)...")
         ls_ratio_df = self.get_long_short_ratio(symbol, timeframe)
         if not ls_ratio_df.empty:
             results['long_short_ratio'] = ls_ratio_df
         else:
             results['long_short_ratio'] = pd.DataFrame()
         
-        print("\n[5/5] 主動買賣比 (Taker Buy/Sell)...")
+        print("\n[4/5] 主動買賣比 (Taker Buy/Sell)...")
         taker_df = self.get_taker_buy_sell(symbol, timeframe)
         if not taker_df.empty:
             results['taker_buy_sell'] = taker_df
         else:
             results['taker_buy_sell'] = pd.DataFrame()
+        
+        print("\n[5/5] 訂單流特徵 (Order Flow - CVD from Taker Data)...")
+        if not taker_df.empty:
+            order_flow_df = self.calculate_order_flow_from_taker_buysell(taker_df)
+            results['order_flow'] = order_flow_df
+            print(f"  ✅ 從 Taker 數據生成 {len(order_flow_df):,} 筆 CVD 特徵")
+        else:
+            results['order_flow'] = pd.DataFrame()
+            print(f"  ⚠️ 無 Taker 數據,無法計算 CVD")
         
         print(f"\n{'='*60}")
         total_records = sum([len(df) for df in results.values() if not df.empty])
