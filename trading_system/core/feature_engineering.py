@@ -247,22 +247,26 @@ class FeatureEngineer:
         df_1h_copy = df_1h.copy()
         df_15m_copy = df_15m.copy()
         
+        # **關鍵修正**: 明確保留 15m 的必要欄位
+        essential_15m_cols = ['open_time', 'open', 'high', 'low', 'close', 'volume', 'atr']
+        missing_essential = [col for col in essential_15m_cols if col not in df_15m_copy.columns]
+        if missing_essential:
+            logger.error(f"Missing essential columns in df_15m: {missing_essential}")
+            raise ValueError(f"df_15m missing required columns: {missing_essential}")
+        
         # 1. 創建 1h 的真實可見時間 (無未來函數)
-        # 1h K 線在 open_time + 1 小時後才會收盤並確定特徵
         df_1h_copy['htf_close_time'] = df_1h_copy['open_time'] + pd.Timedelta(hours=1)
         
-        # 2. 篩選 1h 的關鍵特徵並加上 _1h 綴詞
-        # 只保留平稩特徵 + 必要的價格/EMA 特徵供後續計算
-        # **重要**: 不要 rename open_time, 它是 15m 的時間索引
+        # 2. 篩選 1h 的特徵並加上 _1h 綴詞
         cols_to_exclude = ['open_time', 'close_time', 'htf_close_time']
         cols_to_keep = [col for col in df_1h_copy.columns if col not in cols_to_exclude]
         rename_dict = {col: f"{col}_1h" for col in cols_to_keep}
         df_1h_renamed = df_1h_copy.rename(columns=rename_dict)
         df_1h_renamed['htf_close_time'] = df_1h_copy['htf_close_time']
         
-        # 確保時間排序 (merge_asof 必須)
-        df_15m_copy = df_15m_copy.sort_values('open_time')
-        df_1h_renamed = df_1h_renamed.sort_values('htf_close_time')
+        # 確保時間排序
+        df_15m_copy = df_15m_copy.sort_values('open_time').reset_index(drop=True)
+        df_1h_renamed = df_1h_renamed.sort_values('htf_close_time').reset_index(drop=True)
         
         # 3. merge_asof
         df_mtf = pd.merge_asof(
@@ -273,6 +277,14 @@ class FeatureEngineer:
             direction='backward'
         )
         
+        # **關鍵驗證**: 確保 open_time 存在
+        if 'open_time' not in df_mtf.columns:
+            logger.error("CRITICAL: open_time missing after merge_asof!")
+            logger.error(f"df_mtf columns: {df_mtf.columns.tolist()}")
+            raise ValueError("open_time lost during merge_asof operation")
+        
+        logger.info(f"After merge_asof: {df_mtf.shape}, open_time present: {'open_time' in df_mtf.columns}")
+        
         # 4. 清除無歷史對應的 NaN 數據
         df_mtf = df_mtf.dropna()
         
@@ -282,11 +294,14 @@ class FeatureEngineer:
         # 最終確保無空值
         df_mtf = df_mtf.dropna()
         
-        # **關鍵修正**: 確保保留 open_time 欄位 (來自 df_15m_copy)
-        if 'open_time' not in df_mtf.columns:
-            logger.error("open_time missing after merge! This should not happen.")
-        else:
-            logger.info(f"MTF merge complete with open_time preserved. Shape: {df_mtf.shape}")
+        # **最終驗證**: 再次確認必要欄位
+        for col in essential_15m_cols:
+            if col not in df_mtf.columns:
+                logger.error(f"Essential column {col} missing in final df_mtf")
+                raise ValueError(f"Essential column {col} lost during MTF processing")
+        
+        logger.info(f"MTF merge complete with all essential columns. Shape: {df_mtf.shape}")
+        logger.info(f"Essential columns verified: {essential_15m_cols}")
         
         return df_mtf
 
