@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
 from core import (
     CryptoDataLoader, FeatureEngineer, ModelTrainer,
-    BacktestEngine
+    Backtester
 )
 from core.event_filter import BBNW_BounceFilter
 
@@ -288,7 +288,7 @@ def render():
             status_text.text("💰 步驟 5/5: 模擬交易...")
             progress_bar.progress(80)
             
-            # 簡易回測引擎 (這裡可以接入你現有的 BacktestEngine)
+            # 簡易回測引擎
             trades = []
             balance = initial_capital
             peak_balance = initial_capital
@@ -317,7 +317,7 @@ def render():
                         tp_price = entry_price - row['atr'] * fixed_tp
                         sl_price = entry_price + row['atr'] * fixed_sl
                 
-                # 簡化: 假設 60% 機率觸及 TP，40% 觸及 SL
+                # 簡化: 假設機率正比例於觸及 TP 的機率
                 hit_tp = np.random.random() < row['predicted_prob']
                 
                 if hit_tp:
