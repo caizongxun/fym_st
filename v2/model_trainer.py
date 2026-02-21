@@ -42,7 +42,10 @@ class ModelTrainer:
             'quote_asset_volume', 'number_of_trades',
             'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume',
             'ignore', 'symbol',
-            'long_sl', 'long_tp', 'short_sl', 'short_tp'
+            'long_sl', 'long_tp', 'short_sl', 'short_tp',
+            'basis', 'dev', 'upper', 'lower',
+            'last_ph', 'last_pl', 'atr',
+            'is_touching_lower', 'is_touching_upper'
         ]
         
         feature_cols = [col for col in df.columns if col not in exclude_cols]
@@ -82,6 +85,7 @@ class ModelTrainer:
         print(f"\nTraining {self.model_type} model...")
         print(f"Train samples: {len(X_train)} | Test samples: {len(X_test)}")
         print(f"Features: {len(self.feature_names)}")
+        print(f"Feature names: {self.feature_names}")
         print(f"Train label distribution: {y_train.value_counts().to_dict()}")
         print(f"Test label distribution: {y_test.value_counts().to_dict()}")
         
@@ -167,10 +171,13 @@ class TrendFilterTrainer(ModelTrainer):
     def prepare_filter_labels(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         
-        if 'target' in df.columns:
-            df['filter_target'] = (df['target'] == 0).astype(int)
-        else:
+        if 'target' not in df.columns:
             raise ValueError("DataFrame must contain 'target' column")
+        
+        if 'hit_sl' in df.columns:
+            df['filter_target'] = (df['hit_sl'] == 1).astype(int)
+        else:
+            df['filter_target'] = (df['target'] == 0).astype(int)
         
         df['target'] = df['filter_target']
         df = df.drop('filter_target', axis=1)
