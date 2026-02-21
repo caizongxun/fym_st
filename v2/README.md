@@ -1,269 +1,283 @@
-# V2 Modular Trading System
+# V2 模塊化交易系統
 
-## Overview
-Modular automated trading system with HuggingFace data integration, feature engineering, label generation, dual-model training, and confluence-veto inference logic for cryptocurrency trading.
+## 概述
+模塊化的加密貨幣交易系統,整合 HuggingFace 數據源、特徵工程、標籤生成、雙模型訓練與共振-否決推論引擎,並提供完整的圖形化界面。
 
-## Structure
+## 架構
 ```
 v2/
-├── data_loader.py             # HuggingFace data loader
-├── feature_engineering.py    # Feature calculation module
-├── label_generation.py        # Label generation module
-├── model_trainer.py           # Dual-model training system
-├── inference_engine.py        # Confluence-veto inference engine
-├── pipeline.py                # Complete pipeline integration
-├── example_usage.py           # Basic feature/label example
-├── example_data_pipeline.py   # Data pipeline example
-├── example_model_training.py  # Model training and inference example
-├── models/                    # Trained model storage
-├── strategy.py               # Trading strategy module (TBD)
-├── backtest.py               # Backtesting engine (TBD)
-└── README.md                 # Documentation
+├── gui_app.py                # Streamlit 圖形化界面
+├── data_loader.py             # HuggingFace 數據載入器
+├── feature_engineering.py    # 特徵計算模塊
+├── label_generation.py        # 標籤生成模塊
+├── model_trainer.py           # 雙模型訓練系統
+├── inference_engine.py        # 共振-否決推論引擎
+├── pipeline.py                # 完整管道整合
+├── example_usage.py           # 基礎範例
+├── example_data_pipeline.py   # 數據管道範例
+├── example_model_training.py  # 模型訓練範例
+├── models/                    # 訓練完成的模型儲存
+├── requirements.txt           # 依賴套件清單
+└── README.md                 # 文檔
 ```
 
-## Data Loader Module
+## 快速開始
 
-### CryptoDataLoader Class
-Loads cryptocurrency OHLCV data from HuggingFace dataset.
+### 安裝依賴
 
-#### Dataset Information
-- **Repository**: `zongowo111/v2-crypto-ohlcv-data`
-- **Symbols**: 38 cryptocurrency pairs (BTCUSDT, ETHUSDT, etc.)
-- **Timeframes**: 15m, 1h, 1d
-- **Total Files**: 114 parquet files
+```bash
+cd v2
+pip install -r requirements.txt
+```
 
-#### Usage Example
+### 啟動 GUI 應用程式
+
+```bash
+streamlit run gui_app.py
+```
+
+瀏覽器會自動開啟 `http://localhost:8501`
+
+## GUI 功能說明
+
+### 📊 數據載入
+
+**功能**
+- 查看資料集資訊 (38個交易對)
+- 選擇交易對和時間框架
+- 從 HuggingFace 載入 OHLCV 數據
+- 預覽數據與統計資訊
+
+**操作步驟**
+1. 在左側查看資料集資訊
+2. 選擇交易對 (例: BTCUSDT)
+3. 選擇時間框架 (例: 15m)
+4. 點擊「載入數據」
+5. 查看數據預覽與統計
+
+### 🔧 特徵工程
+
+**功能**
+- 設定布林帶參數
+- 設定樞紐點參數
+- 計算 15 個技術指標
+- 預覽特徵數據
+
+**參數設定**
+- 布林帶週期: 5-50 (預設 20)
+- 標準差倍數: 1.0-3.0 (預設 2.0)
+- 回溯週期: 50-200 (預設 100)
+- 樞紐左側K線: 1-10 (預設 3)
+- 樞紐右側K線: 1-10 (預設 3)
+
+**輸出特徵**
+- Bollinger Bands: basis, upper, lower, bandwidth, percentile
+- 擠壓/擴張狀態: is_squeeze, is_expansion
+- 均值回歸: z_score
+- SMC 訊號: pivot points, sweeps, BOS
+
+### 🎯 標籤生成
+
+**功能**
+- 設定 ATR 參數
+- 設定停損/停利倍數
+- 生成二元分類標籤
+- 查看標籤統計
+
+**參數設定**
+- ATR 週期: 5-30 (預設 14)
+- 停損 ATR 倍數: 0.5-3.0 (預設 1.5)
+- 停利 ATR 倍數: 1.0-5.0 (預設 3.0)
+- 前瞥 K 線數: 5-50 (預設 16)
+
+**統計資訊**
+- 做多/做空樣本總數
+- 成功/失敗次數
+- 成功率百分比
+
+### 🧠 模型訓練
+
+**功能**
+- 訓練反彈預測模型 (Model A)
+- 訓練趋勢過濾模型 (Model B)
+- 查看訓練結果
+- 查看特徵重要性
+
+**訓練參數**
+- 方向: long / short
+- 樹數量: 100-1000 (預設 500)
+- 學習率: 0.01-0.2 (預設 0.05)
+- 最大深度: 3-15 (預設 7)
+- 訓練集比例: 0.5-0.9 (預設 0.8)
+
+**輸出結果**
+- 訓練/測試 ROC-AUC
+- 樣本數量
+- Top 5 特徵重要性
+
+**模型儲存**
+- 反彈模型: `v2/models/bounce_{direction}_model.pkl`
+- 過濾模型: `v2/models/filter_{direction}_model.pkl`
+
+### 🚀 推論測試
+
+**功能**
+- 載入訓練完成的模型
+- 設定決策閉值
+- 執行雙模型推論
+- 查看共振-否決結果
+
+**閉值設定**
+- 反彈閉值: 0.0-1.0 (預設 0.65)
+- 過濾閉值: 0.0-1.0 (預設 0.40)
+
+**決策邏輯**
+```
+P_bounce > 0.65 AND P_filter < 0.40 → ENTRY_APPROVED
+P_bounce <= 0.65 → BOUNCE_WEAK
+P_filter >= 0.40 → TREND_VETO
+```
+
+**統計資訊**
+- 總樣本數
+- 核准進場數
+- 進場率 %
+- 核准後成功率 %
+- 平均 P_bounce / P_filter
+- 訊號原因分佈
+
+## 命令行範例
+
+### 基礎特徵與標籤
+```bash
+python example_usage.py
+```
+
+### 完整數據管道
+```bash
+python example_data_pipeline.py
+```
+
+### 模型訓練與推論
+```bash
+python example_model_training.py
+```
+
+## 數據載入器
+
+### CryptoDataLoader
+
 ```python
-from v2.data_loader import CryptoDataLoader
+from data_loader import CryptoDataLoader
 
 loader = CryptoDataLoader()
 df = loader.load_klines('BTCUSDT', '15m')
 ```
 
-## Feature Engineering Module
+**資料集**
+- Repository: `zongowo111/v2-crypto-ohlcv-data`
+- 38 個交易對
+- 3 個時間框架 (15m, 1h, 1d)
 
-### FeatureEngineer Class
-Calculates 15 technical indicators including Bollinger Bands, Z-Score, and SMC features.
+## 特徵工程
 
-#### Features
-- Bollinger Bands (basis, upper, lower, bandwidth, percentile)
-- Squeeze/Expansion states
-- Mean reversion (z_score)
-- SMC signals (pivot points, sweeps, BOS)
+### FeatureEngineer
 
-## Label Generation Module
-
-### LabelGenerator Class
-Generates binary labels using dynamic ATR-based stop-loss and take-profit levels.
-
-#### Parameters
-- ATR period: 14
-- SL multiplier: 1.5x ATR
-- TP multiplier: 3.0x ATR
-- Lookahead: 16 bars (4 hours on 15m)
-
-#### Logic
-- Label = 1: TP hit first
-- Label = 0: SL hit first or timeout
-
-## Model Training Module
-
-### ModelTrainer Class
-Trains bounce prediction model (Model A) using LightGBM classifier.
-
-#### Features
-- Automatic feature selection (excludes OHLC, timestamps)
-- Time-series split (80/20 train/test)
-- Class weight balancing
-- Early stopping
-- ROC-AUC evaluation
-- Feature importance analysis
-
-#### Usage Example
 ```python
-from v2.model_trainer import ModelTrainer
+from feature_engineering import FeatureEngineer
 
-trainer = ModelTrainer(
-    model_type='bounce',
-    n_estimators=500,
-    learning_rate=0.05,
-    max_depth=7
-)
-
-results = trainer.train(df_train, train_ratio=0.8)
-trainer.save_model('v2/models/bb_bounce_model.pkl')
+fe = FeatureEngineer(bb_period=20, lookback=100)
+df_features = fe.process_features(df)
 ```
 
-### TrendFilterTrainer Class
-Trains trend filter model (Model B) to identify false breakouts.
+**15 個特徵**
+- Bollinger Bands (7)
+- Mean Reversion (1)
+- SMC Signals (7)
 
-#### Purpose
-Learn "do not enter" signals by identifying:
-- Strong trend continuation patterns
-- Liquidity sweep failures
-- False bounce setups
+## 標籤生成
 
-#### Label Logic
-Inverts bounce labels: failure cases (label=0) become filter targets (label=1)
+### LabelGenerator
 
-#### Usage Example
 ```python
-from v2.model_trainer import TrendFilterTrainer
+from label_generation import LabelGenerator
 
-trainer = TrendFilterTrainer(
-    n_estimators=500,
-    learning_rate=0.05
-)
-
-results = trainer.train(df_train)
-trainer.save_model('v2/models/trend_filter_model.pkl')
+lg = LabelGenerator(atr_period=14, sl_atr_mult=1.5, tp_atr_mult=3.0)
+df_labeled = lg.generate_labels(df_features)
 ```
 
-## Inference Engine Module
+**標籤邏輯**
+- Label = 1: TP 先觸及
+- Label = 0: SL 先觸及或超時
 
-### InferenceEngine Class
-Implements dual-model confluence-veto decision logic.
+## 模型訓練
 
-#### Architecture
-```
-Input Features
-      │
-      ├───────────> Model A (Bounce)
-      │              │
-      │              P_bounce
-      │              │
-      └───────────> Model B (Filter)
-                     │
-                     P_filter
-                     │
-               Confluence-Veto Logic
-                     │
-              Entry Signal (0 or 1)
-```
+### ModelTrainer & TrendFilterTrainer
 
-#### Decision Thresholds
-- **Bounce threshold**: 0.65 (P_bounce > 0.65)
-- **Filter threshold**: 0.40 (P_filter < 0.40)
-
-#### Decision Logic
 ```python
-if P_bounce > 0.65 and P_filter < 0.40:
-    signal = 1  # ENTRY_APPROVED
-elif P_bounce <= 0.65:
-    signal = 0  # BOUNCE_WEAK
-elif P_filter >= 0.40:
-    signal = 0  # TREND_VETO
+from model_trainer import ModelTrainer, TrendFilterTrainer
+
+# Model A
+trainer_a = ModelTrainer(model_type='bounce')
+results_a = trainer_a.train(df_train)
+trainer_a.save_model('models/bounce_model.pkl')
+
+# Model B
+trainer_b = TrendFilterTrainer()
+results_b = trainer_b.train(df_train)
+trainer_b.save_model('models/filter_model.pkl')
 ```
 
-#### Output Signals
-- **ENTRY_APPROVED**: Both models agree (confluence)
-- **BOUNCE_WEAK**: Model A confidence insufficient
-- **TREND_VETO**: Model B blocks entry (veto power)
+## 推論引擎
 
-#### Usage Example
+### InferenceEngine
+
 ```python
-from v2.inference_engine import InferenceEngine
+from inference_engine import InferenceEngine
 
 engine = InferenceEngine(
-    bounce_model_path='v2/models/bb_bounce_model.pkl',
-    filter_model_path='v2/models/trend_filter_model.pkl',
+    bounce_model_path='models/bounce_model.pkl',
+    filter_model_path='models/filter_model.pkl',
     bounce_threshold=0.65,
     filter_threshold=0.40
 )
 
-# Single prediction
-result = engine.predict_single(features)
-print(result)
-# {'p_bounce': 0.72, 'p_filter': 0.35, 'signal': 1, 'reason': 'ENTRY_APPROVED'}
-
-# Batch prediction
 df_predictions = engine.predict_batch(df_test)
 stats = engine.get_statistics(df_predictions)
 ```
 
-## Complete Workflow
+**輸出**
+- `p_bounce`: 反彈機率
+- `p_filter`: 過濾機率
+- `signal`: 0 或 1
+- `reason`: ENTRY_APPROVED / BOUNCE_WEAK / TREND_VETO
 
-### Training Pipeline
-```bash
-python v2/example_model_training.py
-```
+## 效能指標
 
-This executes:
-1. Load BTCUSDT 15m data for 2024
-2. Generate features and labels
-3. Train Model A (bounce prediction)
-4. Train Model B (trend filter)
-5. Test inference engine on ETHUSDT
-6. Display performance statistics
+### 模型 A (反彈)
+- 目標 ROC-AUC: > 0.70
+- 精確度優先
 
-### Expected Output
-```
-Bounce Model Test AUC: 0.75+
-Filter Model Test AUC: 0.70+
-Entry Approval Rate: 15-25%
-Approved Entry Success Rate: 55-70%
-```
+### 模型 B (過濾)
+- 目標 ROC-AUC: > 0.65
+- 召回率優先
 
-## Pipeline Module
+### 推論引擎
+- 進場率: 15-25%
+- 成功率: 55-70%
+- 風險降低: 30-40%
 
-### TradingPipeline Class
-Integrates data loading, feature engineering, and label generation.
+## 防漏措施
 
-#### Usage
-```python
-from v2.pipeline import TradingPipeline
+- 時序切分 (無隨機打亂)
+- 樞紐點位移確認
+- 標籤僅使用未來價格
+- 特徵排除 OHLC 與時間戳
 
-pipeline = TradingPipeline()
+## 下一步
 
-# Single symbol
-df_train, features = pipeline.prepare_training_data(
-    symbol='BTCUSDT',
-    timeframe='15m',
-    direction='long',
-    start_date='2024-01-01'
-)
-
-# Batch processing
-df_combined = pipeline.batch_process(
-    symbols=['BTCUSDT', 'ETHUSDT', 'BNBUSDT'],
-    timeframe='15m',
-    direction='long'
-)
-```
-
-## Installation Requirements
-
-```bash
-pip install pandas numpy lightgbm scikit-learn joblib huggingface-hub pyarrow
-```
-
-## Anti-Lookahead Measures
-- Time-series split (no random shuffling)
-- Pivot points shifted by confirmation period
-- Labels use only future price data
-- Features exclude OHLC and timestamps
-- Strict feature filtering in model training
-
-## Model Performance Guidelines
-
-### Bounce Model (Model A)
-- Target ROC-AUC: > 0.70
-- Precision focus: minimize false positives
-- Recall balance: capture valid setups
-
-### Filter Model (Model B)
-- Target ROC-AUC: > 0.65
-- High recall priority: catch dangerous conditions
-- Veto power: blocks risky entries
-
-### Inference Engine
-- Entry rate: 15-25% of candidates
-- Success rate: 55-70% of approved entries
-- Risk reduction: 30-40% fewer losses vs. single model
-
-## Next Steps
-1. Backtesting engine with realistic slippage
-2. Strategy module with position sizing
-3. Live trading bot with risk management
-4. Multi-timeframe model ensemble
-5. Adaptive threshold optimization
+1. 回測引擎 (滑點模擬)
+2. 策略模塊 (倍數管理)
+3. 實時交易機器人
+4. 多時間框架整合
+5. 自適應閉值優化
