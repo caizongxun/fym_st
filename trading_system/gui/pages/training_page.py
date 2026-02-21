@@ -185,7 +185,7 @@ def render():
             st.info(f"標籤分布: {positive_pct:.1f}% 正樣本 ({positive_count} 勝, {negative_count} 負)")
             st.info(f"樣本權重 - 正類: {avg_weight_pos:.2f}, 負類: {avg_weight_neg:.2f}")
             
-            status_text.text("準備訓練數據 (特徵大掃除)...\")
+            status_text.text("準備訓練數據 (特徵大掃除)...")
             progress_bar.progress(35)
             
             # ===== [重點] 特徵大掃除 - 封殺非平稩特徵 (含 1h) =====
@@ -244,7 +244,7 @@ def render():
             
             # 顯示保留的核心特徵
             with st.expander("保留的平稩特徵 (點擊查看)", expanded=False):
-                st.code('\\n'.join(feature_cols))
+                st.code('\n'.join(feature_cols))
             
             status_text.text("Purged K-Fold 訓練...")
             progress_bar.progress(50)
