@@ -14,10 +14,11 @@ from core import (
 )
 
 def render():
-    st.title("回測分析")
+    st.title("回測分析 (MTF 支援)")
     
     st.markdown("""
     在歷史數據上測試你的模型績效:
+    - **MTF 支援**: 自動偵測並載入 15m + 1h 數據
     - 正確的 Maker/Taker 費率模型
     - 槓桿合約交易模擬
     - TP 無滑點,SL 有滑點 (真實情況)
@@ -34,7 +35,7 @@ def render():
         - 結果: 平均獲利大幅提升,盈虧比改善
         
         **2. 降低機率門檻 (0.52-0.53)**
-        - 目的: 增加交易頁率 (90天 12筆 → 25-30筆)
+        - 目的: 增加交易頻率 (90天 12筆 → 25-30筆)
         - 條件: 新信號依然保持正期望值
         - 結果: 總獲利翻倍
         
@@ -59,9 +60,20 @@ def render():
             model_files = sorted(model_files, reverse=True)
             model_file = st.selectbox("選擇模型", model_files)
             
+            # 偵測 MTF 模型
+            is_mtf_model = 'MTF' in model_file or '_15m_1h' in model_file
+            if is_mtf_model:
+                st.success("✅ 偵測到 MTF 模型，將載入 15m + 1h 數據")
+            
             loader = CryptoDataLoader()
             symbol = st.selectbox("測試交易對", loader.get_available_symbols(), index=10)
-            timeframe = st.selectbox("時間框架", loader.get_available_timeframes(), index=1)
+            
+            # MTF 模型強制使用 15m
+            if is_mtf_model:
+                timeframe = '15m'
+                st.info("🔒 MTF 模型鎖定為 15m 進場時間框架")
+            else:
+                timeframe = st.selectbox("時間框架", loader.get_available_timeframes(), index=1)
             
             data_source = st.radio(
                 "數據來源",
@@ -76,22 +88,22 @@ def render():
         
         with col2:
             initial_capital = st.number_input("初始資金", value=10000.0, step=1000.0)
-            risk_per_trade = st.number_input("每筆風險%", value=1.0, step=0.5)
+            risk_per_trade = st.number_input("每筆風險%", value=2.0, step=0.5)
             leverage = st.number_input("槓桿倍數", value=10, min_value=1, max_value=20, step=1)
             
         with col3:
             tp_multiplier = st.number_input(
                 "TP 倍數 (ATR)", 
-                value=3.5, 
+                value=3.0, 
                 step=0.5,
-                help="建議 3.5-4.0 以覆蓋手續費"
+                help="建議 3.0-3.5 以覆蓋手續費"
             )
-            sl_multiplier = st.number_input("SL 倍數 (ATR)", value=1.5, step=0.25)
+            sl_multiplier = st.number_input("SL 倍數 (ATR)", value=1.0, step=0.25)
             probability_threshold = st.number_input(
                 "機率門檻", 
-                value=0.52, 
+                value=0.55, 
                 step=0.01,
-                help="建議 0.52-0.53 增加交易頁率"
+                help="建議 0.55 以維持高勝率"
             )
     
     with st.expander("手續費與滑點", expanded=False):
@@ -108,11 +120,13 @@ def render():
         if use_event_filter:
             col1, col2 = st.columns(2)
             with col1:
-                min_volume_ratio = st.number_input("最小成交量比率", value=1.5, step=0.1)
+                # MTF 模型使用更嚴格的過濾
+                min_volume_ratio = st.number_input("最小成交量比率", value=2.0 if is_mtf_model else 1.5, step=0.1)
                 use_strict = st.checkbox("嚴格模式", value=True)
             with col2:
                 min_vsr = st.number_input("最小波動率", value=1.0, step=0.1)
                 bb_squeeze = st.number_input("BB壓縮門檻", value=0.5, step=0.1)
+                lookback_period = st.number_input("突破回看週期", value=40 if is_mtf_model else 20, step=10)
     
     if st.button("運行回測", type="primary"):
         progress_bar = st.progress(0)
@@ -129,20 +143,48 @@ def render():
             status_text.text("載入數據...")
             progress_bar.progress(20)
             
-            if data_source == "Binance API (最新)":
-                st.info(f"從 Binance 抽取最近 {backtest_days} 天數據...")
-                df = loader.fetch_latest_klines(symbol, timeframe, days=int(backtest_days))
+            # ===== [MTF 支援] 載入雙週期數據 =====
+            if is_mtf_model:
+                st.info("🔄 MTF 模式: 載入 15m + 1h 數據...")
+                
+                if data_source == "Binance API (最新)":
+                    df_15m = loader.fetch_latest_klines(symbol, '15m', days=int(backtest_days))
+                    df_1h = loader.fetch_latest_klines(symbol, '1h', days=int(backtest_days))
+                else:
+                    df_15m = loader.load_klines(symbol, '15m')
+                    df_1h = loader.load_klines(symbol, '1h')
+                    if use_recent_data:
+                        df_15m = df_15m[df_15m['open_time'] >= '2024-01-01'].copy()
+                        df_1h = df_1h[df_1h['open_time'] >= '2024-01-01'].copy()
+                
+                st.info(f"載入完成: 15m ({len(df_15m)} 筆), 1h ({len(df_1h)} 筆)")
+                st.info(f"數據範圍: {df_15m['open_time'].min()} ~ {df_15m['open_time'].max()}")
+                
+                status_text.text("建立 MTF 特徵...")
+                progress_bar.progress(30)
+                feature_engineer = FeatureEngineer()
+                
+                df_15m_features = feature_engineer.build_features(df_15m, include_microstructure=True)
+                df_1h_features = feature_engineer.build_features(df_1h, include_microstructure=True)
+                
+                df_features = feature_engineer.merge_and_build_mtf_features(df_15m_features, df_1h_features)
+                st.success(f"MTF 特徵合併完成! 形狀: {df_features.shape}")
+                
             else:
-                df = loader.load_klines(symbol, timeframe)
-                if use_recent_data:
-                    df = df[df['open_time'] >= '2024-01-01'].copy()
-            
-            st.info(f"載入 {len(df)} 筆,範圍: {df['open_time'].min()} ~ {df['open_time'].max()}")
-            
-            status_text.text("建立特徵...")
-            progress_bar.progress(30)
-            feature_engineer = FeatureEngineer()
-            df_features = feature_engineer.build_features(df)
+                # 單一時間框架模式
+                if data_source == "Binance API (最新)":
+                    df = loader.fetch_latest_klines(symbol, timeframe, days=int(backtest_days))
+                else:
+                    df = loader.load_klines(symbol, timeframe)
+                    if use_recent_data:
+                        df = df[df['open_time'] >= '2024-01-01'].copy()
+                
+                st.info(f"載入 {len(df)} 筆,範圏: {df['open_time'].min()} ~ {df['open_time'].max()}")
+                
+                status_text.text("建立特徵...")
+                progress_bar.progress(30)
+                feature_engineer = FeatureEngineer()
+                df_features = feature_engineer.build_features(df)
             
             if use_event_filter:
                 status_text.text("事件過濾...")
@@ -152,7 +194,7 @@ def render():
                     min_volume_ratio=min_volume_ratio,
                     min_vsr=min_vsr,
                     bb_squeeze_threshold=bb_squeeze,
-                    lookback_period=20
+                    lookback_period=int(lookback_period)
                 )
                 df_filtered = event_filter.filter_events(df_features)
                 st.info(f"過濾: {len(df_features)} → {len(df_filtered)} ({100*len(df_filtered)/len(df_features):.1f}%)")
@@ -164,10 +206,9 @@ def render():
             
             # 關鍵修正: 只排除基礎欄位和標籤欄位
             exclude_cols = [
-                'open_time', 'close_time', 'open', 'high', 'low', 'close', 'volume',
-                'quote_volume', 'trades', 'taker_buy_volume', 'taker_buy_quote_volume',
-                'taker_buy_base_asset_volume',
-                'label', 'label_return', 'hit_time', 'exit_type', 'exit_price', 'exit_bars', 'return'
+                'open_time', 'close_time', 'htf_close_time',
+                'label', 'label_return', 'hit_time', 'exit_type', 'exit_price', 'exit_bars', 'return',
+                'sample_weight', 'mae_ratio', 'ignore'
             ]
             
             X_pred = pd.DataFrame(index=df_filtered.index)
@@ -177,14 +218,13 @@ def render():
                 if feature_name in df_filtered.columns and feature_name not in exclude_cols:
                     X_pred[feature_name] = df_filtered[feature_name]
                 else:
-                    # 警告但不停止
                     if feature_name not in df_filtered.columns:
                         missing_features.append(feature_name)
                     X_pred[feature_name] = 0
             
             if len(missing_features) > 0:
-                st.warning(f"缺失特徵 ({len(missing_features)}): {', '.join(missing_features[:5])}...")
-                st.info("建議: 重新訓練模型以移除非平穩特徵 (bb_middle, volume_ma_20 等)")
+                st.error(f"⚠️ 缺失特徵 ({len(missing_features)}): {', '.join(missing_features[:10])}...")
+                st.info("建議: 重新訓練模型以移除非平稩特徵")
             
             X_pred = X_pred.fillna(0).replace([np.inf, -np.inf], 0)
             
@@ -195,7 +235,6 @@ def render():
             df_filtered = df_filtered.copy()
             df_filtered['win_probability'] = probabilities
             
-            # 顯示機率分布
             prob_dist = df_filtered['win_probability'].describe()
             st.info(f"機率分布: min={prob_dist['min']:.3f}, mean={prob_dist['mean']:.3f}, max={prob_dist['max']:.3f}")
             
@@ -237,12 +276,10 @@ def render():
             
             st.success("回測完成")
             
-            # 計算年化指標
             days_in_test = (trades_df.iloc[-1]['entry_time'] - trades_df.iloc[0]['entry_time']).days
             days_in_test = max(days_in_test, 1)
             annualized_return = stats['total_return'] * (365 / days_in_test)
             
-            # 手續費佔收益比
             fee_to_profit_ratio = stats['total_commission'] / stats['net_pnl'] if stats['net_pnl'] > 0 else 0
             
             st.markdown("### 績效摘要")
@@ -253,14 +290,14 @@ def render():
             with col2:
                 st.metric("最終資金", f"${stats['final_capital']:,.0f}")
             with col3:
-                st.metric("淨損益", f"${stats['net_pnl']:,.0f}", 
+                st.metric("淪損益", f"${stats['net_pnl']:,.0f}", 
                          delta=f"{stats['total_return']*100:.1f}%")
             with col4:
                 st.metric("總手續費", f"${stats['total_commission']:,.0f}",
                          delta=f"{fee_to_profit_ratio*100:.1f}% 佔利潤",
                          delta_color="inverse")
             with col5:
-                st.metric("年化報酸", f"{annualized_return*100:.1f}%")
+                st.metric("年化報酬", f"{annualized_return*100:.1f}%")
             
             col1, col2 = st.columns(2)
             with col1:
