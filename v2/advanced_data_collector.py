@@ -18,10 +18,9 @@ class BinanceAdvancedDataCollector:
     5. 主動大单比 (Taker Buy/Sell): 爬爆倉代理指標
     
     關鍵優化:
-    - 使用期貨 API (現貨 aggTrades 對舊數據無響應)
-    - 直接從 Taker Buy/Sell 計算 CVD (替代方案)
-    - 分塊爬取 (1天/塊) 避免 API 超時
-    - 自動往前爬取所有可用歷史數據
+    - 從最早時間開始往後爬取 (startTime)
+    - 使用 startTime + 循環更新
+    - 自動爬取所有可用歷史數據
     """
     
     def __init__(self):
@@ -94,32 +93,25 @@ class BinanceAdvancedDataCollector:
         
         return df
     
-    def get_funding_rate(self, symbol: str, limit: int = 1000) -> pd.DataFrame:
-        """資金費率: 往前爬取所有歷史數據"""
+    def get_funding_rate(self, symbol: str, start_time: int, limit: int = 1000) -> pd.DataFrame:
+        """資金費率: 從指定時間開始往後爬取所有歷史數據"""
         url = f"{self.futures_base_url}/fapi/v1/fundingRate"
         
         all_funding = []
         
-        print(f"  爬取資金費率全部歷史...")
+        print(f"  爬取資金費率全部歷史 (從 {pd.to_datetime(start_time, unit='ms').strftime('%Y-%m-%d')})...")
         
-        params = {'symbol': symbol, 'limit': limit}
+        current_start = start_time
+        round_count = 0
         
         try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            funding_data = response.json()
-            
-            if not funding_data:
-                return pd.DataFrame()
-            
-            all_funding.extend(funding_data)
-            round_count = 1
-            
-            while len(funding_data) == limit:
-                earliest_time = funding_data[0]['fundingTime']
-                params['endTime'] = earliest_time - 1
+            while True:
+                params = {
+                    'symbol': symbol,
+                    'startTime': current_start,
+                    'limit': limit
+                }
                 
-                time.sleep(self.rate_limit_delay)
                 response = requests.get(url, params=params, timeout=10)
                 response.raise_for_status()
                 funding_data = response.json()
@@ -127,11 +119,23 @@ class BinanceAdvancedDataCollector:
                 if not funding_data:
                     break
                 
-                all_funding = funding_data + all_funding
+                all_funding.extend(funding_data)
                 round_count += 1
                 
                 if round_count % 5 == 0:
                     print(f"    已爬取 {len(all_funding):,} 筆...")
+                
+                if len(funding_data) < limit:
+                    break
+                
+                # 更新 startTime 為最後一筆的下一個時間點
+                current_start = funding_data[-1]['fundingTime'] + 1
+                
+                time.sleep(self.rate_limit_delay)
+            
+            if not all_funding:
+                print(f"  ⚠️ 無資金費率數據")
+                return pd.DataFrame()
             
             df = pd.DataFrame(all_funding)
             df['fundingTime'] = pd.to_datetime(df['fundingTime'], unit='ms')
@@ -154,32 +158,26 @@ class BinanceAdvancedDataCollector:
             print(f"  ⚠️ 資金費率無法獲取: {e}")
             return pd.DataFrame()
     
-    def get_open_interest(self, symbol: str, interval: str = '15m', limit: int = 500) -> pd.DataFrame:
-        """未平倉量: 爬取所有歷史數據"""
+    def get_open_interest(self, symbol: str, start_time: int, interval: str = '15m', limit: int = 500) -> pd.DataFrame:
+        """未平倉量: 從指定時間開始往後爬取所有歷史數據"""
         url = f"{self.futures_base_url}/futures/data/openInterestHist"
         
         all_oi = []
         
-        print(f"  爬取未平倉量全部歷史...")
+        print(f"  爬取未平倉量全部歷史 (從 {pd.to_datetime(start_time, unit='ms').strftime('%Y-%m-%d')})...")
         
-        params = {'symbol': symbol, 'period': interval, 'limit': limit}
+        current_start = start_time
+        round_count = 0
         
         try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            oi_data = response.json()
-            
-            if not oi_data:
-                return pd.DataFrame()
-            
-            all_oi.extend(oi_data)
-            round_count = 1
-            
-            while len(oi_data) == limit:
-                earliest_time = oi_data[0]['timestamp']
-                params['endTime'] = earliest_time - 1
+            while True:
+                params = {
+                    'symbol': symbol,
+                    'period': interval,
+                    'startTime': current_start,
+                    'limit': limit
+                }
                 
-                time.sleep(self.rate_limit_delay)
                 response = requests.get(url, params=params, timeout=10)
                 response.raise_for_status()
                 oi_data = response.json()
@@ -187,11 +185,23 @@ class BinanceAdvancedDataCollector:
                 if not oi_data:
                     break
                 
-                all_oi = oi_data + all_oi
+                all_oi.extend(oi_data)
                 round_count += 1
                 
                 if round_count % 10 == 0:
                     print(f"    已爬取 {len(all_oi):,} 筆...")
+                
+                if len(oi_data) < limit:
+                    break
+                
+                # 更新 startTime
+                current_start = oi_data[-1]['timestamp'] + 1
+                
+                time.sleep(self.rate_limit_delay)
+            
+            if not all_oi:
+                print(f"  ⚠️ 無未平倉量數據")
+                return pd.DataFrame()
             
             df = pd.DataFrame(all_oi)
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -213,32 +223,26 @@ class BinanceAdvancedDataCollector:
             print(f"  ⚠️ 未平倉量無法獲取: {e}")
             return pd.DataFrame()
     
-    def get_long_short_ratio(self, symbol: str, interval: str = '15m', limit: int = 500) -> pd.DataFrame:
-        """多空比: 爬取所有歷史數據"""
+    def get_long_short_ratio(self, symbol: str, start_time: int, interval: str = '15m', limit: int = 500) -> pd.DataFrame:
+        """多空比: 從指定時間開始往後爬取所有歷史數據"""
         url = f"{self.futures_base_url}/futures/data/topLongShortAccountRatio"
         
         all_ratio = []
         
-        print(f"  爬取多空比全部歷史...")
+        print(f"  爬取多空比全部歷史 (從 {pd.to_datetime(start_time, unit='ms').strftime('%Y-%m-%d')})...")
         
-        params = {'symbol': symbol, 'period': interval, 'limit': limit}
+        current_start = start_time
+        round_count = 0
         
         try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            ratio_data = response.json()
-            
-            if not ratio_data:
-                return pd.DataFrame()
-            
-            all_ratio.extend(ratio_data)
-            round_count = 1
-            
-            while len(ratio_data) == limit:
-                earliest_time = ratio_data[0]['timestamp']
-                params['endTime'] = earliest_time - 1
+            while True:
+                params = {
+                    'symbol': symbol,
+                    'period': interval,
+                    'startTime': current_start,
+                    'limit': limit
+                }
                 
-                time.sleep(self.rate_limit_delay)
                 response = requests.get(url, params=params, timeout=10)
                 response.raise_for_status()
                 ratio_data = response.json()
@@ -246,11 +250,23 @@ class BinanceAdvancedDataCollector:
                 if not ratio_data:
                     break
                 
-                all_ratio = ratio_data + all_ratio
+                all_ratio.extend(ratio_data)
                 round_count += 1
                 
                 if round_count % 10 == 0:
                     print(f"    已爬取 {len(all_ratio):,} 筆...")
+                
+                if len(ratio_data) < limit:
+                    break
+                
+                # 更新 startTime
+                current_start = ratio_data[-1]['timestamp'] + 1
+                
+                time.sleep(self.rate_limit_delay)
+            
+            if not all_ratio:
+                print(f"  ⚠️ 無多空比數據")
+                return pd.DataFrame()
             
             df = pd.DataFrame(all_ratio)
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -271,32 +287,26 @@ class BinanceAdvancedDataCollector:
             print(f"  ⚠️ 多空比無法獲取: {e}")
             return pd.DataFrame()
     
-    def get_taker_buy_sell(self, symbol: str, interval: str = '15m', limit: int = 500) -> pd.DataFrame:
-        """主動買賣比: 爬爆倉代理指標"""
+    def get_taker_buy_sell(self, symbol: str, start_time: int, interval: str = '15m', limit: int = 500) -> pd.DataFrame:
+        """主動買賣比: 從指定時間開始往後爬取所有歷史數據"""
         url = f"{self.futures_base_url}/futures/data/takerlongshortRatio"
         
         all_taker = []
         
-        print(f"  爬取主動買賣比全部歷史...")
+        print(f"  爬取主動買賣比全部歷史 (從 {pd.to_datetime(start_time, unit='ms').strftime('%Y-%m-%d')})...")
         
-        params = {'symbol': symbol, 'period': interval, 'limit': limit}
+        current_start = start_time
+        round_count = 0
         
         try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            taker_data = response.json()
-            
-            if not taker_data:
-                return pd.DataFrame()
-            
-            all_taker.extend(taker_data)
-            round_count = 1
-            
-            while len(taker_data) == limit:
-                earliest_time = taker_data[0]['timestamp']
-                params['endTime'] = earliest_time - 1
+            while True:
+                params = {
+                    'symbol': symbol,
+                    'period': interval,
+                    'startTime': current_start,
+                    'limit': limit
+                }
                 
-                time.sleep(self.rate_limit_delay)
                 response = requests.get(url, params=params, timeout=10)
                 response.raise_for_status()
                 taker_data = response.json()
@@ -304,11 +314,23 @@ class BinanceAdvancedDataCollector:
                 if not taker_data:
                     break
                 
-                all_taker = taker_data + all_taker
+                all_taker.extend(taker_data)
                 round_count += 1
                 
                 if round_count % 10 == 0:
                     print(f"    已爬取 {len(all_taker):,} 筆...")
+                
+                if len(taker_data) < limit:
+                    break
+                
+                # 更新 startTime
+                current_start = taker_data[-1]['timestamp'] + 1
+                
+                time.sleep(self.rate_limit_delay)
+            
+            if not all_taker:
+                print(f"  ⚠️ 無主動買賣比數據")
+                return pd.DataFrame()
             
             df = pd.DataFrame(all_taker)
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -345,6 +367,9 @@ class BinanceAdvancedDataCollector:
             start_time = self.get_earliest_available_time(symbol)
             start_date = pd.to_datetime(start_time, unit='ms').strftime('%Y-%m-%d')
             end_date = datetime.now().strftime('%Y-%m-%d')
+        else:
+            start_dt = pd.to_datetime(start_date)
+            start_time = int(start_dt.timestamp() * 1000)
         
         print(f"\n{'='*60}")
         print(f"收集 {symbol} 進階特徵")
@@ -354,28 +379,28 @@ class BinanceAdvancedDataCollector:
         results = {}
         
         print("\n[1/5] 資金費率 (Funding Rate)...")
-        funding_df = self.get_funding_rate(symbol)
+        funding_df = self.get_funding_rate(symbol, start_time)
         if not funding_df.empty:
             results['funding_rate'] = funding_df
         else:
             results['funding_rate'] = pd.DataFrame()
         
         print("\n[2/5] 未平倉量 (Open Interest)...")
-        oi_df = self.get_open_interest(symbol, timeframe)
+        oi_df = self.get_open_interest(symbol, start_time, timeframe)
         if not oi_df.empty:
             results['open_interest'] = oi_df
         else:
             results['open_interest'] = pd.DataFrame()
         
         print("\n[3/5] 多空比 (Long/Short Ratio)...")
-        ls_ratio_df = self.get_long_short_ratio(symbol, timeframe)
+        ls_ratio_df = self.get_long_short_ratio(symbol, start_time, timeframe)
         if not ls_ratio_df.empty:
             results['long_short_ratio'] = ls_ratio_df
         else:
             results['long_short_ratio'] = pd.DataFrame()
         
         print("\n[4/5] 主動買賣比 (Taker Buy/Sell)...")
-        taker_df = self.get_taker_buy_sell(symbol, timeframe)
+        taker_df = self.get_taker_buy_sell(symbol, start_time, timeframe)
         if not taker_df.empty:
             results['taker_buy_sell'] = taker_df
         else:
@@ -443,7 +468,7 @@ class BatchAdvancedDataCollector:
         print(f"批量進階數據收集")
         print(f"{'='*80}")
         print(f"幣種數量: {len(self.hf_symbols)}")
-        print(f"時間範圍: {start_date or '自動偵測'} 至 {end_date or '現在'}")
+        print(f"時間範圏: {start_date or '自動偵測'} 至 {end_date or '現在'}")
         print(f"時間框架: {timeframe}")
         print(f"輸出目錄: {output_dir}")
         print(f"{'='*80}\n")
