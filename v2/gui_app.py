@@ -16,12 +16,12 @@ from inference_engine import InferenceEngine
 
 st.set_page_config(
     page_title="V2 交易系統",
-    page_icon="📈",
+    page_icon="chart",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-st.title("📈 V2 模塊化交易系統")
+st.title("V2 模塊化交易系統")
 
 if 'data_loader' not in st.session_state:
     st.session_state.data_loader = CryptoDataLoader()
@@ -30,15 +30,15 @@ if 'pipeline' not in st.session_state:
     st.session_state.pipeline = TradingPipeline()
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 數據載入",
-    "🔧 特徵工程",
-    "🎯 標籤生成",
-    "🧠 模型訓練",
-    "🚀 推論測試"
+    "[1] 數據載入",
+    "[2] 特徵工程",
+    "[3] 標籤生成",
+    "[4] 模型訓練",
+    "[5] 推論測試"
 ])
 
 with tab1:
-    st.header("📊 數據載入")
+    st.header("數據載入")
     
     col1, col2 = st.columns([1, 2])
     
@@ -75,7 +75,7 @@ with tab1:
         with col2_3:
             st.write("")
             st.write("")
-            if st.button("📂 載入數據", use_container_width=True):
+            if st.button("載入數據", use_container_width=True):
                 with st.spinner('載入中...'):
                     try:
                         df = st.session_state.data_loader.load_klines(symbol, timeframe)
@@ -103,10 +103,10 @@ with tab1:
                 st.metric("平均價格", f"{df_display['close'].mean():.2f}")
 
 with tab2:
-    st.header("🔧 特徵工程")
+    st.header("特徵工程")
     
     if 'df_raw' not in st.session_state:
-        st.warning("請先在「數據載入」頁面載入數據")
+        st.warning("請先在 [1]數據載入 頁面載入數據")
     else:
         col1, col2 = st.columns([1, 3])
         
@@ -119,7 +119,7 @@ with tab2:
             pivot_left = st.number_input("樞紐左側K線", 1, 10, 3)
             pivot_right = st.number_input("樞紐右側K線", 1, 10, 3)
             
-            if st.button("⚙️ 計算特徵", use_container_width=True):
+            if st.button("計算特徵", use_container_width=True):
                 with st.spinner('計算中...'):
                     try:
                         fe = FeatureEngineer(
@@ -156,10 +156,10 @@ with tab2:
                     st.write(feature_cols[8:])
 
 with tab3:
-    st.header("🎯 標籤生成")
+    st.header("標籤生成")
     
     if 'df_features' not in st.session_state:
-        st.warning("請先在「特徵工程」頁面計算特徵")
+        st.warning("請先在 [2]特徵工程 頁面計算特徵")
     else:
         col1, col2 = st.columns([1, 3])
         
@@ -171,7 +171,7 @@ with tab3:
             tp_mult = st.number_input("停利ATR倍數", 1.0, 5.0, 3.0, 0.1)
             lookahead = st.number_input("前瞥K線數", 5, 50, 16)
             
-            if st.button("🎯 生成標籤", use_container_width=True):
+            if st.button("生成標籤", use_container_width=True):
                 with st.spinner('生成中...'):
                     try:
                         lg = LabelGenerator(
@@ -230,10 +230,10 @@ with tab3:
                 )
 
 with tab4:
-    st.header("🧠 模型訓練")
+    st.header("模型訓練")
     
     if 'df_labeled' not in st.session_state:
-        st.warning("請先在「標籤生成」頁面生成標籤")
+        st.warning("請先在 [3]標籤生成 頁面生成標籤")
     else:
         col1, col2 = st.columns([1, 3])
         
@@ -251,7 +251,7 @@ with tab4:
             col_btn1, col_btn2 = st.columns(2)
             
             with col_btn1:
-                if st.button("🎯 訓練反彈模型", use_container_width=True):
+                if st.button("訓練反彈模型", use_container_width=True):
                     with st.spinner('訓練中...'):
                         try:
                             df_train = st.session_state.label_generator.prepare_training_data(
@@ -277,7 +277,7 @@ with tab4:
                             st.error(f"訓練失敗: {str(e)}")
             
             with col_btn2:
-                if st.button("🚫 訓練過濾模型", use_container_width=True):
+                if st.button("訓練過濾模型", use_container_width=True):
                     with st.spinner('訓練中...'):
                         try:
                             df_train = st.session_state.label_generator.prepare_training_data(
@@ -331,7 +331,7 @@ with tab4:
                     st.metric("訓練 AUC", f"{results['train_auc']:.4f}")
                     st.metric("測試 AUC", f"{results['test_auc']:.4f}")
                     st.metric("訓練樣本", results['train_samples'])
-                    st.metric("測試樣本", results['test_samples'])
+                    st.metric("測試樹本", results['test_samples'])
                     
                     st.write("**特徵重要性 Top 5**")
                     st.dataframe(
@@ -343,7 +343,7 @@ with tab4:
                     st.info("尚未訓練")
 
 with tab5:
-    st.header("🚀 推論測試")
+    st.header("推論測試")
     
     col1, col2 = st.columns([1, 3])
     
@@ -362,7 +362,7 @@ with tab5:
             bounce_threshold = st.slider("反彈閉值", 0.0, 1.0, 0.65, 0.05)
             filter_threshold = st.slider("過濾閉值", 0.0, 1.0, 0.40, 0.05)
             
-            if st.button("🚀 執行推論", use_container_width=True):
+            if st.button("執行推論", use_container_width=True):
                 if 'df_labeled' not in st.session_state:
                     st.error("請先生成標籤數據")
                 else:
@@ -390,8 +390,8 @@ with tab5:
                         except Exception as e:
                             st.error(f"推論失敗: {str(e)}")
         else:
-            st.error(f"模型檔案不存在\n{bounce_path}\n{filter_path}")
-            st.info("請先在「模型訓練」頁面訓練模型")
+            st.error(f"模型檔案不存在")
+            st.info("請先在 [4]模型訓練 頁面訓練模型")
     
     with col2:
         if 'inference_stats' in st.session_state:

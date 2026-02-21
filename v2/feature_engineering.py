@@ -21,8 +21,13 @@ class FeatureEngineer:
         
         df['bandwidth'] = (df['upper'] - df['lower']) / df['basis']
         
+        def percentile_rank(x):
+            if len(x) == 0:
+                return np.nan
+            return (x.iloc[-1] <= x).sum() / len(x) * 100
+        
         df['bandwidth_percentile'] = df['bandwidth'].rolling(window=self.lookback).apply(
-            lambda x: (x.iloc[-1] <= x).sum() / len(x) * 100 if len(x) > 0 else np.nan
+            percentile_rank, raw=False
         )
         
         df['is_squeeze'] = (df['bandwidth_percentile'] < 20).astype(int)
@@ -34,7 +39,7 @@ class FeatureEngineer:
         df = df.copy()
         
         if 'basis' not in df.columns or 'dev' not in df.columns:
-            raise ValueError("必須先計算布林帶")
+            raise ValueError("Must calculate Bollinger Bands first")
         
         df['z_score'] = (df['close'] - df['basis']) / df['dev']
         
@@ -43,33 +48,26 @@ class FeatureEngineer:
     def calculate_pivot_points(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
         
-        def find_pivot_high(highs: pd.Series, idx: int) -> bool:
-            if idx < self.pivot_left or idx >= len(highs) - self.pivot_right:
-                return False
-            center = highs.iloc[idx]
-            left_max = highs.iloc[idx - self.pivot_left:idx].max()
-            right_max = highs.iloc[idx + 1:idx + 1 + self.pivot_right].max()
-            return center > left_max and center > right_max
+        highs = df['high'].values
+        lows = df['low'].values
+        n = len(df)
         
-        def find_pivot_low(lows: pd.Series, idx: int) -> bool:
-            if idx < self.pivot_left or idx >= len(lows) - self.pivot_right:
-                return False
-            center = lows.iloc[idx]
-            left_min = lows.iloc[idx - self.pivot_left:idx].min()
-            right_min = lows.iloc[idx + 1:idx + 1 + self.pivot_right].min()
-            return center < left_min and center < right_min
+        pivot_highs = np.full(n, np.nan)
+        pivot_lows = np.full(n, np.nan)
         
-        pivot_highs = pd.Series([np.nan] * len(df), index=df.index)
-        pivot_lows = pd.Series([np.nan] * len(df), index=df.index)
+        for i in range(self.pivot_left, n - self.pivot_right):
+            left_high = highs[i - self.pivot_left:i]
+            right_high = highs[i + 1:i + 1 + self.pivot_right]
+            if highs[i] > left_high.max() and highs[i] > right_high.max():
+                pivot_highs[i] = highs[i]
+            
+            left_low = lows[i - self.pivot_left:i]
+            right_low = lows[i + 1:i + 1 + self.pivot_right]
+            if lows[i] < left_low.min() and lows[i] < right_low.min():
+                pivot_lows[i] = lows[i]
         
-        for i in range(self.pivot_left, len(df) - self.pivot_right):
-            if find_pivot_high(df['high'].reset_index(drop=True), i):
-                pivot_highs.iloc[i] = df['high'].iloc[i]
-            if find_pivot_low(df['low'].reset_index(drop=True), i):
-                pivot_lows.iloc[i] = df['low'].iloc[i]
-        
-        df['pivot_high'] = pivot_highs.shift(self.pivot_right).ffill()
-        df['pivot_low'] = pivot_lows.shift(self.pivot_right).ffill()
+        df['pivot_high'] = pd.Series(pivot_highs, index=df.index).shift(self.pivot_right).ffill()
+        df['pivot_low'] = pd.Series(pivot_lows, index=df.index).shift(self.pivot_right).ffill()
         
         df.rename(columns={'pivot_high': 'last_ph', 'pivot_low': 'last_pl'}, inplace=True)
         
@@ -79,7 +77,7 @@ class FeatureEngineer:
         df = df.copy()
         
         if 'last_ph' not in df.columns or 'last_pl' not in df.columns:
-            raise ValueError("必須先計算樞紐點")
+            raise ValueError("Must calculate pivot points first")
         
         df['bear_sweep'] = ((df['high'] > df['last_ph']) & (df['close'] < df['last_ph'])).astype(int)
         df['bull_sweep'] = ((df['low'] < df['last_pl']) & (df['close'] > df['last_pl'])).astype(int)
@@ -94,7 +92,7 @@ class FeatureEngineer:
         
         required_cols = ['open', 'high', 'low', 'close', 'volume']
         if not all(col in df.columns for col in required_cols):
-            raise ValueError(f"DataFrame必須包含: {required_cols}")
+            raise ValueError(f"DataFrame must contain: {required_cols}")
         
         df = self.calculate_bollinger_bands(df)
         df = self.calculate_zscore(df)
