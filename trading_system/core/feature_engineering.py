@@ -123,22 +123,6 @@ class FeatureEngineer:
     def add_microstructure_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         機構級市場微觀結構特徵 (Order Flow & Microstructure)
-        
-        **核心理念**:
-        在加密貨幣市場,機構資金會在關鍵位置掛大量限價單吸收零散的市價單。
-        透過分析主動買賣盤的差異 (CVD) 與價格的背離,可以提前捕捉機構意圖。
-        
-        **8 個核心特徵**:
-        1. net_volume: 淨主動成交量
-        2. cvd_10: 短期 CVD (10 根)
-        3. cvd_20: 中期 CVD (20 根)
-        4. cvd_norm_10: 標準化 CVD (跨幣種可比)
-        5. divergence_score_10: **價格-CVD 背離分數** (核心)
-        6. upper_wick_ratio: 上影線/實體比例
-        7. lower_wick_ratio: 下影線/實體比例 (流動性掠奪)
-        8. order_flow_imbalance: 訂單流失衡比率
-        
-        這些特徵完全基於 Binance K線原生數據,無需額外 API。
         """
         result = df.copy()
         
@@ -201,9 +185,6 @@ class FeatureEngineer:
     def calculate_liquidity_sweep_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         流動性掃蕩特徵 (OI & Funding Rate based)
-        
-        注意: 此函數專注於合約特有數據 (OI/Funding)
-        訂單流特徵已在 add_microstructure_features 中處理
         """
         result = df.copy()
         
@@ -222,6 +203,85 @@ class FeatureEngineer:
         
         return result
     
+    def add_mtf_alpha_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        新增 4 款 MTF 獨家 Alpha 特徵
+        """
+        result = df.copy()
+        
+        # 1. 跨週期波動率共振 (MVR)
+        if 'vsr' in result.columns and 'vsr_1h' in result.columns:
+            result['mvr'] = result['vsr'] / (result['vsr_1h'] + 1e-8)
+        
+        # 2. 訂單流分形背離 (CVD Fractal Divergence)
+        if 'cvd_norm_10' in result.columns and 'cvd_norm_10_1h' in result.columns:
+            result['cvd_fractal'] = result['cvd_norm_10'] - result['cvd_norm_10_1h']
+        
+        # 3. 影線成交量吸收率 (VWWA)
+        min_open_close = result[['open', 'close']].min(axis=1)
+        max_open_close = result[['open', 'close']].max(axis=1)
+        high_low_range = result['high'] - result['low'] + 1e-8
+        
+        lower_wick_ratio = (min_open_close - result['low']) / high_low_range
+        upper_wick_ratio = (result['high'] - max_open_close) / high_low_range
+        
+        if 'volume_ratio' in result.columns:
+            result['vwwa_buy'] = lower_wick_ratio * result['volume_ratio']
+            result['vwwa_sell'] = upper_wick_ratio * result['volume_ratio']
+            
+        # 4. 高維度趨勢衰竭計時器 (HTF Trend Exhaustion)
+        if 'ema_cross_1h' in result.columns:
+            trend_state = result['ema_cross_1h']
+            # groupby 連續計數
+            trend_age = trend_state.groupby((trend_state != trend_state.shift()).cumsum()).cumcount() + 1
+            result['htf_trend_age_norm'] = trend_age / 24.0
+            
+        return result
+
+    def merge_and_build_mtf_features(self, df_15m: pd.DataFrame, df_1h: pd.DataFrame) -> pd.DataFrame:
+        """
+        多時間框架合併: 將 1h 特徵無未來函數地對齊到 15m 數據上
+        """
+        logger.info("Merging 15m and 1h features for MTF Confluence System...")
+        
+        df_1h_copy = df_1h.copy()
+        df_15m_copy = df_15m.copy()
+        
+        # 1. 創建 1h 的真實可見時間 (無未來函數)
+        # 1h K 線在 open_time + 1 小時後才會收盤並確定特徵
+        df_1h_copy['htf_close_time'] = df_1h_copy['open_time'] + pd.Timedelta(hours=1)
+        
+        # 2. 篩選 1h 的關鍵特徵並加上 _1h 綴詞
+        # 只保留平穩特徵 + 必要的價格/EMA 特徵供後續計算
+        cols_to_keep = [col for col in df_1h_copy.columns if col not in ['open_time', 'close_time', 'htf_close_time']]
+        rename_dict = {col: f"{col}_1h" for col in cols_to_keep}
+        df_1h_renamed = df_1h_copy.rename(columns=rename_dict)
+        df_1h_renamed['htf_close_time'] = df_1h_copy['htf_close_time']
+        
+        # 確保時間排序 (merge_asof 必須)
+        df_15m_copy = df_15m_copy.sort_values('open_time')
+        df_1h_renamed = df_1h_renamed.sort_values('htf_close_time')
+        
+        # 3. merge_asof
+        df_mtf = pd.merge_asof(
+            df_15m_copy,
+            df_1h_renamed,
+            left_on='open_time',
+            right_on='htf_close_time',
+            direction='backward'
+        )
+        
+        # 4. 清除無歷史對應的 NaN 數據
+        df_mtf = df_mtf.dropna()
+        
+        # 5. 加入 MTF 獨家 Alpha 特徵
+        df_mtf = self.add_mtf_alpha_features(df_mtf)
+        
+        # 最終確保無空值
+        df_mtf = df_mtf.dropna()
+        
+        return df_mtf
+
     def build_features(self, df: pd.DataFrame, 
                       use_fractional_diff: bool = False,
                       include_liquidity_features: bool = False,
