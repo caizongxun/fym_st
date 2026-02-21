@@ -35,11 +35,12 @@ def render():
         - ✅ 絕對價格: open, high, low, close (及其 1h 版本)
         - ✅ 絕對 BB: bb_middle, bb_upper, bb_lower (及其 1h 版本)
         - ✅ 絕對成交量: volume, volume_ma_20 (及其 1h 版本)
-        - ✅ API 不穩定欄位: quote_volume, trades
+        - ✅ 報價總量: quote_volume, taker_buy_quote_asset_volume (及其 1h 版本)
+        - ✅ API 不穩定欄位: trades
         
         **保留的平穩特徵**:
         - ✓ MTF Alpha: MVR, CVD Fractal, VWWA, HTF Trend Age
-        - ✓ 比例特徵: bb_width_pct, volume_ratio
+        - ✓ 比例特徵: bb_width_pct, volume_ratio, taker_buy_ratio
         - ✓ 標準化: rsi_normalized, cvd_norm_10
         - ✓ 距離比: ema_9_dist, ema_21_dist
         - ✓ 影線比: upper_wick_ratio, lower_wick_ratio
@@ -116,7 +117,7 @@ def render():
             df_1h = loader.load_klines(symbol, '1h')
             
             st.info(f"載入完成: 15m ({len(df_15m)} 筆), 1h ({len(df_1h)} 筆)")
-            st.info(f"數據範圍: {df_15m['open_time'].min()} 至 {df_15m['open_time'].max()}")
+            st.info(f"數據範圏: {df_15m['open_time'].min()} 至 {df_15m['open_time'].max()}")
             
             status_text.text("建立單一週期特徵...")
             progress_bar.progress(10)
@@ -189,19 +190,32 @@ def render():
                 'exit_price', 'exit_bars', 'return', 'ignore'
             ]
             
+            # ===== [修正] 封殺 taker_buy_quote_asset_volume (誤用非平稩特徵) =====
             forbidden_features = [
+                # 絕對價格
                 'open', 'high', 'low', 'close',
                 'bb_middle', 'bb_upper', 'bb_lower', 'bb_std',
+                
+                # 絕對成交量
                 'volume', 'volume_ma_20',
                 'taker_buy_base_asset_volume',
-                'quote_asset_volume', 'quote_volume', 
+                
+                # 報價總量 (非平稩特徵，因價格波動而變動)
+                'quote_asset_volume', 'quote_volume',
+                'taker_buy_quote_asset_volume',  # <- 致命洩漏
+                
+                # API 不穩定欄位
                 'number_of_trades', 'trades',
                 'open_interest', 'atr',
+                
+                # 1h 絕對特徵
                 'open_1h', 'high_1h', 'low_1h', 'close_1h',
                 'bb_middle_1h', 'bb_upper_1h', 'bb_lower_1h', 'bb_std_1h',
                 'volume_1h', 'volume_ma_20_1h',
                 'taker_buy_base_asset_volume_1h',
-                'quote_asset_volume_1h', 'number_of_trades_1h', 'trades_1h', 
+                'quote_asset_volume_1h', 'quote_volume_1h',
+                'taker_buy_quote_asset_volume_1h',  # <- 致命洩漏 (1h 版本)
+                'number_of_trades_1h', 'trades_1h', 
                 'open_interest_1h', 'atr_1h'
             ]
             
@@ -334,7 +348,7 @@ def render():
 - **1h 數據**: {len(df_1h)} 筆
 - **MTF 合併後**: {df_mtf.shape[0]} 筆, {df_mtf.shape[1]} 欄
 - **事件過濾後**: {len(df_features)} 筆 ({100*len(df_features)/len(df_mtf):.1f}%)
-- **數據範圍**: {df_15m['open_time'].min()} 至 {df_15m['open_time'].max()}
+- **數據範圏**: {df_15m['open_time'].min()} 至 {df_15m['open_time'].max()}
 
 ## 標籤配置
 - **止盈 (TP)**: {tp_multiplier:.1f} ATR
@@ -390,7 +404,8 @@ def render():
                 1. 前往 **回測分析**
                 2. 選擇 MTF 訓練出的模型
                 3. 數據來源: **Binance API (最新 90 天)**
-                4. **注意**: 回測引擎需支援 MTF 資料載入 (待實作)
+                4. 設定風控: 機率門檻 0.55, 單筆風險 2%, TP 3.0 / SL 1.0
+                5. 啟用嚴格事件過濾 (與訓練時完全一致)
                 """)
             
         except Exception as e:
