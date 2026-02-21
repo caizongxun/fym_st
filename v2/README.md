@@ -1,19 +1,73 @@
 # V2 Modular Trading System
 
 ## Overview
-Modular automated trading system with feature engineering, label generation, machine learning models, and backtesting capabilities.
+Modular automated trading system with HuggingFace data integration, feature engineering, label generation, and machine learning capabilities for cryptocurrency trading.
 
 ## Structure
 ```
 v2/
+├── data_loader.py           # HuggingFace data loader
 ├── feature_engineering.py  # Feature calculation module
 ├── label_generation.py      # Label generation module
-├── example_usage.py         # Complete workflow example
-├── data_loader.py          # Data acquisition module (TBD)
+├── pipeline.py              # Complete pipeline integration
+├── example_usage.py         # Basic feature/label example
+├── example_data_pipeline.py # Complete pipeline example
 ├── model.py                # ML model module (TBD)
 ├── strategy.py             # Trading strategy module (TBD)
 ├── backtest.py             # Backtesting engine (TBD)
 └── README.md               # Documentation
+```
+
+## Data Loader Module
+
+### CryptoDataLoader Class
+Loads cryptocurrency OHLCV data from HuggingFace dataset.
+
+#### Dataset Information
+- **Repository**: `zongowo111/v2-crypto-ohlcv-data`
+- **Symbols**: 38 cryptocurrency pairs (BTCUSDT, ETHUSDT, etc.)
+- **Timeframes**: 15m, 1h, 1d
+- **Total Files**: 114 parquet files
+
+#### Data Structure
+Path format: `klines/{SYMBOL}/{BASE}_{TIMEFRAME}.parquet`
+
+Example:
+- `klines/BTCUSDT/BTC_15m.parquet`
+- `klines/ETHUSDT/ETH_1h.parquet`
+
+#### Available Symbols (38)
+```
+AAVEUSDT, ADAUSDT, ALGOUSDT, ARBUSDT, ATOMUSDT, AVAXUSDT,
+BALUSDT, BATUSDT, BCHUSDT, BNBUSDT, BTCUSDT, COMPUSDT,
+CRVUSDT, DOGEUSDT, DOTUSDT, ENJUSDT, ENSUSDT, ETCUSDT,
+ETHUSDT, FILUSDT, GALAUSDT, GRTUSDT, IMXUSDT, KAVAUSDT,
+LINKUSDT, LTCUSDT, MANAUSDT, MATICUSDT, MKRUSDT, NEARUSDT,
+OPUSDT, SANDUSDT, SNXUSDT, SOLUSDT, SPELLUSDT, UNIUSDT,
+XRPUSDT, ZRXUSDT
+```
+
+#### Usage Example
+```python
+from v2.data_loader import CryptoDataLoader
+
+# Initialize loader
+loader = CryptoDataLoader()
+
+# Load single symbol
+df = loader.load_klines('BTCUSDT', '15m')
+
+# Load multiple symbols
+data = loader.load_multiple_symbols(['BTCUSDT', 'ETHUSDT'], '15m')
+
+# Load all timeframes for one symbol
+data = loader.load_all_timeframes('BTCUSDT')
+
+# Get dataset info
+info = loader.get_dataset_info()
+
+# Filter by date range
+df_filtered = loader.filter_date_range(df, '2024-01-01', '2024-12-31')
 ```
 
 ## Feature Engineering Module
@@ -50,24 +104,6 @@ Calculates technical indicators based on 15-minute OHLCV data.
 - `bull_bos`: Bullish break of structure
 - `bear_bos`: Bearish break of structure
 
-#### Usage Example
-```python
-from v2.feature_engineering import FeatureEngineer
-import pandas as pd
-
-# Load OHLCV data
-df = pd.read_csv('data.csv')
-
-# Initialize feature engineer
-fe = FeatureEngineer(bb_period=20, lookback=100)
-
-# Process features
-df_features = fe.process_features(df)
-
-# Get feature column names
-feature_cols = fe.get_feature_columns()
-```
-
 ## Label Generation Module
 
 ### LabelGenerator Class
@@ -97,53 +133,69 @@ Generates binary classification labels for Bollinger Bands mean reversion strate
 - Label = 1 (Success): TP hit first within lookahead period
 - Label = 0 (Failure): SL hit first or neither hit (time exit)
 
-#### Generated Columns
-- `atr`: 14-period Average True Range
-- `is_touching_lower`: Binary flag for lower band touch
-- `is_touching_upper`: Binary flag for upper band touch
-- `long_sl`, `long_tp`: Long position stop levels
-- `short_sl`, `short_tp`: Short position stop levels
-- `target_long`: Binary label for long positions
-- `target_short`: Binary label for short positions
+## Pipeline Module
+
+### TradingPipeline Class
+Integrates all modules into a seamless workflow.
+
+#### Features
+- Single symbol processing
+- Batch processing for multiple symbols
+- Automatic date filtering
+- Label statistics reporting
+- Training data preparation
 
 #### Usage Example
 ```python
-from v2.label_generation import LabelGenerator
+from v2.pipeline import TradingPipeline
 
-# Initialize label generator
-lg = LabelGenerator(
+# Initialize pipeline
+pipeline = TradingPipeline(
+    bb_period=20,
     atr_period=14,
     sl_atr_mult=1.5,
     tp_atr_mult=3.0,
     lookahead_bars=16
 )
 
-# Generate labels
-df_labeled = lg.generate_labels(df_features)
+# Process single symbol
+df_train, feature_cols = pipeline.prepare_training_data(
+    symbol='BTCUSDT',
+    timeframe='15m',
+    direction='long',
+    start_date='2024-01-01',
+    end_date='2024-12-31'
+)
 
-# Get label statistics
-stats = lg.get_label_statistics(df_labeled)
-print(stats)
-
-# Prepare training data
-df_train_long = lg.prepare_training_data(df_labeled, direction='long')
-df_train_short = lg.prepare_training_data(df_labeled, direction='short')
+# Batch process multiple symbols
+df_combined = pipeline.batch_process(
+    symbols=['BTCUSDT', 'ETHUSDT', 'BNBUSDT'],
+    timeframe='15m',
+    direction='long',
+    start_date='2024-01-01'
+)
 ```
 
 ## Complete Workflow Example
 
-Run `example_usage.py` to see the full pipeline:
+Run the complete pipeline example:
 
 ```bash
-python v2/example_usage.py
+python v2/example_data_pipeline.py
 ```
 
 This demonstrates:
-1. Sample data generation
-2. Feature engineering
-3. Label generation
-4. Training data preparation
-5. Label statistics analysis
+1. Dataset information display
+2. Single symbol processing with features and labels
+3. Batch processing multiple symbols
+4. Label statistics analysis
+5. Training data preparation
+
+## Installation Requirements
+
+```bash
+pip install pandas numpy huggingface-hub pyarrow
+```
 
 ## Anti-Lookahead Measures
 - Pivot points shifted by `pivot_right` periods
@@ -151,8 +203,7 @@ This demonstrates:
 - No data leakage between feature calculation and label generation
 
 ## Next Steps
-1. Data loader module for Binance API integration
-2. ML model training module
-3. Strategy implementation module
-4. Backtesting engine
-5. Live trading bot
+1. ML model training module (XGBoost/LightGBM)
+2. Strategy implementation module
+3. Backtesting engine
+4. Live trading bot
