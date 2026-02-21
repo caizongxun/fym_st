@@ -139,11 +139,11 @@ class FeatureEngineer:
             # 1. 計算主動賣盤量 (Taker Sell Volume)
             taker_sell_volume = df['volume'] - df[taker_buy_col]
             
-            # 2. 淨主動成交量 (Net Volume Delta)
+            # 2. 淪主動成交量 (Net Volume Delta)
             result['net_volume'] = df[taker_buy_col] - taker_sell_volume
             
             # 3. 短中期 CVD (Cumulative Volume Delta)
-            # 使用滾動視窗確保時間序列平穩性
+            # 使用滾動視窗確保時間序列平稩性
             result['cvd_10'] = result['net_volume'].rolling(window=10).sum()
             result['cvd_20'] = result['net_volume'].rolling(window=20).sum()
             
@@ -252,8 +252,10 @@ class FeatureEngineer:
         df_1h_copy['htf_close_time'] = df_1h_copy['open_time'] + pd.Timedelta(hours=1)
         
         # 2. 篩選 1h 的關鍵特徵並加上 _1h 綴詞
-        # 只保留平穩特徵 + 必要的價格/EMA 特徵供後續計算
-        cols_to_keep = [col for col in df_1h_copy.columns if col not in ['open_time', 'close_time', 'htf_close_time']]
+        # 只保留平稩特徵 + 必要的價格/EMA 特徵供後續計算
+        # **重要**: 不要 rename open_time, 它是 15m 的時間索引
+        cols_to_exclude = ['open_time', 'close_time', 'htf_close_time']
+        cols_to_keep = [col for col in df_1h_copy.columns if col not in cols_to_exclude]
         rename_dict = {col: f"{col}_1h" for col in cols_to_keep}
         df_1h_renamed = df_1h_copy.rename(columns=rename_dict)
         df_1h_renamed['htf_close_time'] = df_1h_copy['htf_close_time']
@@ -279,6 +281,12 @@ class FeatureEngineer:
         
         # 最終確保無空值
         df_mtf = df_mtf.dropna()
+        
+        # **關鍵修正**: 確保保留 open_time 欄位 (來自 df_15m_copy)
+        if 'open_time' not in df_mtf.columns:
+            logger.error("open_time missing after merge! This should not happen.")
+        else:
+            logger.info(f"MTF merge complete with open_time preserved. Shape: {df_mtf.shape}")
         
         return df_mtf
 
