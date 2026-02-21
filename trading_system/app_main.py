@@ -11,63 +11,88 @@ from gui.pages import (
 )
 
 st.set_page_config(
-    page_title="加密貨幣交易系統",
-    page_icon="📈",
+    page_title="BB+NW 波段反轉交易系統",
+    page_icon="🎯",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 def main():
-    st.sidebar.title("導航選單")
+    # 主標題
+    st.sidebar.markdown("""
+    <div style='text-align: center; padding: 20px 0;'>
+        <h1 style='color: #1f77b4; margin: 0;'>🎯</h1>
+        <h2 style='margin: 5px 0;'>BB+NW</h2>
+        <h3 style='color: #7f7f7f; margin: 0; font-weight: normal;'>波段反轉系統</h3>
+    </div>
+    """, unsafe_allow_html=True)
     
+    st.sidebar.markdown("---")
+    
+    # 頁面選擇
     page = st.sidebar.radio(
-        "選擇頁面",
+        "🧳 主選單",
         [
-            "控制台", 
-            "模型訓練", 
-            "機率校準分析",
-            "策略優化", 
-            "回測分析",
-            "流動性掃蕩分析",  # 新增
-            "即時預測"
-        ]
+            "🏠 控制台", 
+            "🧪 模型訓練", 
+            "📊 回測分析",
+            "🔍 機率校準",
+            "⚙️ 策略優化", 
+            "🌊 流動性分析",
+            "📡 即時預測"
+        ],
+        label_visibility="collapsed"
     )
     
-    # 側邊欄資訊
+    # 系統狀態
     st.sidebar.markdown("---")
     st.sidebar.markdown("""
-    ### 系統功能
+    ### 🛡️ 系統核心
     
-    **核心模組**:
-    - 控制台: 系統概覽
-    - 模型訓練: ML 模型訓練
-    - 機率校準: 模型校準分析
-    - 策略優化: 參數優化
-    - 回測分析: 歷史回測
-    - **流動性掃蕩**: 機構級分析 (NEW)
-    - 即時預測: 實時交易信號
+    **觸發層**: BB + NW 雙通道  
+    **特徵層**: ADX + CVD + VWWA  
+    **AI 層**: LightGBM Meta-Label  
+    **出場**: 動態移動止損  
     
-    **新功能**: 流動性掃蕩系統
-    - OI (未平倉量) 分析
-    - CVD (成交量差) 偵測
-    - Smart Money 追蹤
-    - 機構級進場點
+    ---
+    
+    ### 🎯 防禁機制
+    
+    ✅ 單邊趨勢輾壓過濾 (ADX + HTF EMA)  
+    ✅ 獵取流動性辨識 (CVD 背離)  
+    ✅ BB 壓縮突破偵測  
+    ✅ 無未來函數 (No Repaint)  
+    
+    ---
+    
+    ### 📌 適用市場
+    
+    **時間框架**: 15m (进场) + 1h (趨势)  
+    **交易風格**: 波段反轉 (Swing Reversal)  
+    **持倉時間**: 4-20 小時  
+    **勝率目標**: 55-65%  
+    **盈虧比**: 2.5:1 ~ 4:1  
     """)
     
+    st.sidebar.markdown("---")
+    st.sidebar.caption("🔗 v2.0 - Swing Reversal Edition")
+    
     # 路由頁面
-    if page == "控制台":
+    page_key = page.split()[-1]  # 提取中文名稱
+    
+    if "控制台" in page:
         dashboard_page.render()
-    elif page == "模型訓練":
+    elif "訓練" in page:
         training_page.render()
-    elif page == "機率校準分析":
-        calibration_page.render()
-    elif page == "策略優化":
-        optimization_page.render()
-    elif page == "回測分析":
+    elif "回測" in page:
         backtesting_page.render()
-    elif page == "流動性掃蕩分析":
+    elif "校準" in page:
+        calibration_page.render()
+    elif "優化" in page:
+        optimization_page.render()
+    elif "流動性" in page:
         liquidity_sweep_page.render()
-    elif page == "即時預測":
+    elif "預測" in page:
         live_prediction_page.render()
 
 if __name__ == "__main__":
