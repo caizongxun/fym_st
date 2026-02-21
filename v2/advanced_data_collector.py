@@ -28,27 +28,27 @@ class BinanceAdvancedDataCollector:
         self.futures_base_url = 'https://fapi.binance.com'
         self.rate_limit_delay = 0.3
         
-    def get_earliest_available_time(self, symbol: str, data_type: str = 'klines') -> Optional[int]:
-        """自動偵測某幣種最早可用數據時間"""
-        if data_type == 'klines':
-            url = f"{self.spot_base_url}/api/v3/klines"
-            params = {'symbol': symbol, 'interval': '1d', 'limit': 1}
-        elif data_type == 'futures':
-            url = f"{self.futures_base_url}/fapi/v1/klines"
-            params = {'symbol': symbol, 'interval': '1d', 'limit': 1}
+    def get_earliest_available_time(self, symbol: str) -> int:
+        """強制回傳固定起始時間,確保爬取完整歷史"""
+        earliest_dates = {
+            'BTCUSDT': '2019-09-08',
+            'ETHUSDT': '2020-02-12',
+            'BNBUSDT': '2020-04-09',
+            'ADAUSDT': '2021-03-10',
+            'SOLUSDT': '2021-08-11',
+            'XRPUSDT': '2020-11-13',
+            'DOTUSDT': '2021-01-14',
+            'AVAXUSDT': '2021-11-24',
+            'MATICUSDT': '2021-05-09',
+            'LINKUSDT': '2021-01-14',
+        }
+        
+        if symbol in earliest_dates:
+            date_str = earliest_dates[symbol]
         else:
-            return None
+            date_str = '2021-01-01'
         
-        try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            if data and len(data) > 0:
-                return data[0][0]
-        except:
-            pass
-        
-        return None
+        return int(pd.to_datetime(date_str).timestamp() * 1000)
     
     def get_aggregate_trades(self, symbol: str, start_time: int, end_time: int) -> pd.DataFrame:
         """
@@ -70,7 +70,9 @@ class BinanceAdvancedDataCollector:
             chunk_end = min(current_start + chunk_size, end_time)
             
             chunk_start_date = pd.to_datetime(current_start, unit='ms').strftime('%Y-%m-%d')
-            print(f"  [{chunk_idx}/{total_chunks}] {chunk_start_date} ...", end=' ')
+            
+            if chunk_idx % 100 == 1 or chunk_idx <= 5:
+                print(f"  [{chunk_idx}/{total_chunks}] {chunk_start_date} ...", end=' ')
             
             params = {
                 'symbol': symbol,
@@ -107,10 +109,13 @@ class BinanceAdvancedDataCollector:
                     time.sleep(self.rate_limit_delay)
                 
                 all_trades.extend(chunk_trades)
-                print(f"✓ {len(chunk_trades):,} 筆")
+                
+                if chunk_idx % 100 == 1 or chunk_idx <= 5:
+                    print(f"✓ {len(chunk_trades):,} 筆")
                 
             except Exception as e:
-                print(f"⚠️ {str(e)[:30]}")
+                if chunk_idx % 100 == 1 or chunk_idx <= 5:
+                    print(f"⚠️ {str(e)[:30]}")
             
             current_start = chunk_end
             time.sleep(self.rate_limit_delay)
@@ -188,6 +193,9 @@ class BinanceAdvancedDataCollector:
         url = f"{self.futures_base_url}/fapi/v1/fundingRate"
         
         all_funding = []
+        
+        print(f"  爬取資金費率全部歷史...")
+        
         params = {'symbol': symbol, 'limit': limit}
         
         try:
@@ -199,6 +207,7 @@ class BinanceAdvancedDataCollector:
                 return pd.DataFrame()
             
             all_funding.extend(funding_data)
+            round_count = 1
             
             while len(funding_data) == limit:
                 earliest_time = funding_data[0]['fundingTime']
@@ -213,6 +222,10 @@ class BinanceAdvancedDataCollector:
                     break
                 
                 all_funding = funding_data + all_funding
+                round_count += 1
+                
+                if round_count % 5 == 0:
+                    print(f"    已爬取 {len(all_funding):,} 筆...")
             
             df = pd.DataFrame(all_funding)
             df['fundingTime'] = pd.to_datetime(df['fundingTime'], unit='ms')
@@ -227,6 +240,8 @@ class BinanceAdvancedDataCollector:
             df['funding_rate_std'] = df['fundingRate'].rolling(24).std()
             df['funding_rate_extreme'] = (abs(df['fundingRate']) > df['funding_rate_std'] * 2).astype(int)
             
+            print(f"    ✅ 共 {len(df):,} 筆 (從 {df['timestamp'].min().strftime('%Y-%m-%d')} 至 {df['timestamp'].max().strftime('%Y-%m-%d')})")
+            
             return df
             
         except Exception as e:
@@ -238,6 +253,9 @@ class BinanceAdvancedDataCollector:
         url = f"{self.futures_base_url}/futures/data/openInterestHist"
         
         all_oi = []
+        
+        print(f"  爬取未平倉量全部歷史...")
+        
         params = {'symbol': symbol, 'period': interval, 'limit': limit}
         
         try:
@@ -249,6 +267,7 @@ class BinanceAdvancedDataCollector:
                 return pd.DataFrame()
             
             all_oi.extend(oi_data)
+            round_count = 1
             
             while len(oi_data) == limit:
                 earliest_time = oi_data[0]['timestamp']
@@ -263,6 +282,10 @@ class BinanceAdvancedDataCollector:
                     break
                 
                 all_oi = oi_data + all_oi
+                round_count += 1
+                
+                if round_count % 10 == 0:
+                    print(f"    已爬取 {len(all_oi):,} 筆...")
             
             df = pd.DataFrame(all_oi)
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -276,6 +299,8 @@ class BinanceAdvancedDataCollector:
             df['oi_ma7'] = df['sumOpenInterest'].rolling(7).mean()
             df['oi_ma30'] = df['sumOpenInterest'].rolling(30).mean()
             
+            print(f"    ✅ 共 {len(df):,} 筆 (從 {df['timestamp'].min().strftime('%Y-%m-%d')} 至 {df['timestamp'].max().strftime('%Y-%m-%d')})")
+            
             return df
             
         except Exception as e:
@@ -287,6 +312,9 @@ class BinanceAdvancedDataCollector:
         url = f"{self.futures_base_url}/futures/data/topLongShortAccountRatio"
         
         all_ratio = []
+        
+        print(f"  爬取多空比全部歷史...")
+        
         params = {'symbol': symbol, 'period': interval, 'limit': limit}
         
         try:
@@ -298,6 +326,7 @@ class BinanceAdvancedDataCollector:
                 return pd.DataFrame()
             
             all_ratio.extend(ratio_data)
+            round_count = 1
             
             while len(ratio_data) == limit:
                 earliest_time = ratio_data[0]['timestamp']
@@ -312,6 +341,10 @@ class BinanceAdvancedDataCollector:
                     break
                 
                 all_ratio = ratio_data + all_ratio
+                round_count += 1
+                
+                if round_count % 10 == 0:
+                    print(f"    已爬取 {len(all_ratio):,} 筆...")
             
             df = pd.DataFrame(all_ratio)
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -324,6 +357,8 @@ class BinanceAdvancedDataCollector:
             df['ls_ratio_ma7'] = df['longShortRatio'].rolling(7).mean()
             df['ls_ratio_extreme'] = ((df['longShortRatio'] > 2) | (df['longShortRatio'] < 0.5)).astype(int)
             
+            print(f"    ✅ 共 {len(df):,} 筆 (從 {df['timestamp'].min().strftime('%Y-%m-%d')} 至 {df['timestamp'].max().strftime('%Y-%m-%d')})")
+            
             return df
             
         except Exception as e:
@@ -335,6 +370,9 @@ class BinanceAdvancedDataCollector:
         url = f"{self.futures_base_url}/futures/data/takerlongshortRatio"
         
         all_taker = []
+        
+        print(f"  爬取主動買賣比全部歷史...")
+        
         params = {'symbol': symbol, 'period': interval, 'limit': limit}
         
         try:
@@ -346,6 +384,7 @@ class BinanceAdvancedDataCollector:
                 return pd.DataFrame()
             
             all_taker.extend(taker_data)
+            round_count = 1
             
             while len(taker_data) == limit:
                 earliest_time = taker_data[0]['timestamp']
@@ -360,6 +399,10 @@ class BinanceAdvancedDataCollector:
                     break
                 
                 all_taker = taker_data + all_taker
+                round_count += 1
+                
+                if round_count % 10 == 0:
+                    print(f"    已爬取 {len(all_taker):,} 筆...")
             
             df = pd.DataFrame(all_taker)
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
@@ -371,6 +414,8 @@ class BinanceAdvancedDataCollector:
             
             df['taker_buy_sell_delta'] = df['buyVol'] - df['sellVol']
             df['taker_imbalance'] = df['taker_buy_sell_delta'] / (df['buyVol'] + df['sellVol'])
+            
+            print(f"    ✅ 共 {len(df):,} 筆 (從 {df['timestamp'].min().strftime('%Y-%m-%d')} 至 {df['timestamp'].max().strftime('%Y-%m-%d')})")
             
             return df
             
@@ -388,16 +433,15 @@ class BinanceAdvancedDataCollector:
         """收集所有進階特徵, 如未指定日期則自動偵測並爬取所有可用數據"""
         
         if start_date is None or end_date is None:
-            earliest_time = self.get_earliest_available_time(symbol, 'futures')
-            if earliest_time:
-                start_date = pd.to_datetime(earliest_time, unit='ms').strftime('%Y-%m-%d')
-            else:
-                start_date = '2019-01-01'
+            start_time = self.get_earliest_available_time(symbol)
+            start_date = pd.to_datetime(start_time, unit='ms').strftime('%Y-%m-%d')
             end_date = datetime.now().strftime('%Y-%m-%d')
+        else:
+            start_dt = pd.to_datetime(start_date)
+            end_dt = pd.to_datetime(end_date)
+            start_time = int(start_dt.timestamp() * 1000)
         
-        start_dt = pd.to_datetime(start_date)
         end_dt = pd.to_datetime(end_date)
-        start_time = int(start_dt.timestamp() * 1000)
         end_time = int(end_dt.timestamp() * 1000)
         
         print(f"\n{'='*60}")
@@ -412,7 +456,7 @@ class BinanceAdvancedDataCollector:
         if not trades_df.empty:
             order_flow_df = self.calculate_order_flow_features(trades_df, timeframe)
             results['order_flow'] = order_flow_df
-            print(f"  ✅ 生成 {len(order_flow_df)} 筆訂單流特徵")
+            print(f"  ✅ 生成 {len(order_flow_df):,} 筆訂單流特徵")
         else:
             results['order_flow'] = pd.DataFrame()
         
@@ -420,7 +464,6 @@ class BinanceAdvancedDataCollector:
         funding_df = self.get_funding_rate(symbol)
         if not funding_df.empty:
             results['funding_rate'] = funding_df
-            print(f"  ✅ 獲取 {len(funding_df)} 筆資金費率")
         else:
             results['funding_rate'] = pd.DataFrame()
         
@@ -428,7 +471,6 @@ class BinanceAdvancedDataCollector:
         oi_df = self.get_open_interest(symbol, timeframe)
         if not oi_df.empty:
             results['open_interest'] = oi_df
-            print(f"  ✅ 獲取 {len(oi_df)} 筆未平倉量")
         else:
             results['open_interest'] = pd.DataFrame()
         
@@ -436,7 +478,6 @@ class BinanceAdvancedDataCollector:
         ls_ratio_df = self.get_long_short_ratio(symbol, timeframe)
         if not ls_ratio_df.empty:
             results['long_short_ratio'] = ls_ratio_df
-            print(f"  ✅ 獲取 {len(ls_ratio_df)} 筆多空比")
         else:
             results['long_short_ratio'] = pd.DataFrame()
         
@@ -444,7 +485,6 @@ class BinanceAdvancedDataCollector:
         taker_df = self.get_taker_buy_sell(symbol, timeframe)
         if not taker_df.empty:
             results['taker_buy_sell'] = taker_df
-            print(f"  ✅ 獲取 {len(taker_df)} 筆主動買賣比")
         else:
             results['taker_buy_sell'] = pd.DataFrame()
         
