@@ -9,87 +9,89 @@ from gui.pages import (
     dashboard_page, optimization_page, calibration_page,
     liquidity_sweep_page
 )
+from config import SystemConfig, UIConfig
 
 st.set_page_config(
-    page_title="BB+NW 波段反轉交易系統",
-    page_icon="■",
+    page_title=SystemConfig.SYSTEM_NAME,
+    page_icon="[BB]",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 def main():
-    # 主標題
-    st.sidebar.markdown("""
+    # Sidebar header
+    st.sidebar.markdown(f"""
     <div style='text-align: center; padding: 20px 0;'>
         <h2 style='margin: 5px 0;'>BB+NW</h2>
-        <h3 style='color: #7f7f7f; margin: 0; font-weight: normal;'>波段反轉系統</h3>
+        <h3 style='color: #7f7f7f; margin: 0; font-weight: normal;'>Swing Reversal System</h3>
+        <p style='color: #999; font-size: 0.9em;'>v{SystemConfig.VERSION}</p>
     </div>
     """, unsafe_allow_html=True)
     
     st.sidebar.markdown("---")
     
-    # 頁面選擇
+    # Page navigation
     page = st.sidebar.radio(
-        "主選單",
+        "Navigation",
         [
-            "控制台", 
-            "模型訓練", 
-            "回測分析",
-            "機率校準",
-            "策略優化", 
-            "流動性分析",
-            "即時預測"
+            UIConfig.PAGE_TITLE_DASHBOARD,
+            UIConfig.PAGE_TITLE_TRAINING,
+            UIConfig.PAGE_TITLE_BACKTEST,
+            UIConfig.PAGE_TITLE_CALIBRATION,
+            UIConfig.PAGE_TITLE_OPTIMIZATION,
+            UIConfig.PAGE_TITLE_LIQUIDITY,
+            UIConfig.PAGE_TITLE_LIVE
         ],
         label_visibility="collapsed"
     )
     
-    # 系統狀態
+    # System info in sidebar
     st.sidebar.markdown("---")
     st.sidebar.markdown("""
-    ### 系統核心
+    ### System Core
     
-    **觸發層**: BB + NW 雙通道  
-    **特徵層**: ADX + CVD + VWWA  
-    **AI 層**: LightGBM Meta-Label  
-    **出場**: 動態移動止損  
-    
-    ---
-    
-    ### 防禁機制
-    
-    - 單邊趨勢輾壓過濾 (ADX + HTF EMA)  
-    - 獵取流動性辨識 (CVD 背離)  
-    - BB 壓縮突破偵測  
-    - 無未來函數 (No Repaint)  
+    **Trigger Layer**: BB + NW Dual Channels  
+    **Feature Layer**: ADX + CVD + VWWA  
+    **AI Layer**: LightGBM Meta-Label  
+    **Exit**: Dynamic Trailing Stop  
     
     ---
     
-    ### 適用市場
+    ### Protection Mechanisms
     
-    **時間框架**: 15m (进场) + 1h (趨勢)  
-    **交易風格**: 波段反轉 (Swing Reversal)  
-    **持倉時間**: 4-20 小時  
-    **勝率目標**: 55-65%  
-    **盈虧比**: 2.5:1 ~ 4:1  
+    - Trend Crush Filter (ADX + HTF EMA)  
+    - Liquidity Sweep Detection (CVD Divergence)  
+    - BB Squeeze Breakout Detection  
+    - No Repaint (Zero Future Function)  
+    
+    ---
+    
+    ### Target Markets
+    
+    **Timeframe**: 15m (Entry) + 1h (Trend)  
+    **Style**: Swing Reversal  
+    **Hold Time**: 4-20 hours  
+    **Win Rate Target**: 55-65%  
+    **Risk/Reward**: 2.5:1 ~ 4:1  
     """)
     
     st.sidebar.markdown("---")
-    st.sidebar.caption("v2.0 - Swing Reversal Edition")
+    st.sidebar.caption(f"{SystemConfig.SYSTEM_NAME} | {SystemConfig.VERSION}")
     
-    # 路由頁面
-    if "控制台" in page:
+    # Route to pages
+    if page == UIConfig.PAGE_TITLE_DASHBOARD:
         dashboard_page.render()
-    elif "訓練" in page:
+    elif page == UIConfig.PAGE_TITLE_TRAINING:
         training_page.render()
-    elif "回測" in page:
+    elif page == UIConfig.PAGE_TITLE_BACKTEST:
         backtesting_page.render()
-    elif "校準" in page:
+    elif page == UIConfig.PAGE_TITLE_CALIBRATION:
         calibration_page.render()
-    elif "優化" in page:
+    elif page == UIConfig.PAGE_TITLE_OPTIMIZATION:
         optimization_page.render()
-    elif "流動性" in page:
+    elif page == UIConfig.PAGE_TITLE_LIQUIDITY:
         liquidity_sweep_page.render()
-    elif "預測" in page:
+    elif page == UIConfig.PAGE_TITLE_LIVE:
         live_prediction_page.render()
 
 if __name__ == "__main__":
