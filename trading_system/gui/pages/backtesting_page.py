@@ -182,6 +182,11 @@ def render():
                 feature_engineer = FeatureEngineer()
                 df_features = feature_engineer.build_features(df)
             
+            # **關鍵修正**: 確保 df_features 包含 open_time
+            if 'open_time' not in df_features.columns:
+                st.error("⚠️ 批命錯誤: df_features 缺少 open_time 欄位!")
+                st.stop()
+            
             if use_event_filter:
                 status_text.text("事件過濾...")
                 progress_bar.progress(35)
@@ -197,11 +202,16 @@ def render():
             else:
                 df_filtered = df_features
             
+            # **關鍵修正**: 確保 df_filtered 保留 open_time
+            if 'open_time' not in df_filtered.columns:
+                st.error("⚠️ 批命錯誤: df_filtered 缺少 open_time 欄位!")
+                st.stop()
+            
             status_text.text("生成預測...")
             progress_bar.progress(45)
             
+            # 只在特徵提取時排除這些欄位
             exclude_cols = [
-                'open_time', 'close_time', 'htf_close_time',
                 'label', 'label_return', 'hit_time', 'exit_type', 'exit_price', 'exit_bars', 'return',
                 'sample_weight', 'mae_ratio', 'ignore'
             ]
@@ -233,8 +243,17 @@ def render():
             prob_dist = df_filtered['win_probability'].describe()
             st.info(f"機率分布: min={prob_dist['min']:.3f}, mean={prob_dist['mean']:.3f}, max={prob_dist['max']:.3f}")
             
+            # **關鍵修正**: 筩選 signals 時保留所有必要欄位
             signals = df_filtered[df_filtered['win_probability'] >= probability_threshold].copy()
             st.info(f"信號: {len(signals)} 個 (門檻: {probability_threshold})")
+            
+            # 確認 signals 包含回測所需的所有欄位
+            required_cols = ['open_time', 'open', 'high', 'low', 'close', 'atr']
+            missing_cols = [col for col in required_cols if col not in signals.columns]
+            if missing_cols:
+                st.error(f"⚠️ signals 缺少必要欄位: {missing_cols}")
+                st.code(f"signals columns: {signals.columns.tolist()}")
+                st.stop()
             
             if len(signals) == 0:
                 st.warning("無信號,請降低門檻或增加回測天數")
