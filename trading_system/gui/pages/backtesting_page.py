@@ -5,6 +5,7 @@ import os
 import sys
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 
@@ -60,7 +61,6 @@ def render():
             model_files = sorted(model_files, reverse=True)
             model_file = st.selectbox("選擇模型", model_files)
             
-            # 偵測 MTF 模型
             is_mtf_model = 'MTF' in model_file or '_15m_1h' in model_file
             if is_mtf_model:
                 st.success("✅ 偵測到 MTF 模型，將載入 15m + 1h 數據")
@@ -68,7 +68,6 @@ def render():
             loader = CryptoDataLoader()
             symbol = st.selectbox("測試交易對", loader.get_available_symbols(), index=10)
             
-            # MTF 模型強制使用 15m
             if is_mtf_model:
                 timeframe = '15m'
                 st.info("🔒 MTF 模型鎖定為 15m 進場時間框架")
@@ -120,7 +119,6 @@ def render():
         if use_event_filter:
             col1, col2 = st.columns(2)
             with col1:
-                # MTF 模型使用更嚴格的過濾
                 min_volume_ratio = st.number_input("最小成交量比率", value=2.0 if is_mtf_model else 1.5, step=0.1)
                 use_strict = st.checkbox("嚴格模式", value=True)
             with col2:
@@ -143,7 +141,6 @@ def render():
             status_text.text("載入數據...")
             progress_bar.progress(20)
             
-            # ===== [MTF 支援] 載入雙週期數據 =====
             if is_mtf_model:
                 st.info("🔄 MTF 模式: 載入 15m + 1h 數據...")
                 
@@ -171,7 +168,6 @@ def render():
                 st.success(f"MTF 特徵合併完成! 形狀: {df_features.shape}")
                 
             else:
-                # 單一時間框架模式
                 if data_source == "Binance API (最新)":
                     df = loader.fetch_latest_klines(symbol, timeframe, days=int(backtest_days))
                 else:
@@ -179,7 +175,7 @@ def render():
                     if use_recent_data:
                         df = df[df['open_time'] >= '2024-01-01'].copy()
                 
-                st.info(f"載入 {len(df)} 筆,範圏: {df['open_time'].min()} ~ {df['open_time'].max()}")
+                st.info(f"載入 {len(df)} 筆,範圍: {df['open_time'].min()} ~ {df['open_time'].max()}")
                 
                 status_text.text("建立特徵...")
                 progress_bar.progress(30)
@@ -204,7 +200,6 @@ def render():
             status_text.text("生成預測...")
             progress_bar.progress(45)
             
-            # 關鍵修正: 只排除基礎欄位和標籤欄位
             exclude_cols = [
                 'open_time', 'close_time', 'htf_close_time',
                 'label', 'label_return', 'hit_time', 'exit_type', 'exit_price', 'exit_bars', 'return',
@@ -393,6 +388,87 @@ def render():
                 file_name=f"backtest_{symbol}_{timeframe}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv"
             )
+            
+            # ===== [新增] 詳細回測報告 (可複製給 Gemini) =====
+            st.markdown("---")
+            st.markdown("### 📋 詳細回測報告 (可複製給 Gemini 查看)")
+            
+            report = f"""
+# MTF 多時間框架交易系統回測報告
+
+## 回測配置
+- **模型**: {model_file}
+- **交易對**: {symbol}
+- **時間框架**: {timeframe} {'(MTF: 15m + 1h)' if is_mtf_model else ''}
+- **回測時間**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+- **數據範圍**: {df_features['open_time'].min()} ~ {df_features['open_time'].max()}
+- **回測天數**: {days_in_test} 天
+
+## 風控參數
+- **初始資金**: ${initial_capital:,.0f}
+- **每筆風險**: {risk_per_trade}%
+- **槓桿倍數**: {leverage}x
+- **TP/SL 倍數**: {tp_multiplier:.1f} / {sl_multiplier:.1f} ATR
+- **機率門檻**: {probability_threshold}
+
+## 手續費與滑點
+- **Taker 費率**: {taker_fee:.4f} ({taker_fee*100:.2f}%)
+- **Maker 費率**: {maker_fee:.4f} ({maker_fee*100:.2f}%)
+- **滑點**: {slippage:.4f} ({slippage*100:.2f}%)
+- **總手續費**: ${stats['total_commission']:,.0f}
+- **手續費佔利潤比**: {fee_to_profit_ratio*100:.1f}%
+
+## 績效摘要
+- **最終資金**: ${stats['final_capital']:,.0f}
+- **淪損益**: ${stats['net_pnl']:,.0f} ({stats['total_return']*100:.1f}%)
+- **年化報酬**: {annualized_return*100:.1f}%
+- **理論期望值**: {ev_theory:.3f}R
+- **實際期望值**: {ev_actual:.3f}R
+
+## 交易統計
+- **總交易次數**: {stats['total_trades']}
+- **週均交易**: {trades_per_week:.1f} 筆
+- **勝率**: {stats['win_rate']*100:.1f}%
+- **獲利交易**: {stats['winning_trades']}
+- **虧損交易**: {stats['losing_trades']}
+
+## 損益分析
+- **平均獲利**: ${stats['avg_win']:.0f}
+- **平均虧損**: ${stats['avg_loss']:.0f}
+- **總獲利**: ${stats['total_win']:,.0f}
+- **總虧損**: ${stats['total_loss']:,.0f}
+- **盈虧比**: {stats['profit_factor']:.2f}
+
+## 風險指標
+- **最大回撤**: {stats['max_drawdown']*100:.1f}%
+- **Sharpe Ratio**: {stats['sharpe_ratio']:.2f}
+- **平均持倉**: {stats['avg_trade_duration']:.1f} 根 ({stats['avg_trade_duration']/4:.1f} 小時)
+
+## 退出原因分布
+- **TP (止盈)**: {exit_counts.get('TP', 0)} ({100*exit_counts.get('TP', 0)/len(trades_df):.1f}%)
+- **SL (止損)**: {exit_counts.get('SL', 0)} ({100*exit_counts.get('SL', 0)/len(trades_df):.1f}%)
+- **Timeout (超時)**: {exit_counts.get('Timeout', 0)} ({100*exit_counts.get('Timeout', 0)/len(trades_df):.1f}%)
+
+## 機率分布
+- **最小機率**: {prob_dist['min']:.3f}
+- **平均機率**: {prob_dist['mean']:.3f}
+- **最大機率**: {prob_dist['max']:.3f}
+- **75% 分位數**: {prob_dist['75%']:.3f}
+- **信號數量**: {len(signals)} (門檻 {probability_threshold})
+
+## 事件過濾配置
+- **啟用**: {'Yes' if use_event_filter else 'No'}
+- **最小成交量比率**: {min_volume_ratio if use_event_filter else 'N/A'}
+- **最小波動率**: {min_vsr if use_event_filter else 'N/A'}
+- **嚴格模式**: {'Yes' if use_strict and use_event_filter else 'No'}
+- **突破回看週期**: {lookback_period if use_event_filter else 'N/A'}
+- **過濾後比例**: {100*len(df_filtered)/len(df_features):.1f}%
+
+## 缺失特徵
+{', '.join(missing_features) if len(missing_features) > 0 else 'None'}
+"""
+            
+            st.text_area("報告內容 (點擊右上角複製)", report, height=400)
             
             st.markdown("### 優化建議")
             
