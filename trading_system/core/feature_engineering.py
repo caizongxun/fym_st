@@ -257,8 +257,12 @@ class FeatureEngineer:
         # 1. 創建 1h 的真實可見時間 (無未來函數)
         df_1h_copy['htf_close_time'] = df_1h_copy['open_time'] + pd.Timedelta(hours=1)
         
-        # 2. 篩選 1h 的特徵並加上 _1h 綴詞
-        cols_to_exclude = ['open_time', 'close_time', 'htf_close_time']
+        # 2. **關鍵修正**: 先移除 1h 的 open_time 再重命名
+        # 這樣 merge_asof 就不會產生 open_time_x 和 open_time_y
+        df_1h_copy = df_1h_copy.drop(columns=['open_time'])
+        
+        # 篩選 1h 的特徵並加上 _1h 綴詞
+        cols_to_exclude = ['close_time', 'htf_close_time']
         cols_to_keep = [col for col in df_1h_copy.columns if col not in cols_to_exclude]
         rename_dict = {col: f"{col}_1h" for col in cols_to_keep}
         df_1h_renamed = df_1h_copy.rename(columns=rename_dict)
