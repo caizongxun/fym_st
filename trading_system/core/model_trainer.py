@@ -101,11 +101,22 @@ class ModelTrainer:
         
         if self.use_calibration:
             logger.info("Calibrating model probabilities...")
-            self.calibrated_model = CalibratedClassifierCV(
-                self.model, 
-                method='isotonic', 
-                cv='prefit'
-            )
+            
+            # 相容新舊版 scikit-learn 的 prefit 寫法
+            try:
+                # 嘗試 scikit-learn >= 1.6 的寫法
+                from sklearn.frozen import FrozenEstimator
+                self.calibrated_model = CalibratedClassifierCV(
+                    estimator=FrozenEstimator(self.model),
+                    method='isotonic'
+                )
+            except ImportError:
+                # Fallback 給 scikit-learn < 1.6 的寫法
+                self.calibrated_model = CalibratedClassifierCV(
+                    estimator=self.model, 
+                    method='isotonic', 
+                    cv='prefit'
+                )
             
             if X_val is not None and y_val is not None:
                 self.calibrated_model.fit(X_val, y_val, sample_weight=sample_weight_val)
