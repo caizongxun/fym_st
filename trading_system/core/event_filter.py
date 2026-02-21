@@ -133,3 +133,125 @@ class EventFilter:
             logger.warning(f"警告: 保留比例 {filtered_ratio*100:.1f}% > 30%,過濾器可能過於寬鬆")
         
         return filtered_df
+
+
+class BBNW_BounceFilter:
+    """
+    BB + NW 雙通道觸碰過濾器
+    專門為 15m 波段反轉交易設計
+    
+    只保留觸碰或刺穿 BB/NW 上下軌的極端事件，
+    過濾掉在通道內部遊走的無效 K 線。
+    
+    這是整個波段反轉系統的第一關 (觸發層)
+    """
+    
+    def __init__(self, 
+                 use_bb: bool = True, 
+                 use_nw: bool = True,
+                 min_pierce_pct: float = 0.001,
+                 require_volume_surge: bool = False,
+                 min_volume_ratio: float = 1.2):
+        """
+        Args:
+            use_bb: 是否啟用 BB 通道觸發
+            use_nw: 是否啟用 NW 包絡線觸發
+            min_pierce_pct: 最小刺穿比例 (預設 0.1%)
+            require_volume_surge: 是否要求同時爆量
+            min_volume_ratio: 最小成交量比率
+        """
+        self.use_bb = use_bb
+        self.use_nw = use_nw
+        self.min_pierce_pct = min_pierce_pct
+        self.require_volume_surge = require_volume_surge
+        self.min_volume_ratio = min_volume_ratio
+        
+    def filter_events(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        篩選觸碰 BB/NW 軌道的極端事件
+        
+        Returns:
+            過濾後的 DataFrame，包含以下新增欄位:
+            - is_long_setup: 是否為做多機會 (觸碰下軌)
+            - is_short_setup: 是否為做空機會 (觸碰上軌)
+            - touch_type: 觸碰類型 (BB_LOWER, BB_UPPER, NW_LOWER, NW_UPPER)
+        """
+        logger.info(f"BB/NW 觸碰過濾器啟動, 原始數據: {len(df)} 筆")
+        result = df.copy()
+        
+        # 初始化觸發條件
+        trigger_condition = pd.Series([False] * len(result), index=result.index)
+        touch_types = pd.Series([None] * len(result), index=result.index, dtype=object)
+        
+        # --- BB 通道觸發 ---
+        if self.use_bb and 'bb_lower' in result.columns and 'bb_upper' in result.columns:
+            # 觸碰或刺穿下軌 (做多機會)
+            bb_touch_lower = result['low'] <= result['bb_lower'] * (1 + self.min_pierce_pct)
+            bb_pierce_lower = result['low'] < result['bb_lower']
+            
+            # 觸碰或突破上軌 (做空機會)
+            bb_touch_upper = result['high'] >= result['bb_upper'] * (1 - self.min_pierce_pct)
+            bb_pierce_upper = result['high'] > result['bb_upper']
+            
+            # 標記觸碸類型
+            touch_types = touch_types.where(~bb_touch_lower, 'BB_LOWER')
+            touch_types = touch_types.where(~bb_touch_upper, 'BB_UPPER')
+            
+            # 加入觸發條件
+            trigger_condition = trigger_condition | bb_touch_lower | bb_touch_upper
+            
+            logger.info(f"BB 下軌觸碸: {bb_touch_lower.sum()} | BB 上軌觸碸: {bb_touch_upper.sum()}")
+        
+        # --- NW 包絡線觸發 ---
+        if self.use_nw and 'nw_lower' in result.columns and 'nw_upper' in result.columns:
+            nw_touch_lower = result['low'] <= result['nw_lower'] * (1 + self.min_pierce_pct)
+            nw_touch_upper = result['high'] >= result['nw_upper'] * (1 - self.min_pierce_pct)
+            
+            # 標記觸碸類型 (如果未被 BB 標記過)
+            touch_types = touch_types.where(~(nw_touch_lower & (touch_types == None)), 'NW_LOWER')
+            touch_types = touch_types.where(~(nw_touch_upper & (touch_types == None)), 'NW_UPPER')
+            
+            trigger_condition = trigger_condition | nw_touch_lower | nw_touch_upper
+            
+            logger.info(f"NW 下軌觸碸: {nw_touch_lower.sum()} | NW 上軌觸碸: {nw_touch_upper.sum()}")
+        
+        # --- 成交量篩選 (可選) ---
+        if self.require_volume_surge:
+            if 'volume_ratio' in result.columns:
+                volume_surge = result['volume_ratio'] >= self.min_volume_ratio
+                trigger_condition = trigger_condition & volume_surge
+                logger.info(f"加入成交量篩選 (>={self.min_volume_ratio}): {volume_surge.sum()} 事件")
+            else:
+                logger.warning("無 volume_ratio 欄位，跳過成交量篩選")
+        
+        # 篩選結果
+        filtered_df = result[trigger_condition].copy()
+        
+        # 標記做多/做空機會
+        filtered_df['is_long_setup'] = (
+            (filtered_df['low'] <= filtered_df.get('bb_lower', np.inf)) | 
+            (filtered_df['low'] <= filtered_df.get('nw_lower', np.inf))
+        )
+        
+        filtered_df['is_short_setup'] = (
+            (filtered_df['high'] >= filtered_df.get('bb_upper', -np.inf)) | 
+            (filtered_df['high'] >= filtered_df.get('nw_upper', -np.inf))
+        )
+        
+        filtered_df['touch_type'] = touch_types[trigger_condition]
+        
+        # 統計輸出
+        long_setups = filtered_df['is_long_setup'].sum()
+        short_setups = filtered_df['is_short_setup'].sum()
+        filtered_ratio = len(filtered_df) / len(df) * 100
+        
+        logger.info(f"過濾完成: 保留 {len(filtered_df)}/{len(df)} 筆 ({filtered_ratio:.1f}%)")
+        logger.info(f"做多機會: {long_setups} | 做空機會: {short_setups}")
+        
+        # 警告檢查
+        if filtered_ratio < 2.0:
+            logger.warning(f"保留比例 {filtered_ratio:.1f}% < 2%，過濾過嚴，建議放寬 min_pierce_pct")
+        elif filtered_ratio > 20.0:
+            logger.warning(f"保留比例 {filtered_ratio:.1f}% > 20%，過濾過寬，建議縮小 min_pierce_pct 或加入成交量篩選")
+        
+        return filtered_df
