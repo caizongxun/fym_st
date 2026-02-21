@@ -119,7 +119,7 @@ with tab1:
 with tab2:
     st.header("🔄 進階數據收集")
     
-    st.info("📈 收集訂單流、資金費率、未平倉量、多空比等進階特徵,預期提升測試 AUC 0.15-0.25")
+    st.info("📈 自動收集所有可用歷史數據 (訂單流/CVD/資金費率/未平倉量/多空比),預期提升測試 AUC 0.15-0.25")
     
     col1, col2 = st.columns([1, 2])
     
@@ -146,19 +146,12 @@ with tab2:
         
         st.write("---")
         
-        col_date1, col_date2 = st.columns(2)
-        with col_date1:
-            start_date = st.date_input(
-                "起始日期",
-                value=datetime(2024, 1, 1),
-                key='adv_start_date'
-            )
-        with col_date2:
-            end_date = st.date_input(
-                "結束日期",
-                value=datetime(2024, 12, 31),
-                key='adv_end_date'
-            )
+        st.info("""
+        🔍 **自動模式**
+        - 自動偵測每個幣種最早可用時間
+        - 往前爬取直到無數據可爬
+        - 自動儲存至指定目錄
+        """)
         
         adv_timeframe = st.selectbox(
             "時間框架",
@@ -175,7 +168,7 @@ with tab2:
         
         st.write("---")
         
-        if st.button("🚀 開始收集", use_container_width=True, type="primary"):
+        if st.button("🚀 開始收集全部歷史數據", use_container_width=True, type="primary"):
             st.session_state.collection_started = True
             st.rerun()
     
@@ -198,8 +191,8 @@ with tab2:
                 try:
                     features_dict = collector.collect_all_advanced_features(
                         symbol=symbol,
-                        start_date=start_date.strftime('%Y-%m-%d'),
-                        end_date=end_date.strftime('%Y-%m-%d'),
+                        start_date=None,
+                        end_date=None,
                         timeframe=adv_timeframe
                     )
                     
@@ -215,6 +208,7 @@ with tab2:
                         '資金費率': len(features_dict.get('funding_rate', pd.DataFrame())),
                         '未平倉量': len(features_dict.get('open_interest', pd.DataFrame())),
                         '多空比': len(features_dict.get('long_short_ratio', pd.DataFrame())),
+                        '主動買賣': len(features_dict.get('taker_buy_sell', pd.DataFrame())),
                         '狀態': '✅ 成功'
                     })
                     
@@ -227,6 +221,7 @@ with tab2:
                         '資金費率': 0,
                         '未平倉量': 0,
                         '多空比': 0,
+                        '主動買賣': 0,
                         '狀態': f'❌ {str(e)[:20]}'
                     })
             
@@ -253,7 +248,7 @@ with tab2:
             )
             
             success_count = (st.session_state.collection_summary['狀態'] == '✅ 成功').sum()
-            total_records = st.session_state.collection_summary[['訂單流', '資金費率', '未平倉量', '多空比']].sum().sum()
+            total_records = st.session_state.collection_summary[['訂單流', '資金費率', '未平倉量', '多空比', '主動買賣']].sum().sum()
             
             col_m1, col_m2, col_m3 = st.columns(3)
             with col_m1:
