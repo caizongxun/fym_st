@@ -41,7 +41,7 @@ if 'feature_merger' not in st.session_state:
 
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📊 [1] 數據載入",
-    "🔄 [2] 進階數據收集",
+    "🔄 [2] 資金費率收集",
     "🛠️ [3] 特徵工程",
     "🏷️ [4] 標籤生成",
     "🤖 [5] 模型訓練",
@@ -49,6 +49,9 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "☁️ [7] HF 上傳"
 ])
 
+# ============================================================
+# Tab 1: 數據載入
+# ============================================================
 with tab1:
     st.header("數據載入")
     
@@ -101,7 +104,6 @@ with tab1:
         
         if 'df_raw' in st.session_state:
             st.subheader("數據預覽")
-            
             df_display = st.session_state.df_raw.copy()
             st.dataframe(df_display.head(100), use_container_width=True, height=300)
             
@@ -116,10 +118,18 @@ with tab1:
             with col_stat4:
                 st.metric("平均價格", f"{df_display['close'].mean():.2f}")
 
+# ============================================================
+# Tab 2: 資金費率收集
+# ============================================================
 with tab2:
-    st.header("🔄 進階數據收集")
+    st.header("🔄 資金費率收集")
     
-    st.info("📈 自動收集所有可用歷史數據 (訂單流/CVD/資金費率/未平倉量/多空比),預期提升測試 AUC 0.15-0.25")
+    st.info(
+        "💰 **資金費率 (Funding Rate)**\n"
+        "- Binance 期貨每 8 小時一筆，具備 2019～今完整歷史\n"
+        "- 是唯一可用于訓練的進階特徵 (其他皆僅 30 天)\n"
+        "- 收集完成後在 [7] HF 上傳展頁將其備份到 HuggingFace"
+    )
     
     col1, col2 = st.columns([1, 2])
     
@@ -128,7 +138,7 @@ with tab2:
         
         collection_mode = st.radio(
             "收集模式",
-            ["單一幣種", "批量收集 (38個)"],
+            ["單一幣種", f"批量收集 ({len(st.session_state.batch_collector.hf_symbols)}個)"],
             key='collection_mode'
         )
         
@@ -144,22 +154,6 @@ with tab2:
                 for sym in symbols_to_collect:
                     st.text(sym)
         
-        st.write("---")
-        
-        st.info("""
-        🔍 **自動模式**
-        - 自動偵測每個幣種最早可用時間
-        - 往前爬取直到無數據可爬
-        - 自動儲存至指定目錄
-        """)
-        
-        adv_timeframe = st.selectbox(
-            "時間框架",
-            ['15m', '1h', '4h'],
-            index=0,
-            key='adv_timeframe'
-        )
-        
         output_dir = st.text_input(
             "輸出目錄",
             value='v2/advanced_data',
@@ -168,7 +162,7 @@ with tab2:
         
         st.write("---")
         
-        if st.button("🚀 開始收集全部歷史數據", use_container_width=True, type="primary"):
+        if st.button("🚀 開始收集資金費率", use_container_width=True, type="primary"):
             st.session_state.collection_started = True
             st.rerun()
     
@@ -178,10 +172,10 @@ with tab2:
             
             progress_bar = st.progress(0)
             status_text = st.empty()
-            result_placeholder = st.empty()
+            summary_data = []
             
             collector = BinanceAdvancedDataCollector()
-            summary_data = []
+            os.makedirs(output_dir, exist_ok=True)
             
             for idx, symbol in enumerate(symbols_to_collect):
                 progress = (idx + 1) / len(symbols_to_collect)
@@ -189,53 +183,38 @@ with tab2:
                 status_text.text(f"正在處理 {symbol} ({idx+1}/{len(symbols_to_collect)})...")
                 
                 try:
-                    features_dict = collector.collect_all_advanced_features(
-                        symbol=symbol,
-                        start_date=None,
-                        end_date=None,
-                        timeframe=adv_timeframe
-                    )
+                    start_time = collector.get_earliest_available_time(symbol)
+                    df = collector.get_funding_rate(symbol, start_time)
                     
-                    collector.save_advanced_features(
-                        symbol=symbol,
-                        features_dict=features_dict,
-                        output_dir=output_dir
-                    )
+                    if not df.empty:
+                        filepath = os.path.join(output_dir, f"{symbol}_funding_rate.parquet")
+                        df.to_parquet(filepath, index=False)
+                        summary_data.append({
+                            '幣種': symbol,
+                            '筆數': f"{len(df):,}",
+                            '起始': df['timestamp'].min().strftime('%Y-%m-%d'),
+                            '結束': df['timestamp'].max().strftime('%Y-%m-%d'),
+                            '狀態': '✅ 成功'
+                        })
+                    else:
+                        summary_data.append({
+                            '幣種': symbol, '筆數': '0',
+                            '起始': '-', '結束': '-', '狀態': '⚠️ 無數據'
+                        })
                     
-                    summary_data.append({
-                        '幣種': symbol,
-                        '訂單流': len(features_dict.get('order_flow', pd.DataFrame())),
-                        '資金費率': len(features_dict.get('funding_rate', pd.DataFrame())),
-                        '未平倉量': len(features_dict.get('open_interest', pd.DataFrame())),
-                        '多空比': len(features_dict.get('long_short_ratio', pd.DataFrame())),
-                        '主動買賣': len(features_dict.get('taker_buy_sell', pd.DataFrame())),
-                        '狀態': '✅ 成功'
-                    })
-                    
-                    time.sleep(1)
+                    time.sleep(0.5)
                     
                 except Exception as e:
                     summary_data.append({
-                        '幣種': symbol,
-                        '訂單流': 0,
-                        '資金費率': 0,
-                        '未平倉量': 0,
-                        '多空比': 0,
-                        '主動買賣': 0,
+                        '幣種': symbol, '筆數': '0',
+                        '起始': '-', '結束': '-',
                         '狀態': f'❌ {str(e)[:20]}'
                     })
             
             progress_bar.progress(1.0)
             status_text.text("✅ 收集完成!")
-            
             st.session_state.collection_summary = pd.DataFrame(summary_data)
             st.session_state.collection_started = False
-            
-            summary_path = os.path.join(output_dir, 'collection_summary.csv')
-            os.makedirs(output_dir, exist_ok=True)
-            st.session_state.collection_summary.to_csv(summary_path, index=False)
-            
-            st.success(f"✅ 已完成 {len(symbols_to_collect)} 個幣種的數據收集")
             st.rerun()
         
         if 'collection_summary' in st.session_state:
@@ -247,18 +226,20 @@ with tab2:
                 height=400
             )
             
-            success_count = (st.session_state.collection_summary['狀態'] == '✅ 成功').sum()
-            total_records = st.session_state.collection_summary[['訂單流', '資金費率', '未平倉量', '多空比', '主動買賣']].sum().sum()
+            df_sum = st.session_state.collection_summary
+            success = (df_sum['狀態'] == '✅ 成功').sum()
             
-            col_m1, col_m2, col_m3 = st.columns(3)
+            col_m1, col_m2 = st.columns(2)
             with col_m1:
-                st.metric("成功收集", f"{success_count}/{len(st.session_state.collection_summary)}")
+                st.metric("成功收集", f"{success}/{len(df_sum)}")
             with col_m2:
-                st.metric("總數據筆數", f"{total_records:,}")
-            with col_m3:
-                success_rate = (success_count / len(st.session_state.collection_summary) * 100)
-                st.metric("成功率", f"{success_rate:.1f}%")
+                st.metric("可上傳檔案", f"{success} 個 .parquet")
+            
+            st.info("💡 收集完成後，前往 [7] HF 上傳展頁進行備份")
 
+# ============================================================
+# Tab 3: 特徵工程
+# ============================================================
 with tab3:
     st.header("特徵工程")
     
@@ -270,18 +251,18 @@ with tab3:
         with col1:
             st.subheader("參數設定")
             
-            bb_period = st.number_input("布林帶週期", 5, 50, 20)
-            bb_std = st.number_input("標準差倍數", 1.0, 3.0, 2.0, 0.1)
-            lookback = st.number_input("回溯週期", 50, 200, 100)
+            bb_period  = st.number_input("布林帶週期", 5, 50, 20)
+            bb_std     = st.number_input("標準差倍數", 1.0, 3.0, 2.0, 0.1)
+            lookback   = st.number_input("回溯週期", 50, 200, 100)
             pivot_left = st.number_input("樞紐左側K線", 1, 10, 3)
-            pivot_right = st.number_input("樞紐右側K線", 1, 10, 3)
+            pivot_right= st.number_input("樞紐右側K線", 1, 10, 3)
             
             st.write("---")
             
             merge_advanced = st.checkbox(
-                "🔥 合併進階特徵",
+                "🔥 合併資金費率特徵",
                 value=False,
-                help="自動載入訂單流、資金費率等進階數據"
+                help="自動載入 funding_rate.parquet"
             )
             
             if st.button("計算特徵", use_container_width=True):
@@ -302,14 +283,14 @@ with tab3:
                         if merge_advanced:
                             if 'current_symbol' in st.session_state:
                                 merger = st.session_state.feature_merger
-                                st.session_state.df_features = merger.merge_all_features(
+                                st.session_state.df_features = merger.merge_for_training(
                                     st.session_state.df_features,
                                     st.session_state.current_symbol
                                 )
-                                adv_features = merger.get_advanced_feature_columns(st.session_state.df_features)
-                                st.success(f"✅ 特徵計算完成: {len(st.session_state.df_features)} 筆 | 基礎特徵: {base_features} | 進階特徵: {len(adv_features)}")
+                                adv_features = merger.get_training_feature_columns(st.session_state.df_features)
+                                st.success(f"✅ 特徵計算完成: {len(st.session_state.df_features)} 筆 | 基礎: {base_features} | 資金費率: {len(adv_features)}")
                             else:
-                                st.warning("⚠️ 無法合併進階特徵: 請先載入數據")
+                                st.warning("⚠️ 請先載入數據")
                                 st.success(f"✅ 基礎特徵計算完成: {len(st.session_state.df_features)} 筆 | 特徵數: {base_features}")
                         else:
                             st.success(f"✅ 基礎特徵計算完成: {len(st.session_state.df_features)} 筆 | 特徵數: {base_features}")
@@ -321,10 +302,9 @@ with tab3:
                 st.subheader("特徵數據預覽")
                 
                 feature_cols = st.session_state.feature_engineer.get_feature_columns()
-                
                 adv_features = []
                 if 'feature_merger' in st.session_state:
-                    adv_features = st.session_state.feature_merger.get_advanced_feature_columns(
+                    adv_features = st.session_state.feature_merger.get_training_feature_columns(
                         st.session_state.df_features
                     )
                 
@@ -339,23 +319,22 @@ with tab3:
                 )
                 
                 st.subheader("📊 特徵列表")
-                
                 col_feat1, col_feat2 = st.columns(2)
                 with col_feat1:
                     st.write("**基礎特徵**")
                     for feat in feature_cols:
                         st.text(f"• {feat}")
-                
                 with col_feat2:
                     if adv_features:
-                        st.write(f"**進階特徵 ({len(adv_features)}個)**")
-                        for feat in adv_features[:15]:
+                        st.write(f"**資金費率特徵 ({len(adv_features)}個)**")
+                        for feat in adv_features:
                             st.text(f"• {feat}")
-                        if len(adv_features) > 15:
-                            st.text(f"... 和其他 {len(adv_features)-15} 個")
                     else:
-                        st.info("未載入進階特徵")
+                        st.info("未載入資金費率特徵")
 
+# ============================================================
+# Tab 4: 標籤生成
+# ============================================================
 with tab4:
     st.header("標籤生成")
     
@@ -368,9 +347,9 @@ with tab4:
             st.subheader("參數設定")
             
             atr_period = st.number_input("ATR週期", 5, 30, 14)
-            sl_mult = st.number_input("停損ATR倍數", 0.5, 3.0, 1.5, 0.1)
-            tp_mult = st.number_input("停利ATR倍數", 1.0, 5.0, 3.0, 0.1)
-            lookahead = st.number_input("前瞥K線數", 5, 50, 16)
+            sl_mult    = st.number_input("停損ATR倍數", 0.5, 3.0, 1.5, 0.1)
+            tp_mult    = st.number_input("停利ATR倍數", 1.0, 5.0, 3.0, 0.1)
+            lookahead  = st.number_input("前瞥K線數", 5, 50, 16)
             
             if st.button("生成標籤", use_container_width=True):
                 with st.spinner('生成中...'):
@@ -383,10 +362,8 @@ with tab4:
                         )
                         st.session_state.df_labeled = lg.generate_labels(st.session_state.df_features)
                         st.session_state.label_generator = lg
-                        
                         stats = lg.get_label_statistics(st.session_state.df_labeled)
                         st.session_state.label_stats = stats
-                        
                         st.success("✅ 標籤生成完成")
                     except Exception as e:
                         st.error(f"❌ 生成失敗: {str(e)}")
@@ -394,11 +371,9 @@ with tab4:
         with col2:
             if 'df_labeled' in st.session_state:
                 st.subheader("標籤統計")
-                
                 stats = st.session_state.label_stats
                 
                 col_stat1, col_stat2 = st.columns(2)
-                
                 with col_stat1:
                     st.write("**做多樣本**")
                     if 'long_total' in stats:
@@ -408,7 +383,6 @@ with tab4:
                         st.metric("成功率", f"{stats['long_success_rate']:.2f}%")
                     else:
                         st.info("無做多樣本")
-                
                 with col_stat2:
                     st.write("**做空樣本**")
                     if 'short_total' in stats:
@@ -420,8 +394,8 @@ with tab4:
                         st.info("無做空樣本")
                 
                 st.subheader("標籤數據預覽")
-                display_cols = ['timestamp', 'close', 'lower', 'upper', 'atr', 
-                               'is_touching_lower', 'is_touching_upper', 
+                display_cols = ['timestamp', 'close', 'lower', 'upper', 'atr',
+                               'is_touching_lower', 'is_touching_upper',
                                'target_long', 'target_short']
                 available_cols = [col for col in display_cols if col in st.session_state.df_labeled.columns]
                 st.dataframe(
@@ -430,6 +404,9 @@ with tab4:
                     height=300
                 )
 
+# ============================================================
+# Tab 5: 模型訓練
+# ============================================================
 with tab5:
     st.header("模型訓練")
     
@@ -441,14 +418,13 @@ with tab5:
         with col1:
             st.subheader("訓練參數")
             
-            direction = st.selectbox("方向", ['long', 'short'])
+            direction    = st.selectbox("方向", ['long', 'short'])
             n_estimators = st.number_input("樹數量", 100, 1000, 300, 50)
-            learning_rate = st.number_input("學習率", 0.001, 0.1, 0.01, 0.001, format="%.3f")
-            max_depth = st.number_input("最大深度", 3, 15, 4)
-            train_ratio = st.number_input("訓練集比例", 0.5, 0.9, 0.8, 0.05)
+            learning_rate= st.number_input("學習率", 0.001, 0.1, 0.01, 0.001, format="%.3f")
+            max_depth    = st.number_input("最大深度", 3, 15, 4)
+            train_ratio  = st.number_input("訓練集比例", 0.5, 0.9, 0.8, 0.05)
             
             st.write("---")
-            
             col_btn1, col_btn2 = st.columns(2)
             
             with col_btn1:
@@ -456,22 +432,16 @@ with tab5:
                     with st.spinner('訓練中...'):
                         try:
                             df_train = st.session_state.label_generator.prepare_training_data(
-                                st.session_state.df_labeled,
-                                direction=direction
-                            )
-                            
+                                st.session_state.df_labeled, direction=direction)
                             trainer = ModelTrainer(
                                 model_type='bounce',
                                 n_estimators=n_estimators,
                                 learning_rate=learning_rate,
                                 max_depth=max_depth
                             )
-                            
                             results = trainer.train(df_train, train_ratio=train_ratio)
-                            
                             os.makedirs('v2/models', exist_ok=True)
                             trainer.save_model(f'v2/models/bounce_{direction}_model.pkl')
-                            
                             st.session_state.bounce_results = results
                             st.success("✅ 反彈模型訓練完成")
                         except Exception as e:
@@ -482,21 +452,15 @@ with tab5:
                     with st.spinner('訓練中...'):
                         try:
                             df_train = st.session_state.label_generator.prepare_training_data(
-                                st.session_state.df_labeled,
-                                direction=direction
-                            )
-                            
+                                st.session_state.df_labeled, direction=direction)
                             trainer = TrendFilterTrainer(
                                 n_estimators=n_estimators,
                                 learning_rate=learning_rate,
                                 max_depth=max_depth
                             )
-                            
                             results = trainer.train(df_train, train_ratio=train_ratio)
-                            
                             os.makedirs('v2/models', exist_ok=True)
                             trainer.save_model(f'v2/models/filter_{direction}_model.pkl')
-                            
                             st.session_state.filter_results = results
                             st.success("✅ 過濾模型訓練完成")
                         except Exception as e:
@@ -504,47 +468,39 @@ with tab5:
         
         with col2:
             st.subheader("訓練結果")
-            
             col_res1, col_res2 = st.columns(2)
             
             with col_res1:
                 st.write("**反彈模型**")
                 if 'bounce_results' in st.session_state:
-                    results = st.session_state.bounce_results
-                    st.metric("訓練 AUC", f"{results['train_auc']:.4f}")
-                    st.metric("測試 AUC", f"{results['test_auc']:.4f}")
-                    st.metric("訓練樣本", results['train_samples'])
-                    st.metric("測試樣本", results['test_samples'])
-                    
+                    r = st.session_state.bounce_results
+                    st.metric("訓練 AUC", f"{r['train_auc']:.4f}")
+                    st.metric("測試 AUC", f"{r['test_auc']:.4f}")
+                    st.metric("訓練樣本", r['train_samples'])
+                    st.metric("測試樣本", r['test_samples'])
                     st.write("**特徵重要性 Top 10**")
-                    st.dataframe(
-                        results['feature_importance'].head(10),
-                        use_container_width=True,
-                        hide_index=True,
-                        height=300
-                    )
+                    st.dataframe(r['feature_importance'].head(10),
+                                 use_container_width=True, hide_index=True, height=300)
                 else:
                     st.info("尚未訓練")
             
             with col_res2:
                 st.write("**過濾模型**")
                 if 'filter_results' in st.session_state:
-                    results = st.session_state.filter_results
-                    st.metric("訓練 AUC", f"{results['train_auc']:.4f}")
-                    st.metric("測試 AUC", f"{results['test_auc']:.4f}")
-                    st.metric("訓練樣本", results['train_samples'])
-                    st.metric("測試樣本", results['test_samples'])
-                    
+                    r = st.session_state.filter_results
+                    st.metric("訓練 AUC", f"{r['train_auc']:.4f}")
+                    st.metric("測試 AUC", f"{r['test_auc']:.4f}")
+                    st.metric("訓練樣本", r['train_samples'])
+                    st.metric("測試樣本", r['test_samples'])
                     st.write("**特徵重要性 Top 10**")
-                    st.dataframe(
-                        results['feature_importance'].head(10),
-                        use_container_width=True,
-                        hide_index=True,
-                        height=300
-                    )
+                    st.dataframe(r['feature_importance'].head(10),
+                                 use_container_width=True, hide_index=True, height=300)
                 else:
                     st.info("尚未訓練")
 
+# ============================================================
+# Tab 6: 推論測試
+# ============================================================
 with tab6:
     st.header("推論測試")
     
@@ -552,7 +508,6 @@ with tab6:
     
     with col1:
         st.subheader("模型選擇")
-        
         direction_infer = st.selectbox("方向", ['long', 'short'], key='infer_direction')
         
         bounce_path = f'v2/models/bounce_{direction_infer}_model.pkl'
@@ -561,9 +516,9 @@ with tab6:
         if os.path.exists(bounce_path) and os.path.exists(filter_path):
             st.success("✅ 模型檔案存在")
             
-            st.subheader("閾值設定")
-            bounce_threshold = st.slider("反彈閾值", 0.0, 1.0, 0.65, 0.05)
-            filter_threshold = st.slider("過濾閾值", 0.0, 1.0, 0.40, 0.05)
+            st.subheader("閾値設定")
+            bounce_threshold = st.slider("反彈閾値", 0.0, 1.0, 0.65, 0.05)
+            filter_threshold = st.slider("過濾閾値", 0.0, 1.0, 0.40, 0.05)
             
             if st.button("執行推論", use_container_width=True):
                 if 'df_labeled' not in st.session_state:
@@ -577,72 +532,59 @@ with tab6:
                                 bounce_threshold=bounce_threshold,
                                 filter_threshold=filter_threshold
                             )
-                            
                             df_test = st.session_state.label_generator.prepare_training_data(
-                                st.session_state.df_labeled,
-                                direction=direction_infer
-                            )
-                            
+                                st.session_state.df_labeled, direction=direction_infer)
                             df_predictions = engine.predict_batch(df_test)
                             stats = engine.get_statistics(df_predictions)
-                            
                             st.session_state.df_predictions = df_predictions
                             st.session_state.inference_stats = stats
-                            
                             st.success("✅ 推論完成")
                         except Exception as e:
                             st.error(f"❌ 推論失敗: {str(e)}")
         else:
-            st.error(f"❌ 模型檔案不存在")
+            st.error("❌ 模型檔案不存在")
             st.info("請先在 [5]模型訓練 頁面訓練模型")
     
     with col2:
         if 'inference_stats' in st.session_state:
             st.subheader("推論統計")
-            
             stats = st.session_state.inference_stats
-            
-            col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
-            
-            with col_stat1:
-                st.metric("總樣本", stats['total_samples'])
-            with col_stat2:
-                st.metric("核准進場", stats['entry_approved'])
-            with col_stat3:
-                st.metric("進場率", f"{stats['entry_rate']:.2f}%")
-            with col_stat4:
+            col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+            with col_s1: st.metric("總樣本", stats['total_samples'])
+            with col_s2: st.metric("核准進場", stats['entry_approved'])
+            with col_s3: st.metric("進場率", f"{stats['entry_rate']:.2f}%")
+            with col_s4:
                 if 'approved_success_rate' in stats:
                     st.metric("核准後成功率", f"{stats['approved_success_rate']:.2f}%")
             
-            col_stat5, col_stat6 = st.columns(2)
-            with col_stat5:
-                st.metric("平均 P_bounce", f"{stats['avg_p_bounce']:.4f}")
-            with col_stat6:
-                st.metric("平均 P_filter", f"{stats['avg_p_filter']:.4f}")
-            
-            st.subheader("訊號原因分佈")
-            reason_df = pd.DataFrame([
-                {'reason': k, 'count': v} 
-                for k, v in stats['reason_counts'].items()
-            ])
-            st.dataframe(reason_df, use_container_width=True, hide_index=True)
-            
             st.subheader("推論結果預覽")
-            display_cols = ['timestamp', 'close', 'p_bounce', 'p_filter', 
-                           'signal', 'reason', 'target']
+            display_cols = ['timestamp', 'close', 'p_bounce', 'p_filter', 'signal', 'reason', 'target']
             available_cols = [col for col in display_cols if col in st.session_state.df_predictions.columns]
             st.dataframe(
                 st.session_state.df_predictions[available_cols].head(50),
-                use_container_width=True,
-                height=300
+                use_container_width=True, height=300
             )
         else:
             st.info("請先執行推論")
 
+# ============================================================
+# Tab 7: HF 上傳
+# ============================================================
 with tab7:
     st.header("☁️ HuggingFace 上傳")
     
-    st.info("📤 將進階數據上傳到 HuggingFace 以便分享與備份")
+    st.info(
+        "📂 **上傳結構**\n"
+        "```\n"
+        "klines/\n"
+        "├── BTCUSDT/\n"
+        "│   ├── [K線檔案]  ← 已在 HF\n"
+        "│   └── BTCUSDT_funding_rate.parquet  ← 本次上傳\n"
+        "├── ETHUSDT/\n"
+        "│   └── ETHUSDT_funding_rate.parquet\n"
+        "...\n"
+        "```"
+    )
     
     col1, col2 = st.columns([1, 2])
     
@@ -657,84 +599,87 @@ with tab7:
         )
         
         hf_repo = st.text_input(
-            "Repository 名稱",
-            value="username/v2-crypto-advanced-data",
-            help="格式: username/repo-name",
+            "Repository ID",
+            value="zongowo111/v2-crypto-ohlcv-data",
             key='hf_repo'
         )
         
         data_dir = st.text_input(
-            "數據目錄",
+            "資金費率目錄",
             value="v2/advanced_data",
             key='hf_data_dir'
         )
         
-        st.write("---")
+        commit_msg = st.text_input(
+            "Commit 訊息",
+            value=f"Add funding rate data - {datetime.now().strftime('%Y-%m-%d')}",
+            key='hf_commit_msg'
+        )
         
-        if st.button("🚀 上傳到 HuggingFace", use_container_width=True, type="primary"):
+        st.write("---")
+        st.caption("⚠️ 使用單次 commit 整包上傳，遠少 API 速率限制")
+        
+        if st.button("🚀 一鍵上傳到 HuggingFace", use_container_width=True, type="primary"):
             if not hf_token:
                 st.error("❌ 請輸入 HuggingFace Token")
             elif not os.path.exists(data_dir):
-                st.error(f"❌ 數據目錄不存在: {data_dir}")
+                st.error(f"❌ 目錄不存在: {data_dir}")
             else:
-                with st.spinner('上傳中...'):
+                with st.spinner('準備上傳...'):
                     try:
-                        from huggingface_hub import HfApi, create_repo
+                        from huggingface_hub import HfApi, CommitOperationAdd
                         
                         api = HfApi(token=hf_token)
                         
-                        try:
-                            create_repo(
-                                repo_id=hf_repo,
-                                token=hf_token,
-                                repo_type="dataset",
-                                exist_ok=True
-                            )
-                            st.success(f"✅ Repository 已建立: {hf_repo}")
-                        except:
-                            st.info(f"ℹ️ Repository 已存在: {hf_repo}")
+                        # 找出所有 funding_rate.parquet
+                        parquet_files = glob.glob(os.path.join(data_dir, "*_funding_rate.parquet"))
                         
-                        parquet_files = glob.glob(os.path.join(data_dir, "*.parquet"))
-                        csv_files = glob.glob(os.path.join(data_dir, "*.csv"))
-                        all_files = parquet_files + csv_files
-                        
-                        if not all_files:
-                            st.error(f"❌ 在 {data_dir} 中找不到任何檔案")
+                        if not parquet_files:
+                            st.error(f"❌ 在 {data_dir} 找不到 *_funding_rate.parquet 檔案")
+                            st.info("請先在 [2] 資金費率收集 展頁執行收集")
                         else:
-                            progress_bar = st.progress(0)
-                            status_text = st.empty()
-                            uploaded_files = []
+                            # 準備批次上傳操作 (CommitOperationAdd)
+                            operations = []
+                            file_map = []
                             
-                            for idx, file_path in enumerate(all_files):
-                                progress = (idx + 1) / len(all_files)
-                                progress_bar.progress(progress)
-                                
-                                filename = os.path.basename(file_path)
-                                status_text.text(f"上傳 {filename} ({idx+1}/{len(all_files)})...")
-                                
-                                try:
-                                    api.upload_file(
-                                        path_or_fileobj=file_path,
-                                        path_in_repo=filename,
-                                        repo_id=hf_repo,
-                                        repo_type="dataset",
-                                        token=hf_token
+                            for fp in sorted(parquet_files):
+                                filename = os.path.basename(fp)
+                                # BTCUSDT_funding_rate.parquet -> BTCUSDT
+                                symbol = filename.replace('_funding_rate.parquet', '')
+                                path_in_repo = f"klines/{symbol}/{filename}"
+                                operations.append(
+                                    CommitOperationAdd(
+                                        path_in_repo=path_in_repo,
+                                        path_or_fileobj=fp
                                     )
-                                    uploaded_files.append(filename)
-                                except Exception as e:
-                                    st.warning(f"⚠️ 上傳 {filename} 失敗: {str(e)[:30]}")
+                                )
+                                file_map.append({'symbol': symbol, 'path': path_in_repo})
                             
-                            progress_bar.progress(1.0)
-                            status_text.text("✅ 上傳完成!")
+                            st.write(f"📎 準備上傳 **{len(operations)}** 個檔案...")
                             
-                            st.session_state.uploaded_files = uploaded_files
-                            st.success(f"✅ 已成功上傳 {len(uploaded_files)}/{len(all_files)} 個檔案")
+                            # 單次 commit 整包上傳
+                            result = api.create_commit(
+                                repo_id=hf_repo,
+                                repo_type="dataset",
+                                operations=operations,
+                                commit_message=commit_msg
+                            )
                             
+                            st.session_state.upload_result = {
+                                'files': file_map,
+                                'commit_url': result.commit_url
+                            }
+                            
+                            st.success(f"✅ 成功上傳 {len(operations)} 個檔案")
+                            st.markdown(f"**Commit URL:** [{result.commit_url}]({result.commit_url})")
+                    
+                    except ImportError:
+                        st.error("❌ 請先安裝: pip install huggingface_hub")
                     except Exception as e:
                         st.error(f"❌ 上傳失敗: {str(e)}")
     
     with col2:
-        st.subheader("📁 檢查數據檔案")
+        st.subheader("📁 检查本地檔案")
         
         data_dir_check = st.text_input(
             "目錄路徑",
@@ -743,41 +688,56 @@ with tab7:
         )
         
         if os.path.exists(data_dir_check):
-            parquet_files = glob.glob(os.path.join(data_dir_check, "*.parquet"))
-            csv_files = glob.glob(os.path.join(data_dir_check, "*.csv"))
+            parquet_files = glob.glob(os.path.join(data_dir_check, "*_funding_rate.parquet"))
             
-            col_m1, col_m2 = st.columns(2)
-            with col_m1:
-                st.metric("Parquet 檔案", len(parquet_files))
-            with col_m2:
-                st.metric("CSV 檔案", len(csv_files))
+            st.metric("funding_rate.parquet 檔案數", len(parquet_files))
             
-            if parquet_files or csv_files:
+            if parquet_files:
                 file_info = []
-                for f in parquet_files + csv_files:
+                total_size = 0
+                for f in sorted(parquet_files):
                     size_mb = os.path.getsize(f) / (1024 * 1024)
+                    total_size += size_mb
+                    symbol = os.path.basename(f).replace('_funding_rate.parquet', '')
+                    # 嘗試讀取筆數
+                    try:
+                        df_preview = pd.read_parquet(f, columns=['timestamp'])
+                        records = len(df_preview)
+                        t_min = pd.read_parquet(f, columns=['timestamp'])['timestamp'].min().strftime('%Y-%m-%d')
+                        t_max = pd.read_parquet(f, columns=['timestamp'])['timestamp'].max().strftime('%Y-%m-%d')
+                    except Exception:
+                        records = '?'
+                        t_min = t_max = '-'
+                    
                     file_info.append({
-                        '檔案名': os.path.basename(f),
-                        '大小 (MB)': f"{size_mb:.2f}",
-                        '修改時間': datetime.fromtimestamp(os.path.getmtime(f)).strftime('%Y-%m-%d %H:%M')
+                        '幣種': symbol,
+                        '筆數': f"{records:,}" if isinstance(records, int) else records,
+                        '起始': t_min,
+                        '結束': t_max,
+                        '大小 (MB)': f"{size_mb:.2f}"
                     })
                 
-                df_files = pd.DataFrame(file_info)
-                st.dataframe(df_files, use_container_width=True, hide_index=True, height=400)
-                
-                total_size = sum([os.path.getsize(f) for f in parquet_files + csv_files]) / (1024 * 1024)
+                st.dataframe(
+                    pd.DataFrame(file_info),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=400
+                )
                 st.metric("總大小 (MB)", f"{total_size:.2f}")
         else:
             st.warning(f"⚠️ 目錄不存在: {data_dir_check}")
         
-        if 'uploaded_files' in st.session_state:
+        if 'upload_result' in st.session_state:
             st.subheader("📋 上傳記錄")
-            st.write(f"已上傳 {len(st.session_state.uploaded_files)} 個檔案")
-            for f in st.session_state.uploaded_files[:10]:
-                st.text(f"✓ {f}")
-            if len(st.session_state.uploaded_files) > 10:
-                st.text(f"... 和其他 {len(st.session_state.uploaded_files)-10} 個")
+            r = st.session_state.upload_result
+            st.write(f"已上傳 {len(r['files'])} 個檔案")
+            st.markdown(f"[Commit 連結]({r['commit_url']})")
+            df_uploaded = pd.DataFrame(r['files'])
+            st.dataframe(df_uploaded, use_container_width=True, hide_index=True)
 
+# ============================================================
+# Sidebar
+# ============================================================
 st.sidebar.header("關於")
 st.sidebar.info(
     """
@@ -785,14 +745,14 @@ st.sidebar.info(
     
     功能模塊:
     - 📊 數據載入 (HuggingFace)
-    - 🔄 進階數據收集 (Binance API)
-    - 🛠️ 特徵工程 (30+ 指標)
+    - 🔄 資金費率收集 (Binance API)
+    - 🛠️ 特徵工程 (BB + SMC + POC + FVG)
     - 🏷️ 標籤生成 (ATR 動態)
     - 🤖 模型訓練 (LightGBM 防過擬合)
     - 🎯 推論測試 (共振-否決)
-    - ☁️ HF 上傳 (備份分享)
+    - ☁️ HF 上傳 (整包 commit)
     
-    版本: 2.1.0
+    版本: 2.2.0
     """
 )
 
